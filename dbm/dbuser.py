@@ -1,5 +1,11 @@
 """用户数据访问层"""
+import hashlib
 from dbm.dbpool import DBPool
+
+
+def _sha256(s: str) -> str:
+    """对字符串做 SHA-256 哈希，返回 hex 字符串"""
+    return hashlib.sha256(s.encode('utf-8')).hexdigest()
 
 
 class DBUser(DBPool):
@@ -15,7 +21,7 @@ class DBUser(DBPool):
                 if bool(cursor.fetchone()):
                     cursor.execute(
                         "UPDATE users SET password=%s WHERE username = %s",
-                        (password, uid)
+                        (_sha256(password), uid)
                     )
                     return True
         finally:
@@ -34,12 +40,12 @@ class DBUser(DBPool):
                 if bool(cursor.fetchone()):
                     cursor.execute(
                         "UPDATE users SET password=%s, real_name=%s, role=%s WHERE username = %s",
-                        (user["password"], user["real_name"], user["role"], username)
+                        (_sha256(user["password"]), user["real_name"], user["role"], username)
                     )
                 else:
                     cursor.execute(
                         "INSERT INTO users(username, real_name, password, role) VALUES(%s, %s, %s, %s)",
-                        (username, user["real_name"], user["password"], user["role"])
+                        (username, user["real_name"], _sha256(user["password"]), user["role"])
                     )
         finally:
             self.releaseConn(conn)
@@ -73,14 +79,14 @@ class DBUser(DBPool):
         return userInfo
 
     def loginUser(self, username: str, password: str) -> dict | None:
-        """登录验证：根据用户名和密码查询用户"""
+        """登录验证：根据用户名和密码查询用户（后端 SHA-256 哈希）"""
         conn = self.getConn()
         try:
             with conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT username, real_name, password, role FROM users WHERE username = %s AND password = %s",
-                    (username, password)
+                    (username, _sha256(password))
                 )
                 row = cursor.fetchone()
                 if row:
