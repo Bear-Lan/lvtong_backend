@@ -1,0 +1,7 @@
+Flask
+flask-cors
+flask-socketio
+PyJWT
+psycopg2-binary
+gunicorn
+gevent

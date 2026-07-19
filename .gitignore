@@ -1,0 +1,23 @@
+# 虚拟环境
+venv/
+myenv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# 环境变量
+.env
+
+# 系统文件
+.DS_Store
+Thumbs.db
