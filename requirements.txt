@@ -4,5 +4,7 @@ flask-socketio
 PyJWT
 psycopg2-binary
 requests
+opencv-python
+numpy
 gunicorn
 gevent
