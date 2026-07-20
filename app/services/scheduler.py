@@ -12,8 +12,8 @@
 """
 import json
 import threading
-from scheduler.threshold import DistanceThreshold, PlcStateRule, DeviceActionConfig
-from ws.ws_handler import push_radar_distance, push_detection_step, push_lane_occupied
+from app.services.threshold import DistanceThreshold, PlcStateRule, DeviceActionConfig
+from ws.handler import push_radar_distance, push_detection_step, push_lane_occupied
 
 
 class DistanceScheduler:
@@ -191,7 +191,7 @@ class DistanceScheduler:
         rules_data = config.get('plcStateRules', [])
         self._plc_state_rules = []
         for item in rules_data:
-            from scheduler.threshold import PlcStateCondition
+            from app.services.threshold import PlcStateCondition
             rule = PlcStateRule(
                 rule_id=item.get('ruleId', ''),
                 description=item.get('description', ''),

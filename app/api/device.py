@@ -5,7 +5,7 @@
 """
 from flask import Blueprint, request, jsonify
 
-from dbm.dbdevice import DBDevice
+from app.db.device import DBDevice
 from util.auth import login_required
 
 device_api = Blueprint('device', __name__, url_prefix='/api/device')

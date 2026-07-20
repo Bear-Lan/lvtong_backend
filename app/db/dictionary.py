@@ -3,7 +3,7 @@
 包含：货车类型、货箱类型、收费站信息、不合格类型。
 参考 Qt TruckTypeDatabase / ContainerTypeDatabase 实现。
 """
-from dbm.dbpool import DBPool
+from app.db.pool import DBPool
 
 
 class DBDictionary(DBPool):

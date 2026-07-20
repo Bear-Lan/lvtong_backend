@@ -3,7 +3,7 @@
 参考 Qt DeviceDatabase 实现。
 """
 import json
-from dbm.dbpool import DBPool
+from app.db.pool import DBPool
 
 
 class DBDevice(DBPool):

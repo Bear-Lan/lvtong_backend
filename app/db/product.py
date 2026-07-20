@@ -2,7 +2,7 @@
 
 参考 Qt ProductDatabase 实现。
 """
-from dbm.dbpool import DBPool
+from app.db.pool import DBPool
 
 
 class DBProduct(DBPool):

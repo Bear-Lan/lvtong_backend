@@ -126,7 +126,7 @@ def accept_booking():
 
     # 通过 WebSocket 推送受理状态
     try:
-        from ws.ws_handler import socketio
+        from ws.handler import socketio
         socketio.emit('message', {
             'type': 'booking_accepted',
             'timestamp': int(time.time() * 1000),
@@ -172,7 +172,7 @@ def reject_booking():
     # 3. LED: m_led->setStep1()
 
     try:
-        from ws.ws_handler import socketio
+        from ws.handler import socketio
         socketio.emit('message', {
             'type': 'booking_rejected',
             'timestamp': int(time.time() * 1000),
@@ -200,7 +200,7 @@ def urgent_stop():
     # m_plc->executeAction("setPLC", {urgentstop: true})
 
     try:
-        from ws.ws_handler import socketio
+        from ws.handler import socketio
         socketio.emit('message', {
             'type': 'urgent_stop',
             'timestamp': int(time.time() * 1000),

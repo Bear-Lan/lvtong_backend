@@ -15,8 +15,8 @@
 当前架构下设备通过 HTTP 中间层通信，URL 从 config/app.json 读取。
 """
 import threading
-from dbm.dbdevice import DBDevice
-from ws.ws_handler import push_device_status
+from app.db.device import DBDevice
+from ws.handler import push_device_status
 
 
 class DeviceManager:

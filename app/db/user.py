@@ -1,6 +1,6 @@
 """用户数据访问层"""
 import hashlib
-from dbm.dbpool import DBPool
+from app.db.pool import DBPool
 
 
 def _sha256(s: str) -> str:

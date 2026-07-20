@@ -5,8 +5,8 @@
 """
 from flask import Blueprint, request, jsonify
 
-from dbm.dbvehicle import DBVehicle
-from dbm.dblog import DBLog
+from app.db.vehicle import DBVehicle
+from app.db.log import DBLog
 from util.auth import login_required
 
 history_api = Blueprint('history', __name__, url_prefix='/api/history')

@@ -6,8 +6,8 @@
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 
-from dbm.dbvehicle import DBVehicle
-from dbm.dbproduct import DBProduct
+from app.db.vehicle import DBVehicle
+from app.db.product import DBProduct
 from util.auth import login_required
 
 inspection_api = Blueprint('inspection', __name__, url_prefix='/api/inspection')
