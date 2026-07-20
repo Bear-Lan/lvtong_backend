@@ -114,10 +114,22 @@ def push_device_status(device_id: str, status_code: int, status_text: str = ''):
 
 def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False,
                     greatlight: bool = False, lightgate200: bool = False,
-                    lightgate160: bool = False):
+                    lightgate160: bool = False,
+                    # 对齐 Qt udpradar.cpp 位掩码解析 (0x0100~0x4000)
+                    urgentstop: bool = False,
+                    booking: bool = False,
+                    groundsensor: bool = False,
+                    lightscreen: bool = False,
+                    lightsource200: bool = False,
+                    lightsource160: bool = False):
     """推送 PLC 状态变化
 
-    Qt 参考: PLCModbus 各通道状态
+    Qt 参考: UDPRadar::processPLCData() → LvTongPro::onPLCStatusUpdate()
+    字段对齐 Qt udpradar.cpp 位掩码:
+      0x0100 urgentStopStatus  0x0200 bookingStatus
+      0x0800 groundSensorStatus  0x1000 lightScreenStatus
+      0x2000 lightGate200Status  0x4000 lightGate160Status
+      0x0002 lightSource200Status  0x0004 lightSource160Status
     """
     socketio.emit('message', {
         'type': 'plc_status',
@@ -127,6 +139,12 @@ def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False
             'greatlight': greatlight,
             'lightgate200': lightgate200,
             'lightgate160': lightgate160,
+            'urgentstop': urgentstop,
+            'booking': booking,
+            'groundsensor': groundsensor,
+            'lightscreen': lightscreen,
+            'lightsource200': lightsource200,
+            'lightsource160': lightsource160,
         },
     })
 

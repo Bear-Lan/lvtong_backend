@@ -90,6 +90,32 @@ if __name__ == '__main__':
     # 3. 注入 WebSocket 推送（设备状态变化时通知前端）
     mgr.set_ws_push(push_device_status)
 
+    # 3.5 注入 PLC 状态推送（对齐 Qt UDPRadar::actionCompleted("plc_status") → LvTongPro::onPLCStatusUpdate）
+    from ws.handler import push_plc_status
+
+    def _on_plc_status(parsed: dict):
+        """RadarReader 收到 $NTRMC,PLC,<hex> 包时的回调
+        对齐 Qt LvTongPro::onPLCStatusUpdate() 的字段映射
+        """
+        push_plc_status(
+            red=parsed.get('redLightCmd', False),
+            yellow=parsed.get('yellowLightCmd', False),
+            green=parsed.get('greenLightCmd', False),
+            greatlight=parsed.get('createLightCmd', False),
+            lightgate200=parsed.get('lightGate200Status', False),
+            lightgate160=parsed.get('lightGate160Status', False),
+            urgentstop=parsed.get('urgentStopStatus', False),
+            booking=parsed.get('bookingStatus', False),
+            groundsensor=parsed.get('groundSensorStatus', False),
+            lightscreen=parsed.get('lightScreenStatus', False),
+            lightsource200=parsed.get('lightSource200Status', False),
+            lightsource160=parsed.get('lightSource160Status', False),
+        )
+
+    for radar in mgr.get_devices_by_type('udpradar'):
+        radar.set_plc_status_callback(_on_plc_status)
+        print(f'[设备]   {radar.device_id}: PLC 状态推送已注入')
+
     # 4. 启动 20 秒定时健康检查 + 自动重连
     mgr.start_health_check()
     print('[设备] 健康检查已启动 (间隔 20s)')

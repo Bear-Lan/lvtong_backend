@@ -7,6 +7,8 @@ import time
 from flask import Blueprint, request, jsonify
 
 from util.auth import login_required
+from app.services.device_manager import DeviceManager
+from ws.handler import socketio
 
 booking_api = Blueprint('booking', __name__, url_prefix='/api/booking')
 
@@ -191,23 +193,39 @@ def urgent_stop():
 
     POST /api/booking/urgent-stop
 
-    参考 Qt LvTongPro::onStopClicked()
+    对齐 Qt LvTongPro::onStopClicked()
     """
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 执行急停')
 
-    # TODO: 对接实际的设备控制
-    # m_plc->executeAction("setPLC", {urgentstop: true})
+    # 对齐 Qt: m_plc->executeAction("setPLC", {urgentstop: true})
+    controllers = DeviceManager().get_devices_by_type('controller')
+    if not controllers:
+        return fail(503, '未配置 PLC 控制器，无法执行急停')
 
-    try:
-        from ws.handler import socketio
-        socketio.emit('message', {
-            'type': 'urgent_stop',
-            'timestamp': int(time.time() * 1000),
-            'data': {'operator': user['real_name']},
-        })
-    except Exception as e:
-        print(f'[WS] 推送失败: {e}')
+    success = False
+    errors = []
+    for ctrl in controllers:
+        try:
+            if ctrl.execute_action('setPLC', {'urgentstop': True}):
+                success = True
+            else:
+                errors.append(f'{ctrl.device_id}: {ctrl.last_error}')
+        except Exception as e:
+            errors.append(f'{ctrl.device_id}: {str(e)}')
+
+    if not success:
+        return fail(500, f'PLC 急停控制失败: {"; ".join(errors)}')
+
+    # 主动推送 PLC 状态 → 前端弹窗 "设备急停！ 是否复位？"
+    socketio.emit('message', {
+        'type': 'plc_status',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'urgentstop': True,
+            'operator': user['real_name'],
+        },
+    })
 
     return ok(message='急停指令已发送')
 
@@ -219,13 +237,39 @@ def stop_reset():
 
     POST /api/booking/stop-reset
 
-    参考 Qt LvTongPro::onPLCStopChanged()
+    对齐 Qt LvTongPro::onPLCStopChanged()
     """
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 急停复位')
 
-    # TODO: 对接实际的设备控制
-    # m_plc->executeAction("setPLC", {urgentstop: false})
+    # 对齐 Qt: m_plc->executeAction("setPLC", {urgentstop: false})
+    controllers = DeviceManager().get_devices_by_type('controller')
+    if not controllers:
+        return fail(503, '未配置 PLC 控制器，无法执行复位')
+
+    success = False
+    errors = []
+    for ctrl in controllers:
+        try:
+            if ctrl.execute_action('setPLC', {'urgentstop': False}):
+                success = True
+            else:
+                errors.append(f'{ctrl.device_id}: {ctrl.last_error}')
+        except Exception as e:
+            errors.append(f'{ctrl.device_id}: {str(e)}')
+
+    if not success:
+        return fail(500, f'PLC 复位失败: {"; ".join(errors)}')
+
+    # 主动推送 PLC 状态 → 前端解除急停状态
+    socketio.emit('message', {
+        'type': 'plc_status',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'urgentstop': False,
+            'operator': user['real_name'],
+        },
+    })
 
     return ok(message='急停复位已执行')
 
