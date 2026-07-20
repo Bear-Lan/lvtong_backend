@@ -1,85 +1,80 @@
 """雷达数据读取器
 
-UDP 雷达距离数据读取，同时解析 X 光温度数据。
-参考 Qt UDPRadar (device/udpradar.h)。
-
-UDP 数据包格式（来自 Qt 实现）：
-- 距离数据：从 UDP 端口监听，JSON 格式 { distance: float, mode: int }
-- X 光温度：通过 PLC 相关 UDP 端口获取
+对齐 Qt UDPRadar (device/udpradar.h/.cpp)
+UDP 数据包: JSON { distance: float, mode: int }
 """
 import socket
 import json
 import threading
+from app.services.device_base import DeviceBase, DeviceStatus
 
 
-class RadarReader:
-    """UDP 雷达数据读取器"""
+class RadarReader(DeviceBase):
 
-    def __init__(self, host: str = '0.0.0.0', port: int = 6000):
-        self.host = host
-        self.port = port
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self._distance = 0.0
         self._mode = 1
         self._running = False
-        self._thread: threading.Thread | None = None
-        self._callback = None
+        self._thread = None
+        self._distance_callback = None
 
     @property
     def distance(self) -> float:
         return self._distance
 
-    def set_callback(self, callback):
-        """设置距离更新回调 callback(distance, mode)"""
-        self._callback = callback
+    def set_distance_callback(self, cb):
+        self._distance_callback = cb
 
-    def start(self):
-        """启动 UDP 监听"""
+    def initialize(self) -> bool:
+        udp_port = self.config.get('port', self.port)
+        if not udp_port:
+            self.status = DeviceStatus.Online
+            return True
+        self._start_listen(udp_port)
+        self.status = DeviceStatus.Online
+        return True
+
+    def health_check(self) -> bool:
+        return self._running
+
+    def reconnect(self) -> bool:
+        if not self._running:
+            return self.initialize()
+        return True
+
+    def _start_listen(self, port: int):
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._listen, daemon=True)
+        self._thread = threading.Thread(target=self._listen, args=(port,), daemon=True)
         self._thread.start()
-        print(f'[RADAR] UDP 监听启动 {self.host}:{self.port}')
 
     def stop(self):
-        """停止 UDP 监听"""
         self._running = False
 
-    def _listen(self):
-        """UDP 监听线程"""
+    def _listen(self, port: int):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(1.0)
         try:
-            sock.bind((self.host, self.port))
-        except OSError as e:
-            print(f'[RADAR] 绑定失败: {e}')
+            sock.bind(('0.0.0.0', port))
+        except OSError:
+            self._running = False
             sock.close()
             return
-
         while self._running:
             try:
-                data, addr = sock.recvfrom(4096)
-                if data:
-                    self._parse_packet(data)
+                data, _ = sock.recvfrom(4096)
+                if data and self._distance_callback:
+                    payload = json.loads(data.decode('utf-8'))
+                    self._distance = float(payload.get('distance', 0))
+                    self._mode = int(payload.get('mode', 1))
+                    self._distance_callback(self._distance, self._mode)
             except socket.timeout:
                 continue
-            except Exception as e:
-                print(f'[RADAR] 接收异常: {e}')
+            except Exception:
                 break
-
         sock.close()
 
-    def _parse_packet(self, data: bytes):
-        """解析 UDP 数据包"""
-        try:
-            payload = json.loads(data.decode('utf-8'))
-            distance = float(payload.get('distance', 0))
-            mode = int(payload.get('mode', 1))
-
-            self._distance = distance
-            self._mode = mode
-
-            if self._callback:
-                self._callback(distance, mode)
-        except (json.JSONDecodeError, ValueError) as e:
-            print(f'[RADAR] 数据解析失败: {e}')
+    def shutdown(self):
+        self.stop()

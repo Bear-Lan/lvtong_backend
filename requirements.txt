@@ -6,5 +6,6 @@ psycopg2-binary
 requests
 opencv-python
 numpy
+pyserial
 gunicorn
 gevent

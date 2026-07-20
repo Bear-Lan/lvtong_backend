@@ -1,11 +1,11 @@
 """设备管理 API 蓝图
 
 提供设备状态查询、设备控制、重连等接口。
-参考 Qt DeviceManager。
+对齐 Qt DeviceManager。
 """
 from flask import Blueprint, request, jsonify
 
-from app.db.device import DBDevice
+from app.services.device_manager import DeviceManager
 from util.auth import login_required
 
 device_api = Blueprint('device', __name__, url_prefix='/api/device')
@@ -19,38 +19,22 @@ def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
 
 
+# ---- 状态查询 ----
+
 @device_api.route('/status', methods=['GET'])
 @login_required
 def all_device_status():
-    """获取所有设备状态
+    """获取所有设备实时状态
 
-    参考 Qt DeviceManager::getAllDeviceStatus()
+    对齐 Qt DeviceManager::getAllDeviceStatus()
     """
-    db = DBDevice()
-    devices = db.getAllDevices()
-
-    # 格式化设备状态信息
-    status_list = []
-    for d in devices:
-        status_text = {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(
-            d.get('status', 0), '未知'
-        )
-        status_list.append({
-            'deviceId': d['device_id'],
-            'deviceName': d['device_name'],
-            'deviceType': d['device_type'],
-            'status': status_text,
-            'statusCode': d['status'],
-            'connected': d['status'] == 1,
-            'ipAddress': d.get('ip_address', ''),
-        })
-
-    online_count = sum(1 for s in status_list if s['connected'])
+    mgr = DeviceManager()
+    devices = mgr.get_all_status()
     return ok({
-        'devices': status_list,
-        'total': len(status_list),
-        'onlineCount': online_count,
-        'offlineCount': len(status_list) - online_count,
+        'devices': devices,
+        'total': len(devices),
+        'onlineCount': mgr.online_count(),
+        'offlineCount': mgr.offline_count(),
     })
 
 
@@ -58,23 +42,22 @@ def all_device_status():
 @login_required
 def device_status(device_id):
     """获取单个设备状态"""
-    db = DBDevice()
-    device = db.getDevice(device_id)
-    if not device:
+    mgr = DeviceManager()
+    ctrl = mgr.get_device(device_id)
+    if not ctrl:
         return fail(404, '设备不存在')
-
-    status_text = {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(
-        device.get('status', 0), '未知'
-    )
     return ok({
-        'deviceId': device['device_id'],
-        'deviceName': device['device_name'],
-        'deviceType': device['device_type'],
-        'status': status_text,
-        'statusCode': device['status'],
-        'connected': device['status'] == 1,
+        'deviceId': ctrl.device_id,
+        'deviceName': ctrl.device_name,
+        'deviceType': ctrl.device_type,
+        'status': {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(int(ctrl.status), '未知'),
+        'statusCode': int(ctrl.status),
+        'connected': ctrl.is_online,
+        'lastError': ctrl.last_error,
     })
 
+
+# ---- 设备控制 ----
 
 @device_api.route('/<device_id>/control', methods=['POST'])
 @login_required
@@ -82,31 +65,44 @@ def device_control(device_id):
     """设备控制
 
     POST /api/device/<device_id>/control
-    Body: { action: "setPLC"|"openGate"|"closeGate"|..., params: {...} }
+    Body: { action: "setPLC"|"open"|"close"|"set_step1", params: {...} }
 
-    参考 Qt DeviceManager::executeDeviceAction() / PLCModbus::executeAction()
+    对齐 Qt DeviceManager::executeDeviceAction()
     """
     body = request.get_json(silent=True) or {}
     action = body.get('action', '')
     params = body.get('params', {})
 
-    # 设备控制通过中间层转发到硬件设备服务
-    # TODO: 对接实际的硬件中间层
-    print(f'[DEVICE] 控制设备 {device_id}, action={action}, params={params}')
+    mgr = DeviceManager()
+    ctrl = mgr.get_device(device_id)
+    if not ctrl:
+        return fail(404, '设备不存在')
 
-    return ok(message=f'设备 {device_id} 控制指令已发送: {action}')
+    if ctrl.status != 1:
+        return fail(503, f'设备 {device_id} 当前离线，无法控制')
 
+    success = ctrl.execute_action(action, params)
+    if success:
+        return ok(message=f'设备 {device_id} 执行 {action} 成功')
+    else:
+        return fail(500, f'执行失败: {ctrl.last_error}')
+
+
+# ---- 重连 ----
 
 @device_api.route('/reconnect', methods=['POST'])
 @login_required
 def reconnect_devices():
-    """设备重连
+    """手动设备重连
 
-    参考 Qt DeviceManager::attemptReconnect()
+    对齐 Qt DeviceManager::attemptReconnect()（onLinkClicked 触发）
     """
-    # TODO: 对接实际的设备重连逻辑
-    print('[DEVICE] 执行设备重连')
-    return ok(message='设备重连请求已处理')
+    mgr = DeviceManager()
+    reconnected = mgr.manual_reconnect()
+    return ok({
+        'reconnected': reconnected,
+        'count': len(reconnected),
+    }, f'已重连 {len(reconnected)} 个设备')
 
 
 @device_api.route('/health', methods=['GET'])
@@ -114,16 +110,16 @@ def reconnect_devices():
 def health_check():
     """设备健康检查
 
-    参考 Qt DeviceManager::HealthCheck()
+    对齐 Qt DeviceManager::HealthCheck()
     """
-    db = DBDevice()
-    devices = db.getAllDevices()
-    offline = [d for d in devices if d.get('status') != 1]
+    mgr = DeviceManager()
+    healthy = mgr.health_check_all()
+    devices = mgr.get_all_status()
+    offline = [d for d in devices if not d['connected']]
 
-    healthy = len(offline) == 0
     return ok({
         'healthy': healthy,
         'total': len(devices),
         'offlineCount': len(offline),
-        'offlineDevices': [d['device_name'] for d in offline],
+        'offlineDevices': [d['deviceName'] for d in offline],
     })

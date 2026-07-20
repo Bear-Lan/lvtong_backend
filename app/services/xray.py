@@ -1,77 +1,56 @@
 """X 光机控制器
 
-通过 HTTP 控制 X 光机（200kV / 160kV）。
-参考 Qt 中的 HttpImageFetcher / startCaptureStitchImg()。
+对齐 Qt X 光机 HTTP 接口
 """
 import requests
+from app.services.device_base import DeviceBase, DeviceStatus
 
 
-class XRayController:
-    """X 光机 HTTP 接口封装
+class XRayController(DeviceBase):
 
-    主要接口：
-    - start URL: 启动探测（带车长参数）
-    - image URL: 持续拉取图像
-    - stop URL: 停止探测
-    - stitch URL: 获取 200+160 拼接图
-    """
+    def initialize(self) -> bool:
+        ok = self.health_check()
+        self.status = DeviceStatus.Online if ok else DeviceStatus.Offline
+        if not ok:
+            self._last_error = 'X光机无法连接'
+        return ok
 
-    def __init__(self):
-        self._base_urls: dict[str, str] = {}
-
-    def configure(self, urls: dict):
-        """配置各通道 URL
-
-        urls = {
-            'start_transparent': '',  # 200kV 启动
-            'start_yrtransparent': '', # 160kV 启动
-            'image_transparent': '',  # 200kV 图像
-            'image_yrtransparent': '', # 160kV 图像
-            'stitch_url': '',          # 拼接图像
-        }
-        """
-        self._base_urls.update(urls)
-
-    def start_scan(self, channel: str, car_length: float, scan_id: str = '') -> bool:
-        """启动 X 光扫描
-
-        channel: "200" 或 "160"
-        参考 Qt 中 m_transparentImageFetcher / m_yrtransparentImageFetcher 启动逻辑
-        """
-        if channel == '200':
-            key = 'start_transparent'
-        elif channel == '160':
-            key = 'start_yrtransparent'
-        else:
+    def health_check(self) -> bool:
+        url = self.config.get('health_url', '')
+        if not url:
+            return True
+        try:
+            resp = requests.get(url, timeout=5)
+            return resp.status_code == 200
+        except requests.RequestException:
             return False
 
-        url = self._base_urls.get(key, '')
-        if not url:
-            print(f'[XRAY] 模拟 startScan {channel}kV, carLength={car_length}')
-            return True
+    def reconnect(self) -> bool:
+        return self.initialize()
 
+    def execute_action(self, action: str, params: dict | None = None) -> bool:
+        if action == 'start_scan':
+            return self.start_scan(
+                params.get('channel', '200'),
+                params.get('car_length', 5.0),
+                params.get('scan_id', '')
+            )
+        return False
+
+    def start_scan(self, channel: str, car_length: float, scan_id: str = '') -> bool:
+        key = f'start_{channel}_url'
+        url = self.config.get(key, '')
+        if not url:
+            return True
         full_url = f'{url}{car_length}'
         if scan_id:
             full_url += f'&id={scan_id}'
-
         try:
             resp = requests.get(full_url, timeout=10)
             return resp.status_code == 200
         except requests.RequestException as e:
-            print(f'[XRAY] startScan 失败: {e}')
+            self._last_error = str(e)
             return False
 
     def get_image_url(self, channel: str) -> str:
-        """获取 X 光图像拉取 URL
-
-        前端可直接用此 URL 轮询图像。
-        """
-        if channel == '200':
-            return self._base_urls.get('image_transparent', '')
-        elif channel == '160':
-            return self._base_urls.get('image_yrtransparent', '')
-        return ''
-
-    def get_stitch_url(self) -> str:
-        """获取拼接图像 URL"""
-        return self._base_urls.get('stitch_url', '')
+        return self.config.get(f'image_{channel}_url', '')

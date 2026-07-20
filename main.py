@@ -70,4 +70,28 @@ if __name__ == '__main__':
     print(f'  history    GET /api/history/list|export|logs')
     print(f'  ws         /ws (WebSocket)')
 
+    # ---- 初始化设备管理器（对齐 Qt 启动流程） ----
+    print('[设备] 正在初始化设备管理器...')
+    from app.services.device_manager import DeviceManager
+    from ws.handler import push_device_status
+
+    mgr = DeviceManager()
+
+    # 1. 从数据库加载设备，创建控制器实例
+    loaded = mgr.load_from_db()
+    print(f'[设备] 加载了 {len(loaded)} 台设备')
+
+    # 2. 逐个初始化设备（ping 硬件中间层）
+    init_results = mgr.initialize_all()
+    for dev_id, ok in init_results.items():
+        status = '在线' if ok else '离线'
+        print(f'[设备]   {dev_id}: {status}')
+
+    # 3. 注入 WebSocket 推送（设备状态变化时通知前端）
+    mgr.set_ws_push(push_device_status)
+
+    # 4. 启动 20 秒定时健康检查 + 自动重连
+    mgr.start_health_check()
+    print('[设备] 健康检查已启动 (间隔 20s)')
+
     socketio.run(flask_app, host=HOST, port=PORT, debug=DEBUG, allow_unsafe_werkzeug=True)

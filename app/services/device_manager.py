@@ -1,110 +1,299 @@
 """设备管理器
 
-统一管理所有硬件设备的状态与操作，与 Qt DeviceManager 架构保持一致。
+对齐 Qt DeviceManager (device/devicemanager.h/.cpp)
 
-设备类型对应关系：
-- Camera     → 海康威视摄像头
-- GPCamera   → 高拍仪
-- Gate       → 串口栏杆机
-- Controller → PLC 控制器 (Modbus over HTTP)
-- UDPRadar   → 雷达测距 (UDP)
-- Led        → LED 显示屏 (串口)
-- TTSVoice   → 语音合成 (TCP)
-- CodeReader → 扫码枪
-
-当前架构下设备通过 HTTP 中间层通信，URL 从 config/app.json 读取。
+核心原则：设备状态由实时连通性测试决定，不从数据库读取，也不写回。
+数据库只存元数据（名称、IP、URL），状态纯内存维护。
 """
 import threading
 from app.db.device import DBDevice
-from ws.handler import push_device_status
+from app.services.device_base import DeviceBase, DeviceStatus
+from app.services.plc import PLCController
+from app.services.gate import GateController
+from app.services.led import LedController
+from app.services.radar import RadarReader
+from app.services.xray import XRayController
+
+_DEVICE_CLASS_MAP = {
+    'controller': PLCController,
+    'gate': GateController,
+    'led': LedController,
+    'udpradar': RadarReader,
+    'xray': XRayController,
+}
 
 
 class DeviceManager:
-    """设备管理器单例"""
+    """设备管理器（单例）"""
 
     _instance = None
     _lock = threading.Lock()
+
+    HEALTH_CHECK_INTERVAL = 20
+    RECONNECT_INTERVAL = 5
 
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+                    obj = super().__new__(cls)
+                    obj._initialized = False
+                    cls._instance = obj
         return cls._instance
 
     def __init__(self):
         if self._initialized:
             return
         self._initialized = True
-        self._devices: dict[str, dict] = {}
 
-    # ---- 设备注册 ----
+        self._devices: dict[str, DeviceBase] = {}       # 有驱动的控制器实例
+        self._db_devices: list[dict] = []                # 所有数据库设备记录（含无驱动的）
+        self._db = DBDevice()
 
-    def load_devices_from_db(self):
-        """从数据库加载设备列表"""
-        db = DBDevice()
-        devices = db.getAllDevices()
-        for d in devices:
-            self._devices[d['device_id']] = d
+        self._health_timer: threading.Timer | None = None
+        self._reconnect_timer: threading.Timer | None = None
+        self._running = False
 
-    def get_device(self, device_id: str) -> dict | None:
-        return self._devices.get(device_id)
+        self._ws_push_device_status = None
 
-    def get_devices_by_type(self, device_type: str) -> list[dict]:
-        return [d for d in self._devices.values()
-                if d.get('device_type') == device_type]
+    # ========== 加载 & 初始化 ==========
 
-    def get_all_devices(self) -> list[dict]:
-        return list(self._devices.values())
+    def load_from_db(self) -> list[dict]:
+        """从数据库加载设备元数据（不读 status 列），创建控制器实例
 
-    # ---- 状态管理 ----
-
-    def get_all_device_status(self) -> list[dict]:
+        DB 职责：device_id, device_name, device_type, ip_address, port, config(URL等)
+        状态职责：运行时通过 ping 确定
+        """
+        db_devices = self._db.getAllDevices()
+        self._db_devices = db_devices
         result = []
-        for d in self._devices.values():
-            status_text = {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(
-                d.get('status', 0), '未知')
+
+        for d in db_devices:
+            device_id = d['device_id']
+            device_type = (d.get('device_type') or '').lower()
+
+            cls = _DEVICE_CLASS_MAP.get(device_type)
+            if cls is None:
+                result.append({
+                    'device_id': device_id,
+                    'device_name': d['device_name'],
+                    'device_type': device_type,
+                    'initialized': False,
+                    'reason': f'暂无 {device_type} 驱动',
+                })
+                continue
+
+            ctrl = cls(
+                device_id=device_id,
+                device_name=d.get('device_name', ''),
+                device_type=device_type,
+                ip_address=d.get('ip_address', ''),
+                port=d.get('port', 0),
+                username=d.get('username', ''),
+                password=d.get('password', ''),
+                config=d.get('config', {}) if isinstance(d.get('config'), dict) else {},
+            )
+            ctrl.set_status_changed_callback(self._on_device_status_changed)
+
+            self._devices[device_id] = ctrl
             result.append({
-                'deviceId': d['device_id'],
-                'deviceName': d['device_name'],
-                'deviceType': d['device_type'],
-                'status': status_text,
-                'connected': d.get('status') == 1,
+                'device_id': device_id,
+                'device_name': d['device_name'],
+                'device_type': device_type,
+                'initialized': False,
             })
+
         return result
 
-    def update_device_status(self, device_id: str, status_code: int):
-        """更新设备状态并推送通知"""
-        db = DBDevice()
-        db.updateDeviceStatus(device_id, status_code)
-        if device_id in self._devices:
-            self._devices[device_id]['status'] = status_code
-        push_device_status(device_id, status_code)
+    def initialize_all(self) -> dict[str, bool]:
+        """逐个初始化设备 — 真实 ping 硬件，结果即状态
 
-    def online_device_count(self) -> int:
-        return sum(1 for d in self._devices.values() if d.get('status') == 1)
+        状态只在内存中，不写 DB。
+        """
+        result = {}
+        for device_id, ctrl in self._devices.items():
+            try:
+                ok = ctrl.initialize()
+                result[device_id] = ok
+            except Exception as e:
+                result[device_id] = False
+                ctrl._last_error = str(e)
+                ctrl.status = DeviceStatus.Error
+        return result
 
-    def offline_device_count(self) -> int:
-        return sum(1 for d in self._devices.values() if d.get('status') == 0)
+    # ========== 定时健康检查（对齐 Qt 20s） ==========
 
-    # ---- 健康检查 ----
+    def start_health_check(self):
+        if self._running:
+            return
+        self._running = True
+        self._schedule_health_check()
 
-    def health_check(self) -> bool:
-        """健康检查：所有关键设备在线"""
-        for d in self._devices.values():
-            if d.get('status') != 1:
+    def stop_health_check(self):
+        self._running = False
+        if self._health_timer:
+            self._health_timer.cancel()
+        if self._reconnect_timer:
+            self._reconnect_timer.cancel()
+
+    def _schedule_health_check(self):
+        if not self._running:
+            return
+        self._health_timer = threading.Timer(
+            self.HEALTH_CHECK_INTERVAL, self._perform_health_check
+        )
+        self._health_timer.daemon = True
+        self._health_timer.start()
+
+    def _perform_health_check(self):
+        has_offline = False
+        for ctrl in list(self._devices.values()):
+            try:
+                ok = ctrl.health_check()
+                if not ok and ctrl.status == DeviceStatus.Online:
+                    ctrl.status = DeviceStatus.Offline
+                elif ok and ctrl.status == DeviceStatus.Offline:
+                    ctrl.status = DeviceStatus.Online
+                if ctrl.status in (DeviceStatus.Offline, DeviceStatus.Error):
+                    has_offline = True
+            except Exception:
+                ctrl.status = DeviceStatus.Error
+                has_offline = True
+
+        if has_offline:
+            self._start_reconnect_timer()
+        else:
+            self._stop_reconnect_timer()
+
+        self._schedule_health_check()
+
+    # ========== 自动重连（对齐 Qt 5s） ==========
+
+    def _start_reconnect_timer(self):
+        if self._reconnect_timer is not None:
+            return
+        self._schedule_reconnect()
+
+    def _stop_reconnect_timer(self):
+        if self._reconnect_timer:
+            self._reconnect_timer.cancel()
+            self._reconnect_timer = None
+
+    def _schedule_reconnect(self):
+        if not self._running:
+            return
+        self._reconnect_timer = threading.Timer(
+            self.RECONNECT_INTERVAL, self._attempt_reconnect
+        )
+        self._reconnect_timer.daemon = True
+        self._reconnect_timer.start()
+
+    def _attempt_reconnect(self):
+        self._reconnect_timer = None
+        for ctrl in list(self._devices.values()):
+            if ctrl.status in (DeviceStatus.Offline, DeviceStatus.Error):
+                try:
+                    if ctrl.reconnect():
+                        ctrl.status = DeviceStatus.Online
+                except Exception:
+                    pass
+
+        still_offline = any(
+            c.status in (DeviceStatus.Offline, DeviceStatus.Error)
+            for c in self._devices.values()
+        )
+        if still_offline:
+            self._schedule_reconnect()
+
+    # ========== 手动重连 ==========
+
+    def manual_reconnect(self) -> list[str]:
+        reconnected = []
+        for device_id, ctrl in self._devices.items():
+            if ctrl.status in (DeviceStatus.Offline, DeviceStatus.Error):
+                try:
+                    if ctrl.reconnect():
+                        ctrl.status = DeviceStatus.Online
+                        reconnected.append(device_id)
+                except Exception:
+                    pass
+        return reconnected
+
+    # ========== 状态回调（纯内存 + WS 推送，不写 DB） ==========
+
+    def _on_device_status_changed(self, device_id: str, _old: int, new: int):
+        """设备状态变化时推送 WebSocket"""
+        if self._ws_push_device_status:
+            status_text = {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(new, '未知')
+            self._ws_push_device_status(device_id, new, status_text)
+
+    def set_ws_push(self, push_func):
+        self._ws_push_device_status = push_func
+
+    # ========== 状态查询 ==========
+
+    def get_device(self, device_id: str) -> DeviceBase | None:
+        return self._devices.get(device_id)
+
+    def get_devices_by_type(self, device_type: str) -> list[DeviceBase]:
+        return [c for c in self._devices.values()
+                if c.device_type == device_type.lower()]
+
+    def get_all_status(self) -> list[dict]:
+        """获取所有设备状态
+
+        有驱动的 → 从控制器实例获取实时状态
+        无驱动的 → 从 DB 记录展示「暂无驱动」
+        """
+        result = []
+        for d in self._db_devices:
+            device_id = d['device_id']
+            ctrl = self._devices.get(device_id)
+            if ctrl:
+                result.append({
+                    'deviceId': device_id,
+                    'deviceName': ctrl.device_name,
+                    'deviceType': ctrl.device_type,
+                    'status': {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(int(ctrl.status), '未知'),
+                    'statusCode': int(ctrl.status),
+                    'connected': ctrl.is_online,
+                    'lastError': ctrl.last_error,
+                })
+            else:
+                dt = d['device_type']
+                result.append({
+                    'deviceId': device_id,
+                    'deviceName': d['device_name'],
+                    'deviceType': dt,
+                    'status': '暂无驱动',
+                    'statusCode': -1,
+                    'connected': False,
+                    'lastError': f'暂无 {dt} 类型驱动',
+                })
+        return result
+
+    def online_count(self) -> int:
+        return sum(1 for c in self._devices.values() if c.is_online)
+
+    def offline_count(self) -> int:
+        return len(self._devices) - self.online_count()
+
+    def health_check_all(self) -> bool:
+        for ctrl in self._devices.values():
+            if not ctrl.is_online:
                 return False
         return True
 
-    def is_gate_device_offline(self) -> bool:
-        """检查主栏杆机是否离线"""
-        gates = self.get_devices_by_type('Gate')
-        return any(g.get('status') != 1 for g in gates if '001' in g.get('device_id', ''))
+    def is_gate_offline(self) -> bool:
+        for device_id, ctrl in self._devices.items():
+            if device_id == 'gate_001' and not ctrl.is_online:
+                return True
+        return False
 
-    def attempt_reconnect(self):
-        """尝试重连所有离线设备"""
-        for device_id, d in self._devices.items():
-            if d.get('status') != 1:
-                # TODO: 通过 HTTP 中间层触发设备重连
-                print(f'[DEVICE] 尝试重连设备: {device_id}')
+    def shutdown(self):
+        self.stop_health_check()
+        for ctrl in self._devices.values():
+            try:
+                ctrl.shutdown()
+            except Exception:
+                pass
