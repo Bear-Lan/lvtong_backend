@@ -1,12 +1,20 @@
 """WebSocket 处理器
 
 使用 flask-socketio 提供 WebSocket 服务，路径为 /ws。
-前端使用的消息格式: { type: string, timestamp?: number, data?: T }
+
+实时推送消息类型：
+- radar_distance    雷达距离更新
+- device_status     设备状态变化
+- plc_status        PLC 状态变化
+- xray_status       X光机状态
+- booking           预约/来车通知
+- detection_step    检测流程步骤变化
+- image_ready       新图像可用通知
+- lane_occupied     车道占用告警
 """
 import time
 from flask_socketio import SocketIO, emit
 
-# SocketIO 实例（在 main.py 中初始化）
 socketio = SocketIO()
 
 
@@ -15,7 +23,7 @@ def init_socketio(app):
     socketio.init_app(
         app,
         cors_allowed_origins='*',
-        async_mode='threading',  # Windows 兼容；Linux 可改为 gevent/eventlet
+        async_mode='threading',
         ping_timeout=60,
         ping_interval=25,
     )
@@ -45,14 +53,12 @@ def register_handlers():
         msg_type = payload.get('type', '') if isinstance(payload, dict) else ''
 
         if msg_type == 'ping':
-            # 心跳响应
             emit('message', {
                 'type': 'pong',
                 'timestamp': int(time.time() * 1000),
                 'data': {'server_time': int(time.time() * 1000)},
             })
         elif msg_type == 'subscribe':
-            # 订阅消息类型
             topics = payload.get('data', {}).get('topics', [])
             print(f'[WS] 客户端订阅: {topics}')
             emit('message', {
@@ -72,3 +78,132 @@ def register_handlers():
             'data': {'server_time': int(time.time() * 1000)},
         })
 
+
+# ========== 服务端推送工具函数 ==========
+
+def push_radar_distance(distance: float, mode: int = 1):
+    """推送雷达距离更新（高频：~100ms）
+
+    Qt 参考: DistanceBasedScheduler::distanceChanged
+    """
+    socketio.emit('message', {
+        'type': 'radar_distance',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'distance': round(distance, 2),
+            'mode': mode,
+        },
+    })
+
+
+def push_device_status(device_id: str, status_code: int, status_text: str = ''):
+    """推送设备状态变化
+
+    Qt 参考: DeviceManager::deviceStatusChanged
+    """
+    socketio.emit('message', {
+        'type': 'device_status',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'deviceId': device_id,
+            'statusCode': status_code,
+            'status': status_text or {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(status_code, '未知'),
+        },
+    })
+
+
+def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False,
+                    greatlight: bool = False, lightgate200: bool = False,
+                    lightgate160: bool = False):
+    """推送 PLC 状态变化
+
+    Qt 参考: PLCModbus 各通道状态
+    """
+    socketio.emit('message', {
+        'type': 'plc_status',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'red': red, 'yellow': yellow, 'green': green,
+            'greatlight': greatlight,
+            'lightgate200': lightgate200,
+            'lightgate160': lightgate160,
+        },
+    })
+
+
+def push_xray_status(xray_type: str, kv: float, ma: float, temperature: float):
+    """推送 X 光机状态
+
+    xray_type: "200" 或 "160"
+    Qt 参考: UDPRadar 中 X 光温度数据解析
+    """
+    socketio.emit('message', {
+        'type': 'xray_status',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'type': xray_type,
+            'kv': kv,
+            'ma': ma,
+            'temperature': temperature,
+        },
+    })
+
+
+def push_detection_step(step: int, message: str = ''):
+    """推送检测流程步骤变化
+
+    Qt 参考: m_checkstep 的各个阶段
+    步骤: 0=空闲, 1=预约等待, 2=放行中, 3=检测中, 4=检测完成
+    """
+    socketio.emit('message', {
+        'type': 'detection_step',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'step': step,
+            'message': message,
+        },
+    })
+
+
+def push_image_ready(image_type: str, url: str):
+    """推送新图像可用通知
+
+    image_type: body/transparent/head/tail/top/goods/evidence/license
+    """
+    socketio.emit('message', {
+        'type': 'image_ready',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'imageType': image_type,
+            'url': url,
+        },
+    })
+
+
+def push_lane_occupied(occupied: bool):
+    """推送车道占用/异物告警
+
+    Qt 参考: LvTongPro::onRadarMonitor() 中 monitorFlag 判定
+    """
+    socketio.emit('message', {
+        'type': 'lane_occupied',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'occupied': occupied,
+        },
+    })
+
+
+def push_booking_event(action: str, **kwargs):
+    """推送预约事件
+
+    action: coming/accepted/rejected/book_button
+    """
+    socketio.emit('message', {
+        'type': 'booking',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'action': action,
+            **kwargs,
+        },
+    })

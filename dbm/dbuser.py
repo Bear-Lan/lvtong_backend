@@ -85,7 +85,7 @@ class DBUser(DBPool):
             with conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT username, real_name, password, role FROM users WHERE username = %s AND password = %s",
+                    "SELECT username, real_name, password, role, phone FROM users WHERE username = %s AND password = %s",
                     (username, _sha256(password))
                 )
                 row = cursor.fetchone()
@@ -95,6 +95,7 @@ class DBUser(DBPool):
                         "real_name": row[1],
                         "password": row[2],
                         "role": row[3],
+                        "phone": row[4] or '',
                     }
                 return None
         finally:
