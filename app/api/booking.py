@@ -230,6 +230,18 @@ def stop_reset():
     return ok(message='急停复位已执行')
 
 
+@booking_api.route('/stop-video', methods=['POST'])
+@login_required
+def stop_video_session():
+    """停止预约弹窗的视频对讲
+
+    对齐 Qt LvTongPro::stopSpCamera()
+    """
+    user = request.gc_user
+    print(f'[BOOKING] 用户 {user["username"]} 停止视频对讲')
+    return ok(message='视频会话已停止')
+
+
 @booking_api.route('/state', methods=['GET'])
 @login_required
 def booking_state():
