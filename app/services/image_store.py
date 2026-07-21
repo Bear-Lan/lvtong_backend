@@ -107,28 +107,8 @@ class ImageStore:
         if norm.startswith(root):
             rel = norm[len(root):].lstrip('/')
             return f'/api/images/{rel}'
-        # 不是存储根目录下的路径，返回原样
+        # 不是存储根目录下的路径，返回原样（采集时使用）
         return norm
-
-    @staticmethod
-    def api_path_to_absolute(api_path: str) -> str:
-        """API URL 路径 → Windows 绝对路径。
-
-        /api/images/2026/07/21/head/xxx.jpg
-        → D:/LvTongFiles/Images/captures/2026/07/21/head/xxx.jpg
-        """
-        prefix = '/api/images/'
-        if api_path.startswith(prefix):
-            rel = api_path[len(prefix):]
-            return os.path.normpath(os.path.join(IMAGE_STORAGE_ROOT, rel))
-        return api_path
-
-    @staticmethod
-    def is_stored_path(abs_path: str) -> bool:
-        """判断是否为存储根目录下的路径"""
-        norm = os.path.normpath(abs_path).replace('\\', '/')
-        root = os.path.normpath(IMAGE_STORAGE_ROOT).replace('\\', '/')
-        return norm.startswith(root)
 
 
 # 便捷函数
@@ -137,10 +117,11 @@ def save_image(data: bytes, category: str, prefix: str = '') -> str:
 
 
 def db_path_to_api(db_path: str) -> str:
-    """数据库存储路径 → API URL 路径"""
+    """数据库存储路径 → API URL
+
+    E:/code_product/gcms_src/captures/xxx.jpg → /api/image?path=E%3A%2F...%2Fxxx.jpg
+    """
     if not db_path:
         return ''
-    store = ImageStore()
-    if store.is_stored_path(db_path):
-        return store.absolute_to_api_path(db_path)
-    return db_path
+    from urllib.parse import quote
+    return f'/api/image?path={quote(db_path, safe="/\\:")}'

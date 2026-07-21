@@ -5,10 +5,10 @@
 - 后端: Flask REST API (端口 8080)
 - WebSocket: /ws
 """
-from flask import Flask, send_from_directory
+from flask import Flask, send_file, request, jsonify
 from flask_cors import CORS
 
-from config import HOST, PORT, DEBUG, CORS_ORIGINS, IMAGE_STORAGE_ROOT
+from config import HOST, PORT, DEBUG, CORS_ORIGINS
 
 # API 蓝图
 from app.api.auth import app_api
@@ -52,11 +52,16 @@ def create_app() -> Flask:
     app.register_blueprint(imaging_api)
     app.register_blueprint(history_api)
 
-    # 图像静态文件服务（对齐 Qt D:/LvTongFiles/Images/captures）
-    @app.route('/api/images/<path:filename>')
-    def serve_capture_image(filename):
-        """将 /api/images/... 映射到本地存储目录"""
-        return send_from_directory(IMAGE_STORAGE_ROOT, filename)
+    # 图像文件服务：接收任意本地绝对路径，返回文件内容
+    @app.route('/api/image')
+    def serve_image():
+        """GET /api/image?path=<磁盘绝对路径>"""
+        import os
+        from urllib.parse import unquote
+        path = unquote(request.args.get('path', ''))
+        if not path or not os.path.isfile(path):
+            return jsonify({'code': 404, 'message': '文件不存在', 'data': None}), 404
+        return send_file(path)
 
     # 注册图像采集蓝图
     app.register_blueprint(capture_api)
