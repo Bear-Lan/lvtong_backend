@@ -21,20 +21,20 @@ class DBVehicle(DBPool):
                 head_image_path, tail_image_path, top_image_path,
                 goods_image_path, evidences_image_path,
                 license_image_path1, license_image_path2, license_image_path,
-                pass_code_image_path,
+                passcode_image_path,
                 operator_name, inspector_phone, reviewer_name, reviewer_phone, group_id,
                 btn_prebook_time, acceptance_time,
                 open_gate_time, open_light_screen_time, close_light_screen_time,
                 cd_photo_time, inspection_time,
                 result_status, no_pass_type, status,
-                pass_code_vehicle_id, pass_code_vehicle_display_id,
-                pass_code_vehicle_color_name,
-                pass_code_en_station_id, pass_code_ex_station_id,
-                pass_code_en_weight, pass_code_ex_weight,
-                pass_code_media_type_id, pass_code_transaction_id, pass_code_pass_id,
-                pass_code_ex_time, pass_code_trans_pay_type,
-                pass_code_fee, pass_code_pay_fee, pass_code_vehicle_sign,
-                pass_code_province_count,
+                passcode_vehicle_id, passcode_vehicle_display_id,
+                passcode_vehicle_color_name,
+                passcode_en_station_id, passcode_ex_station_id,
+                passcode_en_weight, passcode_ex_weight,
+                passcode_media_type_id, passcode_transaction_id, passcode_pass_id,
+                passcode_ex_time, passcode_trans_pay_type,
+                passcode_fee, passcode_pay_fee, passcode_vehicle_sign,
+                passcode_province_count,
                 cvarietyname, btypename, ccategoryname, ctypename
             ) VALUES (
                 %(plate_number)s, %(plate_number_gc)s, %(driver_phone)s,
@@ -46,21 +46,21 @@ class DBVehicle(DBPool):
                 %(head_image_path)s, %(tail_image_path)s, %(top_image_path)s,
                 %(goods_image_path)s, %(evidences_image_path)s,
                 %(license_image_path1)s, %(license_image_path2)s, %(license_image_path)s,
-                %(pass_code_image_path)s,
+                %(passcode_image_path)s,
                 %(operator_name)s, %(inspector_phone)s,
                 %(reviewer_name)s, %(reviewer_phone)s, %(group_id)s,
                 %(btn_prebook_time)s, %(acceptance_time)s,
                 %(open_gate_time)s, %(open_light_screen_time)s, %(close_light_screen_time)s,
                 %(cd_photo_time)s, %(inspection_time)s,
                 %(result_status)s, %(no_pass_type)s, %(status)s,
-                %(pass_code_vehicle_id)s, %(pass_code_vehicle_display_id)s,
-                %(pass_code_vehicle_color_name)s,
-                %(pass_code_en_station_id)s, %(pass_code_ex_station_id)s,
-                %(pass_code_en_weight)s, %(pass_code_ex_weight)s,
-                %(pass_code_media_type_id)s, %(pass_code_transaction_id)s, %(pass_code_pass_id)s,
-                %(pass_code_ex_time)s, %(pass_code_trans_pay_type)s,
-                %(pass_code_fee)s, %(pass_code_pay_fee)s, %(pass_code_vehicle_sign)s,
-                %(pass_code_province_count)s,
+                %(passcode_vehicle_id)s, %(passcode_vehicle_display_id)s,
+                %(passcode_vehicle_color_name)s,
+                %(passcode_en_station_id)s, %(passcode_ex_station_id)s,
+                %(passcode_en_weight)s, %(passcode_ex_weight)s,
+                %(passcode_media_type_id)s, %(passcode_transaction_id)s, %(passcode_pass_id)s,
+                %(passcode_ex_time)s, %(passcode_trans_pay_type)s,
+                %(passcode_fee)s, %(passcode_pay_fee)s, %(passcode_vehicle_sign)s,
+                %(passcode_province_count)s,
                 %(cvarietyname)s, %(btypename)s, %(ccategoryname)s, %(ctypename)s
             )
             RETURNING id
@@ -75,7 +75,7 @@ class DBVehicle(DBPool):
             'head_image_path': '', 'tail_image_path': '', 'top_image_path': '',
             'goods_image_path': '', 'evidences_image_path': '',
             'license_image_path1': '', 'license_image_path2': '', 'license_image_path': '',
-            'pass_code_image_path': '',
+            'passcode_image_path': '',
             'operator_name': '', 'inspector_phone': '',
             'reviewer_name': '', 'reviewer_phone': '', 'group_id': 0,
             'btn_prebook_time': None, 'acceptance_time': None,
@@ -83,15 +83,15 @@ class DBVehicle(DBPool):
             'close_light_screen_time': None, 'cd_photo_time': None,
             'inspection_time': None,
             'result_status': 0, 'no_pass_type': 0, 'status': 0,
-            'pass_code_vehicle_id': '', 'pass_code_vehicle_display_id': '',
-            'pass_code_vehicle_color_name': '',
-            'pass_code_en_station_id': '', 'pass_code_ex_station_id': '',
-            'pass_code_en_weight': '', 'pass_code_ex_weight': '',
-            'pass_code_media_type_id': '9', 'pass_code_transaction_id': '',
-            'pass_code_pass_id': '',
-            'pass_code_ex_time': '', 'pass_code_trans_pay_type': '',
-            'pass_code_fee': '', 'pass_code_pay_fee': '', 'pass_code_vehicle_sign': '',
-            'pass_code_province_count': '',
+            'passcode_vehicle_id': '', 'passcode_vehicle_display_id': '',
+            'passcode_vehicle_color_name': '',
+            'passcode_en_station_id': '', 'passcode_ex_station_id': '',
+            'passcode_en_weight': '', 'passcode_ex_weight': '',
+            'passcode_media_type_id': '9', 'passcode_transaction_id': '',
+            'passcode_pass_id': '',
+            'passcode_ex_time': '', 'passcode_trans_pay_type': '',
+            'passcode_fee': '', 'passcode_pay_fee': '', 'passcode_vehicle_sign': '',
+            'passcode_province_count': '',
             'cvarietyname': '', 'btypename': '', 'ccategoryname': '', 'ctypename': '',
         }
         for k, v in defaults.items():
@@ -118,7 +118,7 @@ class DBVehicle(DBPool):
             'head_image_path', 'tail_image_path', 'top_image_path',
             'goods_image_path', 'evidences_image_path',
             'license_image_path1', 'license_image_path2', 'license_image_path',
-            'pass_code_image_path',
+            'passcode_image_path',
             'result_status', 'no_pass_type', 'status',
         }
         updates = {k: v for k, v in data.items() if k in allowed}
@@ -302,4 +302,30 @@ class DBVehicle(DBPool):
                          'cd_photo_time', 'inspection_time', 'created_time', 'updated_time'):
             if d.get(ts_field):
                 d[ts_field] = d[ts_field].isoformat()
+        # 字段名规范化：DB passcode_* → 前端 pass_code_*
+        for old_key in list(d.keys()):
+            if old_key.startswith('passcode_'):
+                new_key = 'pass_code_' + old_key[len('passcode_'):]
+                d[new_key] = d.pop(old_key)
+        # 字段名规范化：其他命名差异
+        _rename(d, 'passcode_media_type', 'pass_code_media_type_id')
+        _rename(d, 'vehicle_containertype', 'vehicle_container_type')
+        _rename(d, 'nopass_type', 'no_pass_type')
+        # Qt 兼容：别名字段
+        _copy_as(d, 'btypename', 'vehicle_name')
+        _copy_as(d, 'ctypename', 'vehicle_container_name')
+        _copy_as(d, 'cvarietyname', 'goods_name')
+        _copy_as(d, 'ccategoryname', 'goods_category')
         return d
+
+
+def _rename(d: dict, old: str, new: str):
+    """如果 old 键存在，重命名为 new"""
+    if old in d and new not in d:
+        d[new] = d.pop(old)
+
+
+def _copy_as(d: dict, old: str, new: str):
+    """如果 old 键存在且 new 不存在，复制值到 new"""
+    if old in d and d[old] is not None and new not in d:
+        d[new] = d[old]

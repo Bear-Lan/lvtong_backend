@@ -9,6 +9,8 @@ from flask import Blueprint, request, jsonify
 from app.db.vehicle import DBVehicle
 from app.db.product import DBProduct
 from app.services.image_store import db_path_to_api
+from app.db.product import DBProduct
+from app.db.dictionary import DBDictionary
 from util.auth import login_required
 
 inspection_api = Blueprint('inspection', __name__, url_prefix='/api/inspection')
@@ -35,6 +37,43 @@ def _convert_image_paths(record: dict) -> dict:
             record[field] = ','.join(
                 db_path_to_api(p.strip()) or p for p in parts
             )
+    return record
+
+
+def _resolve_display_names(record: dict) -> dict:
+    """编码→名称解析（对齐 Qt DetailDialog::setVehicleInfo）"""
+    # 货车类型: "16" → "仓栅式货运"
+    if record.get('vehicle_type'):
+        try:
+            for t in DBDictionary().getAllTruckTypes():
+                if t['type_code'] == record['vehicle_type']:
+                    record['vehicle_name'] = t['type_name']
+                    break
+        except Exception:
+            pass
+    # 货箱类型: "3.1" → "集装箱"
+    if record.get('vehicle_container_type'):
+        try:
+            for c in DBDictionary().getAllContainerTypes():
+                if c['type_code'] == record['vehicle_container_type']:
+                    record['vehicle_container_name'] = c['type_name']
+                    break
+        except Exception:
+            pass
+    # 货物名称: "10101|10404" → "波斯菜|白菜"
+    if record.get('goods_type'):
+        try:
+            db = DBProduct()
+            names = []
+            for code in record['goods_type'].split('|'):
+                name = db.getVarietyNameByProductCode(code.strip())
+                names.append(name if name else code)
+            record['goods_name'] = '|'.join(names)
+        except Exception:
+            pass
+    # 货物种类: 取自 category
+    if not record.get('goods_category') and record.get('goods_name'):
+        record['goods_category'] = ''
     return record
 
 
@@ -129,7 +168,9 @@ def get_inspection(inspection_id):
     db = DBVehicle()
     record = db.getInspectionById(inspection_id)
     if record:
-        return ok(_convert_image_paths(record))
+        record = _convert_image_paths(record)
+        record = _resolve_display_names(record)
+        return ok(record)
     return fail(404, '记录不存在')
 
 

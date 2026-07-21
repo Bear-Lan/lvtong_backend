@@ -16,7 +16,7 @@ class DBDictionary(DBPool):
             with conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT * FROM truck_type WHERE status = 1 ORDER BY sort_order"
+                    "SELECT * FROM truck_type ORDER BY sort_order"
                 )
                 return [self._row_to_dict(r, cursor) for r in cursor.fetchall()]
         finally:
@@ -29,7 +29,7 @@ class DBDictionary(DBPool):
             with conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT * FROM container_type WHERE status = 1 ORDER BY sort_order"
+                    "SELECT * FROM container_type ORDER BY sort_order"
                 )
                 return [self._row_to_dict(r, cursor) for r in cursor.fetchall()]
         finally:
