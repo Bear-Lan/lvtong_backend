@@ -8,9 +8,34 @@ from flask import Blueprint, request, jsonify
 
 from app.db.vehicle import DBVehicle
 from app.db.product import DBProduct
+from app.services.image_store import db_path_to_api
 from util.auth import login_required
 
 inspection_api = Blueprint('inspection', __name__, url_prefix='/api/inspection')
+
+
+# 需要转换的图片路径字段（逗号分隔的需要特殊处理）
+_SINGLE_IMAGE_FIELDS = [
+    'head_image_path', 'tail_image_path', 'top_image_path',
+    'body_image_path', 'transparent_image_path',
+    'license_image_path', 'license_image_path1', 'license_image_path2',
+    'pass_code_image_path',
+]
+_MULTI_IMAGE_FIELDS = ['goods_image_path', 'evidences_image_path']
+
+
+def _convert_image_paths(record: dict) -> dict:
+    """将记录中的本地路径转换为 API URL"""
+    for field in _SINGLE_IMAGE_FIELDS:
+        if record.get(field):
+            record[field] = db_path_to_api(record[field])
+    for field in _MULTI_IMAGE_FIELDS:
+        if record.get(field):
+            parts = record[field].split(',')
+            record[field] = ','.join(
+                db_path_to_api(p.strip()) or p for p in parts
+            )
+    return record
 
 
 def ok(data=None, message='success'):
@@ -104,7 +129,7 @@ def get_inspection(inspection_id):
     db = DBVehicle()
     record = db.getInspectionById(inspection_id)
     if record:
-        return ok(record)
+        return ok(_convert_image_paths(record))
     return fail(404, '记录不存在')
 
 
