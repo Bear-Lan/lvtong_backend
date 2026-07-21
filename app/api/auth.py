@@ -41,7 +41,7 @@ def login():
     dbuser = DBUser()
     user = dbuser.loginUser(username, password)
     if user is None:
-        return fail(401, '用户名或密码不正确')
+        return fail(400, '用户名或密码不正确')
 
     token = create_token(user)
     return ok({
