@@ -86,3 +86,9 @@ PLC_CONTROL_URL = os.environ.get('PLC_CONTROL_URL', '')
 GATE_CONTROL_URL = os.environ.get('GATE_CONTROL_URL', '')
 LED_CONTROL_URL = os.environ.get('LED_CONTROL_URL', '')
 TTS_CONTROL_URL = os.environ.get('TTS_CONTROL_URL', '')
+
+# 图像存储根目录（对齐 Qt D:/LvTongFiles/Images/captures）
+IMAGE_STORAGE_ROOT = os.environ.get(
+    'IMAGE_STORAGE_ROOT',
+    r'D:/LvTongFiles/Images/captures'
+)

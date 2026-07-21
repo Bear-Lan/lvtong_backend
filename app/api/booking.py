@@ -4,10 +4,13 @@
 参考 Qt OrderDialog / LvTongPro::onOrderAccept() / onBookingDebounceTimeout()
 """
 import time
-from flask import Blueprint, request, jsonify
+import requests
+from flask import Blueprint, request, jsonify, current_app
 
+from config import RADAR_HEAD_URL
 from util.auth import login_required
 from app.services.device_manager import DeviceManager
+from app.services.image_store import ImageStore
 from ws.handler import socketio
 
 booking_api = Blueprint('booking', __name__, url_prefix='/api/booking')
@@ -43,6 +46,27 @@ def set_booking_state(**kwargs):
     _booking_state.update(kwargs)
 
 
+@booking_api.route('/open', methods=['POST'])
+@login_required
+def open_booking_session():
+    """初始化预约会话
+
+    POST /api/booking/open
+
+    对齐 Qt OrderDialog 打开时的初始化：
+    1. 设备健康检查
+    2. 返回视频流 URL 和当前状态
+    """
+    mgr = DeviceManager()
+    devices_ready = mgr.health_check_all()
+
+    return ok({
+        'devicesReady': devices_ready,
+        'videoStreamUrl': None,  # 后续对接视频流
+        'state': _booking_state,
+    }, '会话初始化成功')
+
+
 @booking_api.route('/radar-image', methods=['GET'])
 @login_required
 def fetch_radar_image():
@@ -60,26 +84,48 @@ def fetch_radar_image():
     - VehicleHeader-Envelope: 车头包络
     - Vehicle-Height: 车辆高度
     """
-    # TODO: 对接实际的雷达图像采集系统
-    # 参考 Qt 实现：
-    # 1. GET m_radarHeadUrl (从 config/app.json radarConfig.headurl 读取)
-    # 2. 解析响应头: Image-Envelope, Image-Resolution,
-    #    VehicleHeader-Envelope, Vehicle-Height
-    # 3. 保存原始图片尺寸用于距离计算
-    # 4. 返回图像数据 + 元信息
-    from flask import current_app
-
-    radar_head_url = current_app.config.get('RADAR_HEAD_URL', '')
+    radar_head_url = current_app.config.get('RADAR_HEAD_URL', RADAR_HEAD_URL)
     print(f'[BOOKING] 拉取雷达图像: {radar_head_url}')
 
+    image_url = ''
+    image_envelope = ''
+    image_resolution = ''
+    vehicle_header_envelope = ''
+    vehicle_height = _booking_state['car_height']
+    orig_width = 0
+    orig_height = 0
+
+    try:
+        resp = requests.get(radar_head_url, timeout=10)
+        if resp.status_code == 200:
+            # 保存雷达图像到本地存储
+            store = ImageStore()
+            image_url = store.save_image_bytes(resp.content, 'radar', 'head')
+
+            # 解析响应头
+            image_envelope = resp.headers.get('Image-Envelope', '')
+            image_resolution = resp.headers.get('Image-Resolution', '')
+            vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '')
+            vh_str = resp.headers.get('Vehicle-Height', '')
+            if vh_str:
+                try:
+                    vehicle_height = float(vh_str)
+                    _booking_state['car_height'] = vehicle_height
+                except ValueError:
+                    pass
+        else:
+            print(f'[BOOKING] 雷达图像获取失败: HTTP {resp.status_code}')
+    except requests.RequestException as e:
+        print(f'[BOOKING] 雷达图像获取异常: {e}')
+
     return ok({
-        'imageUrl': '',
-        'imageEnvelope': '',
-        'imageResolution': '',
-        'vehicleHeaderEnvelope': '',
-        'vehicleHeight': _booking_state['car_height'],
-        'originalImageWidth': 0,
-        'originalImageHeight': 0,
+        'imageUrl': image_url,
+        'imageEnvelope': image_envelope,
+        'imageResolution': image_resolution,
+        'vehicleHeaderEnvelope': vehicle_header_envelope,
+        'vehicleHeight': vehicle_height,
+        'originalImageWidth': orig_width,
+        'originalImageHeight': orig_height,
     }, '雷达图像获取成功')
 
 
@@ -119,12 +165,45 @@ def accept_booking():
         'btn_prebook_state': False,
     })
 
-    # TODO: 对接实际的设备控制
-    # 1. 健康检查 m_deviceManager->HealthCheck()
-    # 2. PLC 红灯: m_plc->executeAction("setPLC", {red:true, yellow:false, green:false})
-    # 3. LED: m_led->setStep4()
-    # 4. 关闭栏杆: m_gate->closeGate()
-    # 5. 启动调度器: m_distanceScheduler->startMonitoring()
+    # 硬件操作（对齐 Qt）
+    mgr = DeviceManager()
+
+    # 1. 健康检查
+    if not mgr.health_check_all():
+        print('[BOOKING] 警告: 部分设备离线，继续受理')
+
+    # 2. PLC 红灯
+    for plc in mgr.get_devices_by_type('controller'):
+        try:
+            plc.execute_action('setPLC', {
+                'redlight': True, 'yellowlight': False, 'greenlight': False
+            })
+        except Exception as e:
+            print(f'[BOOKING] PLC 红灯设置失败: {e}')
+
+    # 3. LED 步骤4: "待检车辆 请通行 勿停车倒车"
+    for led in mgr.get_devices_by_type('led'):
+        try:
+            led.execute_action('set_step4')
+        except Exception as e:
+            print(f'[BOOKING] LED 步骤4设置失败: {e}')
+
+    # 4. 关闭栏杆
+    for gate in mgr.get_devices_by_type('gate'):
+        try:
+            gate.execute_action('close')
+        except Exception as e:
+            print(f'[BOOKING] 关闭栏杆失败: {e}')
+
+    # 5. 启动距离调度器
+    try:
+        from app.services.scheduler import DistanceScheduler
+        scheduler = DistanceScheduler()
+        scheduler.set_detection_state(True)
+        scheduler.start()
+        print('[BOOKING] 距离调度器已启动')
+    except Exception as e:
+        print(f'[BOOKING] 调度器启动失败: {e}')
 
     # 通过 WebSocket 推送受理状态
     try:
@@ -168,10 +247,41 @@ def reject_booking():
         'check_step': 0,
     })
 
-    # TODO: 对接实际的设备控制
-    # 1. PLC 黄灯: executePLCCtrl(false, true, false)
-    # 2. 开门: m_gate->openGate()
-    # 3. LED: m_led->setStep1()
+    # 硬件操作（对齐 Qt）
+    mgr = DeviceManager()
+
+    # 1. PLC 黄灯
+    for plc in mgr.get_devices_by_type('controller'):
+        try:
+            plc.execute_action('setPLC', {
+                'redlight': False, 'yellowlight': True, 'greenlight': False
+            })
+        except Exception as e:
+            print(f'[BOOKING] PLC 黄灯设置失败: {e}')
+
+    # 2. 开门
+    for gate in mgr.get_devices_by_type('gate'):
+        try:
+            gate.execute_action('open')
+        except Exception as e:
+            print(f'[BOOKING] 开门失败: {e}')
+
+    # 3. LED 步骤1: "绿通车辆 按键检测"
+    for led in mgr.get_devices_by_type('led'):
+        try:
+            led.execute_action('set_step1')
+        except Exception as e:
+            print(f'[BOOKING] LED 步骤1设置失败: {e}')
+
+    # 4. 停止调度器
+    try:
+        from app.services.scheduler import DistanceScheduler
+        scheduler = DistanceScheduler()
+        scheduler.set_detection_state(False)
+        scheduler.stop()
+        print('[BOOKING] 距离调度器已停止')
+    except Exception as e:
+        print(f'[BOOKING] 调度器停止失败: {e}')
 
     try:
         from ws.handler import socketio

@@ -121,15 +121,59 @@ class DistanceScheduler:
         return True
 
     def _activate_devices(self, threshold: DistanceThreshold, distance: float):
-        """激活设备动作
+        """激活设备动作 — 通过 DeviceManager 真实调用硬件
 
         参考 Qt DistanceBasedScheduler::activateDevices()
         """
         threshold.status = True
+        from app.services.device_manager import DeviceManager
+        mgr = DeviceManager()
+
         for device_id, action_config in threshold.device_actions.items():
-            print(f'[SCHEDULER] 激活设备 {device_id}: {action_config.action} '
-                  f'(距离={distance:.2f}m, 阈值={threshold.description})')
+            ctrl = mgr.get_device(device_id)
+            if ctrl:
+                try:
+                    ctrl.execute_action(action_config.action, action_config.params)
+                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 成功')
+                except Exception as e:
+                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 失败: {e}')
+            else:
+                print(f'[SCHEDULER] {threshold.description}: 设备 {device_id} 未找到')
             self._device_activation_status[device_id] = True
+
+        # 推送检测步骤更新
+        self._push_step_update(threshold)
+
+    def _trigger_plc_rule_actions(self, rule: PlcStateRule):
+        """触发 PLC 规则关联的设备动作"""
+        from app.services.device_manager import DeviceManager
+        mgr = DeviceManager()
+        for device_id, action_config in rule.device_actions.items():
+            ctrl = mgr.get_device(device_id)
+            if ctrl:
+                try:
+                    ctrl.execute_action(action_config.action, action_config.params)
+                except Exception as e:
+                    print(f'[SCHEDULER] PLC规则 {rule.rule_id}: {device_id} 执行失败: {e}')
+
+    def _push_step_update(self, threshold):
+        """根据阈值推送检测步骤"""
+        step_map = {
+            'initial_approach': (1, '车辆接近中'),
+            'led_step5_plc_yellow': (2, '闸机关闭，黄灯亮'),
+            'led_step6': (3, 'X光准备'),
+            'xray_capture_trigger': (4, 'X光采集中'),
+            'auto_capture_head': (5, '拍照中'),
+            'auto_capture_tail': (5, '拍照中'),
+            'arrived': (6, '车辆到达'),
+        }
+        step_info = step_map.get(threshold.id, (None, None))
+        if step_info[0] is not None:
+            try:
+                from ws.handler import push_detection_step
+                push_detection_step(step_info[0], step_info[1])
+            except Exception:
+                pass
 
     def _evaluate_plc_rules(self):
         """评估 PLC 状态规则

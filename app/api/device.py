@@ -108,7 +108,7 @@ def reconnect_devices():
 @device_api.route('/health', methods=['GET'])
 @login_required
 def health_check():
-    """设备健康检查
+    """设备健康检查 + AI/OCR 服务状态
 
     对齐 Qt DeviceManager::HealthCheck()
     """
@@ -117,9 +117,63 @@ def health_check():
     devices = mgr.get_all_status()
     offline = [d for d in devices if not d['connected']]
 
+    # 检测 AI 和 OCR 服务
+    ai_online = _check_service_url('AI_MODEL_URL', 'http://192.168.88.245:8899')
+    ocr_online = _check_service_url('OCR_SERVICE_URL', 'http://192.168.88.245:8890')
+
     return ok({
         'healthy': healthy,
         'total': len(devices),
         'offlineCount': len(offline),
         'offlineDevices': [d['deviceName'] for d in offline],
+        'aiOnline': ai_online,
+        'ocrOnline': ocr_online,
     })
+
+
+@device_api.route('/plc-control', methods=['POST'])
+@login_required
+def plc_control():
+    """PLC 开关控制
+
+    POST /api/device/plc-control
+    Body: { redlight: true, yellowlight: false, greenlight: false, ... }
+
+    对齐 Qt 开关控制面板
+    """
+    body = request.get_json(silent=True) or {}
+    if not body:
+        return fail(400, '控制参数不能为空')
+
+    mgr = DeviceManager()
+    controllers = mgr.get_devices_by_type('controller')
+    if not controllers:
+        return fail(503, '未配置 PLC 控制器')
+
+    success = False
+    errors = []
+    for plc in controllers:
+        try:
+            if plc.execute_action('setPLC', body):
+                success = True
+            else:
+                errors.append(f'{plc.device_id}: {plc.last_error}')
+        except Exception as e:
+            errors.append(f'{plc.device_id}: {str(e)}')
+
+    if not success:
+        return fail(500, f'PLC 控制失败: {"; ".join(errors)}')
+
+    return ok(message='PLC 控制指令已发送')
+
+
+def _check_service_url(config_key: str, default_url: str) -> bool:
+    """探活外部服务 URL"""
+    import requests as req
+    from flask import current_app
+    url = current_app.config.get(config_key, default_url)
+    try:
+        resp = req.get(url, timeout=3)
+        return resp.status_code < 500
+    except Exception:
+        return False

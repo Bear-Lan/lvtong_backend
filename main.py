@@ -5,10 +5,10 @@
 - 后端: Flask REST API (端口 8080)
 - WebSocket: /ws
 """
-from flask import Flask
+from flask import Flask, send_from_directory
 from flask_cors import CORS
 
-from config import HOST, PORT, DEBUG, CORS_ORIGINS
+from config import HOST, PORT, DEBUG, CORS_ORIGINS, IMAGE_STORAGE_ROOT
 
 # API 蓝图
 from app.api.auth import app_api
@@ -19,6 +19,7 @@ from app.api.inspection import inspection_api
 from app.api.device import device_api
 from app.api.imaging import imaging_api
 from app.api.history import history_api
+from app.api.capture import capture_api
 
 # WebSocket
 from ws.handler import init_socketio
@@ -50,6 +51,15 @@ def create_app() -> Flask:
     app.register_blueprint(device_api)
     app.register_blueprint(imaging_api)
     app.register_blueprint(history_api)
+
+    # 图像静态文件服务（对齐 Qt D:/LvTongFiles/Images/captures）
+    @app.route('/api/images/<path:filename>')
+    def serve_capture_image(filename):
+        """将 /api/images/... 映射到本地存储目录"""
+        return send_from_directory(IMAGE_STORAGE_ROOT, filename)
+
+    # 注册图像采集蓝图
+    app.register_blueprint(capture_api)
 
     return app
 
@@ -115,6 +125,24 @@ if __name__ == '__main__':
     for radar in mgr.get_devices_by_type('udpradar'):
         radar.set_plc_status_callback(_on_plc_status)
         print(f'[设备]   {radar.device_id}: PLC 状态推送已注入')
+
+    # 3.6 初始化距离调度器，将雷达距离数据接入调度引擎
+    from app.services.scheduler import DistanceScheduler
+    import os
+
+    scheduler = DistanceScheduler()
+    config_path = os.path.join(os.path.dirname(__file__), 'scheduler_config.json')
+    scheduler.load_configuration_from_file(config_path)
+    print(f'[调度器] 配置加载完成: {config_path}')
+
+    # 注册雷达距离回调 → 调度器
+    for radar in mgr.get_devices_by_type('udpradar'):
+        def _make_distance_cb(sched=scheduler):
+            def _on_distance(distance: float, mode: int):
+                sched.on_radar_data(distance, mode)
+            return _on_distance
+        radar.set_distance_callback(_make_distance_cb())
+        print(f'[设备]   {radar.device_id}: 距离调度器已注入')
 
     # 4. 启动 20 秒定时健康检查 + 自动重连
     mgr.start_health_check()

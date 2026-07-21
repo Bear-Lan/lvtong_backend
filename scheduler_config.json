@@ -1,0 +1,127 @@
+{
+  "thresholds": [
+    {
+      "id": "initial_approach",
+      "minDistance": 10.0,
+      "maxDistance": 100.0,
+      "description": "车辆接近中",
+      "isActive": true,
+      "deviceActions": {}
+    },
+    {
+      "id": "led_step5_plc_yellow",
+      "minDistance": 7.0,
+      "maxDistance": 9.0,
+      "description": "LED步骤5 + PLC黄灯",
+      "isActive": true,
+      "deviceActions": {
+        "led_001": {"action": "set_step5", "params": {}},
+        "plc_001": {"action": "setPLC", "params": {"redlight": false, "yellowlight": true, "greenlight": false}}
+      }
+    },
+    {
+      "id": "led_step6",
+      "minDistance": 5.0,
+      "maxDistance": 7.0,
+      "description": "LED步骤6",
+      "isActive": true,
+      "deviceActions": {
+        "led_001": {"action": "set_step6", "params": {}}
+      }
+    },
+    {
+      "id": "led_step7",
+      "minDistance": 3.0,
+      "maxDistance": 5.0,
+      "description": "LED步骤7 检测完成请通行",
+      "isActive": true,
+      "deviceActions": {
+        "led_001": {"action": "set_step7", "params": {}}
+      }
+    },
+    {
+      "id": "xray_capture_trigger",
+      "minDistance": 33.0,
+      "maxDistance": 35.0,
+      "description": "X光200kV+160kV采集触发",
+      "isActive": true,
+      "deviceActions": {
+        "xray_200": {"action": "start_scan", "params": {"channel": "200", "car_length": 5.0, "scan_id": ""}},
+        "xray_160": {"action": "start_scan", "params": {"channel": "160", "car_length": 5.0, "scan_id": ""}}
+      }
+    },
+    {
+      "id": "auto_capture_head",
+      "minDistance": 28.0,
+      "maxDistance": 32.0,
+      "description": "车头拍照（前）",
+      "isActive": true,
+      "deviceActions": {
+        "camera_001": {"action": "capture", "params": {"category": "head"}}
+      }
+    },
+    {
+      "id": "auto_capture_top",
+      "minDistance": 20.0,
+      "maxDistance": 25.0,
+      "description": "车顶拍照",
+      "isActive": true,
+      "deviceActions": {
+        "camera_001": {"action": "capture", "params": {"category": "top"}}
+      }
+    },
+    {
+      "id": "auto_capture_tail",
+      "minDistance": 0.0,
+      "maxDistance": 2.0,
+      "description": "车尾拍照（后）",
+      "isActive": true,
+      "deviceActions": {
+        "camera_001": {"action": "capture", "params": {"category": "tail"}}
+      }
+    },
+    {
+      "id": "arrived",
+      "minDistance": -1.0,
+      "maxDistance": 0.5,
+      "description": "车辆到达",
+      "isActive": true,
+      "deviceActions": {}
+    }
+  ],
+  "plcStateRules": [
+    {
+      "ruleId": "safety_urgent_stop",
+      "description": "急停安全联动：急停时禁止所有动作",
+      "plcDeviceId": "plc_001",
+      "isActive": true,
+      "ruleType": "activation",
+      "deviceIds": ["gate_001", "led_001", "xray_200", "xray_160"],
+      "conditions": [
+        {"stateKey": "urgentStopStatus", "expectedValue": true}
+      ]
+    },
+    {
+      "ruleId": "xray_interlock_200",
+      "description": "200kV光栅联锁：光栅触发时允许出束",
+      "plcDeviceId": "plc_001",
+      "isActive": true,
+      "ruleType": "activation",
+      "deviceIds": ["xray_200"],
+      "conditions": [
+        {"stateKey": "lightGate200Status", "expectedValue": true}
+      ]
+    },
+    {
+      "ruleId": "xray_interlock_160",
+      "description": "160kV光栅联锁：光栅触发时允许出束",
+      "plcDeviceId": "plc_001",
+      "isActive": true,
+      "ruleType": "activation",
+      "deviceIds": ["xray_160"],
+      "conditions": [
+        {"stateKey": "lightGate160Status", "expectedValue": true}
+      ]
+    }
+  ]
+}
