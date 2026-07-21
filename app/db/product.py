@@ -43,7 +43,7 @@ class DBProduct(DBPool):
         params = []
         sql, params = self._append_filters(sql, params, product_type, variety_name,
                                            variety_name_pinyin, aliases)
-        sql += " ORDER BY variety_name_pinyin LIMIT %s OFFSET %s"
+        sql += " ORDER BY id LIMIT %s OFFSET %s"
         params.append(page_size)
         params.append((page - 1) * page_size)
 

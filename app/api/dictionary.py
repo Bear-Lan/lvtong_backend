@@ -29,7 +29,7 @@ def list_products():
     GET /api/dict/products?product_type=&variety_name=&pinyin=&page=1&page_size=50
     """
     product_type = request.args.get('product_type', '')
-    variety_name = request.args.get('variety_name', '')
+    variety_name = request.args.get('variety_name', request.args.get('keyword', ''))
     pinyin = request.args.get('pinyin', '')
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 50))
