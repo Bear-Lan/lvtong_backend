@@ -7,8 +7,8 @@ import requests
 from flask import Blueprint, request, jsonify, current_app
 
 from app.services.image_store import ImageStore
-from app.services.device_manager import DeviceManager
-from util.auth import login_required
+from app.devices.manager import DeviceManager
+from app.extensions.auth import login_required
 from config import BODY_IMAGE_URL
 
 capture_api = Blueprint('capture', __name__, url_prefix='/api/capture')
@@ -56,7 +56,7 @@ def _fetch_and_save(category: str, url: str = '') -> dict:
 def _push_image_ready(image_type: str, url: str):
     """通过 WebSocket 推送新图像通知"""
     try:
-        from ws.handler import push_image_ready
+        from app.websocket.handler import push_image_ready
         push_image_ready(image_type, url)
     except Exception:
         pass

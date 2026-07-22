@@ -11,7 +11,7 @@ from app.db.product import DBProduct
 from app.services.image_store import db_path_to_api
 from app.db.product import DBProduct
 from app.db.dictionary import DBDictionary
-from util.auth import login_required
+from app.extensions.auth import login_required
 
 inspection_api = Blueprint('inspection', __name__, url_prefix='/api/inspection')
 

@@ -7,12 +7,12 @@
 """
 import threading
 from app.db.device import DBDevice
-from app.services.device_base import DeviceBase, DeviceStatus
-from app.services.plc import PLCController
-from app.services.gate import GateController
-from app.services.led import LedController
-from app.services.radar import RadarReader
-from app.services.xray import XRayController
+from app.devices.base import DeviceBase, DeviceStatus
+from app.devices.plc import PLCController
+from app.devices.gate import GateController
+from app.devices.led import LedController
+from app.devices.radar import RadarReader
+from app.devices.xray import XRayController
 
 _DEVICE_CLASS_MAP = {
     'controller': PLCController,

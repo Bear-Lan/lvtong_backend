@@ -6,7 +6,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db.product import DBProduct
 from app.db.dictionary import DBDictionary
-from util.auth import login_required
+from app.extensions.auth import login_required
 
 dict_api = Blueprint('dict', __name__, url_prefix='/api/dict')
 

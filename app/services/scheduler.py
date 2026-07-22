@@ -13,7 +13,7 @@
 import json
 import threading
 from app.services.threshold import DistanceThreshold, PlcStateRule, DeviceActionConfig
-from ws.handler import push_radar_distance, push_detection_step, push_lane_occupied
+from app.websocket.handler import push_radar_distance, push_detection_step, push_lane_occupied
 
 
 class DistanceScheduler:
@@ -126,7 +126,7 @@ class DistanceScheduler:
         参考 Qt DistanceBasedScheduler::activateDevices()
         """
         threshold.status = True
-        from app.services.device_manager import DeviceManager
+        from app.devices.manager import DeviceManager
         mgr = DeviceManager()
 
         for device_id, action_config in threshold.device_actions.items():
@@ -146,7 +146,7 @@ class DistanceScheduler:
 
     def _trigger_plc_rule_actions(self, rule: PlcStateRule):
         """触发 PLC 规则关联的设备动作"""
-        from app.services.device_manager import DeviceManager
+        from app.devices.manager import DeviceManager
         mgr = DeviceManager()
         for device_id, action_config in rule.device_actions.items():
             ctrl = mgr.get_device(device_id)
@@ -170,7 +170,7 @@ class DistanceScheduler:
         step_info = step_map.get(threshold.id, (None, None))
         if step_info[0] is not None:
             try:
-                from ws.handler import push_detection_step
+                from app.websocket.handler import push_detection_step
                 push_detection_step(step_info[0], step_info[1])
             except Exception:
                 pass

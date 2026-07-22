@@ -3,7 +3,7 @@
 对齐 Qt X 光机 HTTP 接口
 """
 import requests
-from app.services.device_base import DeviceBase, DeviceStatus
+from app.devices.base import DeviceBase, DeviceStatus
 
 
 class XRayController(DeviceBase):

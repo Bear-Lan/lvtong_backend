@@ -9,7 +9,7 @@ import cv2
 from flask import Blueprint, request, jsonify, Response
 
 from app.services.xray_processing import XRayProcessor
-from util.auth import login_required
+from app.extensions.auth import login_required
 
 imaging_api = Blueprint('imaging', __name__, url_prefix='/api/imaging')
 

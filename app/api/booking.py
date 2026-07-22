@@ -8,10 +8,10 @@ import requests
 from flask import Blueprint, request, jsonify, current_app
 
 from config import RADAR_HEAD_URL
-from util.auth import login_required
-from app.services.device_manager import DeviceManager
+from app.extensions.auth import login_required
+from app.devices.manager import DeviceManager
 from app.services.image_store import ImageStore
-from ws.handler import socketio
+from app.websocket.handler import socketio
 
 booking_api = Blueprint('booking', __name__, url_prefix='/api/booking')
 
@@ -207,7 +207,7 @@ def accept_booking():
 
     # 通过 WebSocket 推送受理状态
     try:
-        from ws.handler import socketio
+        from app.websocket.handler import socketio
         socketio.emit('message', {
             'type': 'booking_accepted',
             'timestamp': int(time.time() * 1000),
@@ -284,7 +284,7 @@ def reject_booking():
         print(f'[BOOKING] 调度器停止失败: {e}')
 
     try:
-        from ws.handler import socketio
+        from app.websocket.handler import socketio
         socketio.emit('message', {
             'type': 'booking_rejected',
             'timestamp': int(time.time() * 1000),

@@ -9,7 +9,7 @@
 """
 import threading
 import serial
-from app.services.device_base import DeviceBase, DeviceStatus
+from app.devices.base import DeviceBase, DeviceStatus
 
 
 class GateController(DeviceBase):

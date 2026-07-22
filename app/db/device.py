@@ -1,100 +1,68 @@
-"""设备数据库操作层
-
-参考 Qt DeviceDatabase 实现。
-"""
+"""设备 devices"""
 import json
-from app.db.pool import DBPool
+from app.db.base import BaseRepo
 
 
-class DBDevice(DBPool):
-    """设备 CRUD"""
+class DBDevice(BaseRepo):
 
     def getAllDevices(self) -> list[dict]:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT * FROM devices ORDER BY device_type, device_name"
-                )
-                return [self._row_to_dict(r, cursor) for r in cursor.fetchall()]
-        finally:
-            self.releaseConn(conn)
+        rows = self._rows(
+            "SELECT * FROM devices ORDER BY device_type, device_name"
+        )
+        for d in rows:
+            _normalize(d)
+        return rows
 
     def getDevice(self, device_id: str) -> dict | None:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT * FROM devices WHERE device_id = %s", (device_id,)
-                )
-                row = cursor.fetchone()
-                return self._row_to_dict(row, cursor) if row else None
-        finally:
-            self.releaseConn(conn)
+        d = self._one(
+            "SELECT * FROM devices WHERE device_id = :id",
+            {'id': device_id},
+        )
+        if d:
+            _normalize(d)
+        return d
 
     def getDevicesByType(self, device_type: str) -> list[dict]:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT * FROM devices WHERE device_type = %s", (device_type,)
-                )
-                return [self._row_to_dict(r, cursor) for r in cursor.fetchall()]
-        finally:
-            self.releaseConn(conn)
+        rows = self._rows(
+            "SELECT * FROM devices WHERE device_type = :type",
+            {'type': device_type},
+        )
+        for d in rows:
+            _normalize(d)
+        return rows
 
     def updateDeviceStatus(self, device_id: str, status: int) -> bool:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE devices SET status = %s, updated_time = NOW() WHERE device_id = %s",
-                    (status, device_id)
-                )
-                return cursor.rowcount > 0
-        finally:
-            self.releaseConn(conn)
+        with self._tx() as conn:
+            return self._exec(
+                "UPDATE devices SET status=:st, updated_time=NOW() "
+                "WHERE device_id = :id",
+                {'st': status, 'id': device_id}, conn=conn,
+            ) > 0
 
     def updateLastConnectTime(self, device_id: str) -> bool:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE devices SET last_connect_time = NOW() WHERE device_id = %s",
-                    (device_id,)
-                )
-                return cursor.rowcount > 0
-        finally:
-            self.releaseConn(conn)
+        with self._tx() as conn:
+            return self._exec(
+                "UPDATE devices SET last_connect_time=NOW() WHERE device_id = :id",
+                {'id': device_id}, conn=conn,
+            ) > 0
 
     def updateDeviceConfig(self, device_id: str, config: dict) -> bool:
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE devices SET config = %s, updated_time = NOW() WHERE device_id = %s",
-                    (json.dumps(config, ensure_ascii=False), device_id)
-                )
-                return cursor.rowcount > 0
-        finally:
-            self.releaseConn(conn)
+        with self._tx() as conn:
+            return self._exec(
+                "UPDATE devices SET config=:cfg, updated_time=NOW() "
+                "WHERE device_id = :id",
+                {'cfg': json.dumps(config, ensure_ascii=False), 'id': device_id},
+                conn=conn,
+            ) > 0
 
-    @staticmethod
-    def _row_to_dict(row, cursor) -> dict:
-        cols = [desc[0] for desc in cursor.description]
-        d = dict(zip(cols, row))
-        for ts in ('last_connect_time', 'created_time', 'updated_time'):
-            if d.get(ts):
-                d[ts] = d[ts].isoformat()
-        if isinstance(d.get('config'), str):
-            try:
-                d['config'] = json.loads(d['config'])
-            except (json.JSONDecodeError, TypeError):
-                d['config'] = {}
-        return d
+
+def _normalize(d: dict):
+    """后处理：时间转 isoformat，config 从 JSON 字符串解析为 dict"""
+    for ts in ('last_connect_time', 'created_time', 'updated_time'):
+        if d.get(ts) and hasattr(d[ts], 'isoformat'):
+            d[ts] = d[ts].isoformat()
+    if isinstance(d.get('config'), str):
+        try:
+            d['config'] = json.loads(d['config'])
+        except (json.JSONDecodeError, TypeError):
+            d['config'] = {}

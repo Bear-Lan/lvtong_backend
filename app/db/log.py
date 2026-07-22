@@ -1,99 +1,66 @@
-"""操作日志数据库操作层
-
-参考 Qt LogDatabase 实现。
-"""
-from app.db.pool import DBPool
+"""操作日志 operation_logs"""
+from app.db.base import BaseRepo
 
 
-class DBLog(DBPool):
-    """操作日志读写"""
+class DBLog(BaseRepo):
 
     def addLog(self, level: str, message: str, category: str = '',
                operator: str = '', device_id: str = '') -> bool:
-        conn = self.getConn()
         try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "INSERT INTO operation_logs (level, message, category, operator, device_id) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (level, message, category, operator, device_id)
+            with self._tx() as conn:
+                self._exec(
+                    "INSERT INTO operation_logs (level, message, category, "
+                    "operator, device_id) VALUES (:lv, :msg, :cat, :op, :dev)",
+                    {'lv': level, 'msg': message, 'cat': category,
+                     'op': operator, 'dev': device_id},
+                    conn=conn,
                 )
-                return True
+            return True
         except Exception:
             return False
-        finally:
-            self.releaseConn(conn)
 
     def getLogs(self, level='', category='', operator='',
                 start_time=None, end_time=None,
                 page=1, page_size=50) -> list[dict]:
-        sql = "SELECT * FROM operation_logs WHERE 1=1"
-        params = []
+        sql, params = _build_log_query(level, category, operator,
+                                       start_time, end_time)
+        sql += " ORDER BY timestamp DESC LIMIT :limit OFFSET :offset"
+        params['limit'] = page_size
+        params['offset'] = (page - 1) * page_size
 
-        if level:
-            sql += " AND level = %s"
-            params.append(level)
-        if category:
-            sql += " AND category = %s"
-            params.append(category)
-        if operator:
-            sql += " AND operator LIKE %s"
-            params.append(f"%{operator}%")
-        if start_time:
-            sql += " AND timestamp >= %s"
-            params.append(start_time)
-        if end_time:
-            sql += " AND timestamp <= %s"
-            params.append(end_time)
-
-        sql += " ORDER BY timestamp DESC LIMIT %s OFFSET %s"
-        params.append(page_size)
-        params.append((page - 1) * page_size)
-
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(sql, params)
-                return [self._row_to_dict(r, cursor) for r in cursor.fetchall()]
-        finally:
-            self.releaseConn(conn)
+        rows = self._rows(sql, params)
+        for d in rows:
+            if d.get('timestamp') and hasattr(d['timestamp'], 'isoformat'):
+                d['timestamp'] = d['timestamp'].isoformat()
+        return rows
 
     def getLogsCount(self, level='', category='', operator='',
                      start_time=None, end_time=None) -> int:
-        sql = "SELECT COUNT(*) FROM operation_logs WHERE 1=1"
-        params = []
+        sql, params = _build_log_query(level, category, operator,
+                                       start_time, end_time)
+        return self._scalar(
+            sql.replace("SELECT *", "SELECT COUNT(*)"),
+            params,
+        )
 
-        if level:
-            sql += " AND level = %s"
-            params.append(level)
-        if category:
-            sql += " AND category = %s"
-            params.append(category)
-        if operator:
-            sql += " AND operator LIKE %s"
-            params.append(f"%{operator}%")
-        if start_time:
-            sql += " AND timestamp >= %s"
-            params.append(start_time)
-        if end_time:
-            sql += " AND timestamp <= %s"
-            params.append(end_time)
 
-        conn = self.getConn()
-        try:
-            with conn:
-                cursor = conn.cursor()
-                cursor.execute(sql, params)
-                return cursor.fetchone()[0]
-        finally:
-            self.releaseConn(conn)
-
-    @staticmethod
-    def _row_to_dict(row, cursor) -> dict:
-        cols = [desc[0] for desc in cursor.description]
-        d = dict(zip(cols, row))
-        if d.get('timestamp'):
-            d['timestamp'] = d['timestamp'].isoformat()
-        return d
+def _build_log_query(level='', category='', operator='',
+                     start_time=None, end_time=None):
+    sql = "SELECT * FROM operation_logs WHERE 1=1"
+    params: dict = {}
+    if level:
+        sql += " AND level = :level"
+        params['level'] = level
+    if category:
+        sql += " AND category = :cat"
+        params['cat'] = category
+    if operator:
+        sql += " AND operator LIKE :op"
+        params['op'] = f'%{operator}%'
+    if start_time:
+        sql += " AND timestamp >= :st"
+        params['st'] = start_time
+    if end_time:
+        sql += " AND timestamp <= :et"
+        params['et'] = end_time
+    return sql, params

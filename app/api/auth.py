@@ -2,7 +2,7 @@
 from flask import Blueprint, request, jsonify
 
 from app.db.user import DBUser
-from util.auth import create_token, login_required
+from app.extensions.auth import create_token, login_required
 
 app_api = Blueprint('api', __name__, url_prefix='/api')
 

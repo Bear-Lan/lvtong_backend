@@ -10,7 +10,7 @@
   7: FE 5C 4B 89 15 00 00 00 66 92 79 95 72 02 00 00 00 07 F8 FF FF
 """
 import serial
-from app.services.device_base import DeviceBase, DeviceStatus
+from app.devices.base import DeviceBase, DeviceStatus
 
 
 class LedController(DeviceBase):

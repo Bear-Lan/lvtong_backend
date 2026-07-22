@@ -5,8 +5,8 @@
 """
 from flask import Blueprint, request, jsonify
 
-from app.services.device_manager import DeviceManager
-from util.auth import login_required
+from app.devices.manager import DeviceManager
+from app.extensions.auth import login_required
 
 device_api = Blueprint('device', __name__, url_prefix='/api/device')
 

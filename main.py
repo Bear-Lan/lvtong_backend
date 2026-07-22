@@ -25,7 +25,7 @@ from app.api.history import history_api
 from app.api.capture import capture_api
 
 # WebSocket
-from ws.handler import init_socketio
+from app.websocket.handler import init_socketio
 
 
 def create_app() -> Flask:
@@ -90,8 +90,8 @@ if __name__ == '__main__':
 
     # ---- 初始化设备管理器（对齐 Qt 启动流程） ----
     print('[设备] 正在初始化设备管理器...')
-    from app.services.device_manager import DeviceManager
-    from ws.handler import push_device_status
+    from app.devices.manager import DeviceManager
+    from app.websocket.handler import push_device_status
 
     mgr = DeviceManager()
 
@@ -109,7 +109,7 @@ if __name__ == '__main__':
     mgr.set_ws_push(push_device_status)
 
     # 3.5 注入 PLC 状态推送（对齐 Qt UDPRadar::actionCompleted("plc_status") → LvTongPro::onPLCStatusUpdate）
-    from ws.handler import push_plc_status
+    from app.websocket.handler import push_plc_status
 
     def _on_plc_status(parsed: dict):
         """RadarReader 收到 $NTRMC,PLC,<hex> 包时的回调
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     import os
 
     scheduler = DistanceScheduler()
-    config_path = os.path.join(os.path.dirname(__file__), 'scheduler_config.json')
+    config_path = os.path.join(os.path.dirname(__file__), 'config', 'scheduler_config.json')
     scheduler.load_configuration_from_file(config_path)
     print(f'[调度器] 配置加载完成: {config_path}')
 

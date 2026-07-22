@@ -10,7 +10,7 @@ UDP 数据包支持两种协议（与 Qt 一致，同一端口复用）：
 import socket
 import json
 import threading
-from app.services.device_base import DeviceBase, DeviceStatus
+from app.devices.base import DeviceBase, DeviceStatus
 
 
 class RadarReader(DeviceBase):

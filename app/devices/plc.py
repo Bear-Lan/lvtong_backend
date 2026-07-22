@@ -3,7 +3,7 @@
 对齐 Qt PLCModbus (device/plcmodbus.h/.cpp)
 """
 import requests
-from app.services.device_base import DeviceBase, DeviceStatus
+from app.devices.base import DeviceBase, DeviceStatus
 
 
 class PLCController(DeviceBase):
