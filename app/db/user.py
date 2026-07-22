@@ -25,6 +25,10 @@ class DBUser(BaseRepo):
 
     def updateUser(self, username: str, user: dict):
         pw = _sha256(user['password'])
+        phone = user.get('phone', '')
+        email = user.get('email', '')
+        usergroup = user.get('usergroup', 0)
+        usertype = user.get('usertype', '')
         with self._tx() as conn:
             exists = self._one(
                 "SELECT 1 FROM users WHERE username = :uid",
@@ -32,31 +36,37 @@ class DBUser(BaseRepo):
             )
             if exists:
                 self._exec(
-                    "UPDATE users SET password=:pw, real_name=:name, role=:role "
+                    "UPDATE users SET password=:pw, real_name=:name, role=:role, "
+                    "phone=:phone, email=:email, group_id=:grp, user_type=:utype "
                     "WHERE username = :uid",
                     {'pw': pw, 'name': user['real_name'], 'role': user['role'],
-                     'uid': username},
+                     'phone': phone, 'email': email, 'grp': usergroup,
+                     'utype': usertype, 'uid': username},
                     conn=conn,
                 )
             else:
                 self._exec(
-                    "INSERT INTO users(username, real_name, password, role) "
-                    "VALUES(:uid, :name, :pw, :role)",
+                    "INSERT INTO users(username, real_name, password, role, "
+                    "phone, email, group_id, user_type) "
+                    "VALUES(:uid, :name, :pw, :role, :phone, :email, :grp, :utype)",
                     {'uid': username, 'name': user['real_name'],
-                     'pw': pw, 'role': user['role']},
+                     'pw': pw, 'role': user['role'],
+                     'phone': phone, 'email': email, 'grp': usergroup,
+                     'utype': usertype},
                     conn=conn,
                 )
 
     def users(self, filter: str = "") -> list:
+        base_sql = (
+            "SELECT id, username, real_name, password, role, "
+            "phone, email, group_id AS usergroup, user_type AS usertype FROM users"
+        )
         if filter:
             return self._rows(
-                "SELECT username, real_name, password, role FROM users "
-                "WHERE username = :uid ORDER BY id",
+                base_sql + " WHERE username = :uid ORDER BY id",
                 {'uid': filter},
             )
-        return self._rows(
-            "SELECT username, real_name, password, role FROM users ORDER BY id"
-        )
+        return self._rows(base_sql + " ORDER BY id")
 
     def loginUser(self, username: str, password: str) -> dict | None:
         return self._one(
