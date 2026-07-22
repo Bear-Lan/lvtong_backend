@@ -8,6 +8,7 @@ from flask import Blueprint, request, jsonify
 from app.db.vehicle import DBVehicle
 from app.db.log import DBLog
 from app.extensions.auth import login_required
+from app.api.inspection import _resolve_display_names
 
 history_api = Blueprint('history', __name__, url_prefix='/api/history')
 
@@ -49,6 +50,10 @@ def list_history():
         start_time or None, end_time or None,
         page, page_size
     )
+
+    # 解析编码→显示名称（对齐 Qt 端 LEFT JOIN 查询）
+    for item in items:
+        _resolve_display_names(item)
 
     return ok({
         'items': items,

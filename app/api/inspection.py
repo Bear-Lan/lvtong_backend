@@ -40,37 +40,80 @@ def _convert_image_paths(record: dict) -> dict:
     return record
 
 
-def _resolve_display_names(record: dict) -> dict:
-    """编码→名称解析（对齐 Qt DetailDialog::setVehicleInfo）"""
-    # 货车类型: "16" → "仓栅式货运"
-    if record.get('vehicle_type'):
+# 模块级缓存：避免每次解析都查询数据库
+_truck_type_map: dict | None = None
+_container_type_map: dict | None = None
+
+
+def _get_truck_type_map() -> dict:
+    """货车类型编码→名称映射（缓存）"""
+    global _truck_type_map
+    if _truck_type_map is None:
+        _truck_type_map = {}
         try:
             for t in DBDictionary().getAllTruckTypes():
-                if t['type_code'] == record['vehicle_type']:
-                    record['vehicle_name'] = t['type_name']
-                    break
+                _truck_type_map[t['type_code']] = t['type_name']
         except Exception:
             pass
-    # 货箱类型: "3.1" → "集装箱"
-    if record.get('vehicle_container_type'):
+    return _truck_type_map
+
+
+def _get_container_type_map() -> dict:
+    """货箱类型编码→名称映射（缓存）"""
+    global _container_type_map
+    if _container_type_map is None:
+        _container_type_map = {}
         try:
             for c in DBDictionary().getAllContainerTypes():
-                if c['type_code'] == record['vehicle_container_type']:
-                    record['vehicle_container_name'] = c['type_name']
-                    break
+                _container_type_map[c['type_code']] = c['type_name']
         except Exception:
             pass
+    return _container_type_map
+
+
+def _resolve_display_names(record: dict) -> dict:
+    """编码→名称解析（对齐 Qt DetailDialog::setVehicleInfo）
+
+    对齐 Qt 端 getInspectionsWithFilter 中的 LEFT JOIN 查询：
+      - vehicle_type → btypename (truck_type.type_name)
+      - goods_type → cvarietyname (agricultural_products.variety_name)
+    """
+    # 货车类型: "16" → "仓栅式货运"
+    vt = record.get('vehicle_type')
+    if vt:
+        try:
+            name = _get_truck_type_map().get(vt)
+            if name:
+                record['vehicle_name'] = name
+                record['btypename'] = name  # 对齐 Qt 字段名
+        except Exception:
+            pass
+
+    # 货箱类型: "3.1" → "集装箱"
+    vct = record.get('vehicle_container_type')
+    if vct:
+        try:
+            name = _get_container_type_map().get(vct)
+            if name:
+                record['vehicle_container_name'] = name
+        except Exception:
+            pass
+
     # 货物名称: "10101|10404" → "波斯菜|白菜"
-    if record.get('goods_type'):
+    gt = record.get('goods_type')
+    if gt:
         try:
             db = DBProduct()
             names = []
-            for code in record['goods_type'].split('|'):
-                name = db.getVarietyNameByProductCode(code.strip())
-                names.append(name if name else code)
+            for code in gt.split('|'):
+                code = code.strip()
+                if code:
+                    name = db.getVarietyNameByProductCode(code)
+                    names.append(name if name else code)
             record['goods_name'] = '|'.join(names)
         except Exception:
             pass
+
     # 货物种类: 取自 category
     if not record.get('goods_category') and record.get('goods_name'):
         record['goods_category'] = ''
@@ -152,6 +195,10 @@ def query_inspections():
         start_time or None, end_time or None,
         page, page_size
     )
+
+    # 解析编码→显示名称（对齐 Qt 端 LEFT JOIN 查询）
+    for item in items:
+        _resolve_display_names(item)
 
     return ok({
         'items': items,
