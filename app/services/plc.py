@@ -33,11 +33,19 @@ class PLCController(DeviceBase):
             return self._set_plc(**(params or {}))
         return False
 
-    def _set_plc(self, redlight: bool | None = None, yellowlight: bool | None = None,
-                  greenlight: bool | None = None, greatlight: bool | None = None,
-                  lightgate160: bool | None = None, lightgate200: bool | None = None,
-                  urgentstop: bool | None = None) -> bool:
-        params = {k: v for k, v in locals().items() if v is not None and k not in ('self', 'params')}
+    def _set_plc(self, **kwargs) -> bool:
+        """下发 PLC 控制指令
+
+        支持所有前端开关参数，直接转发到硬件中间层：
+        - 红/黄/绿灯: redlight, yellowlight, greenlight
+        - 补光灯: createlight / greatlight
+        - 光闸: lightgate160, lightgate200
+        - 急停: urgentstop
+        - InterLock / 伺服复位 / 声音报警 等
+        """
+        params = {k: v for k, v in kwargs.items() if v is not None}
+        if not params:
+            return True
         url = self.config.get('control_url', '')
         if not url:
             return True

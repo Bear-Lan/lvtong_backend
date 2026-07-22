@@ -5,6 +5,9 @@
 - 后端: Flask REST API (端口 8080)
 - WebSocket: /ws
 """
+from gevent import monkey
+monkey.patch_all()
+
 from flask import Flask, send_file, request, jsonify
 from flask_cors import CORS
 
