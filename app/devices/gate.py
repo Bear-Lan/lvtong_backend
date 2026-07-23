@@ -38,6 +38,7 @@ class GateController(DeviceBase):
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.1,
+                write_timeout=3,
             )
             self._serial.reset_input_buffer()
 
@@ -95,6 +96,7 @@ class GateController(DeviceBase):
 
     def _heartbeat_loop(self):
         """每 300ms 发心跳 + 检查串口状态回传"""
+        fail_count = 0
         while self._running:
             try:
                 if self._serial and self._serial.is_open:
@@ -112,8 +114,23 @@ class GateController(DeviceBase):
                             # 开状态但记录是关 → 发关闸
                             self._serial.write(b'alb close\n')
 
+                    fail_count = 0  # 成功后重置失败计数
+
             except (serial.SerialException, OSError):
                 self.status = DeviceStatus.Offline
+                fail_count += 1
+                print(f'[Gate:{self.device_id}] 串口通信失败 ({fail_count})')
+                # 连续失败 5 次后关闭串口，停止心跳避免反复阻塞
+                if fail_count >= 5:
+                    print(f'[Gate:{self.device_id}] 连续失败 {fail_count} 次，停止心跳')
+                    self._running = False
+                    try:
+                        if self._serial and self._serial.is_open:
+                            self._serial.close()
+                    except Exception:
+                        pass
+                    self._serial = None
+                    break
             except Exception:
                 pass
 
