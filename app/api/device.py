@@ -57,6 +57,63 @@ def device_status(device_id):
     })
 
 
+@device_api.route('/<device_id>/preview-config', methods=['GET'])
+@login_required
+def device_preview_config(device_id):
+    """读取摄像头 Web 预览登录配置（只读 devices 表，不改库）
+
+    供前端海康 WebSDK 直连设备使用。
+    channelId / streamType 来自 config JSON，缺省均为 1。
+    """
+    from app.db.device import DBDevice
+
+    row = DBDevice().getDevice(device_id)
+    if not row:
+        return fail(404, f'设备不存在: {device_id}')
+
+    cfg = row.get('config') or {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    ip = (row.get('ip_address') or '').strip()
+    if not ip:
+        return fail(400, f'设备 {device_id} 未配置 IP')
+
+    try:
+        port = int(row.get('port') or 80)
+    except (TypeError, ValueError):
+        port = 80
+
+    try:
+        channel_id = int(cfg.get('channelId', cfg.get('channel_id', 1)))
+    except (TypeError, ValueError):
+        channel_id = 1
+
+    try:
+        stream_type = int(cfg.get('streamType', cfg.get('stream_type', 1)))
+    except (TypeError, ValueError):
+        stream_type = 1
+
+    try:
+        protocol = int(cfg.get('protocol', 1))
+    except (TypeError, ValueError):
+        protocol = 1
+
+    return ok({
+        'deviceId': row.get('device_id'),
+        'deviceName': row.get('device_name'),
+        'deviceType': row.get('device_type'),
+        'ip': ip,
+        'port': port,
+        'username': row.get('username') or 'admin',
+        'password': row.get('password') or '',
+        'channelId': channel_id,
+        'streamType': stream_type,
+        'protocol': protocol,
+        'zeroChannel': bool(cfg.get('zeroChannel', cfg.get('zero_channel', False))),
+    })
+
+
 # ---- 设备控制 ----
 
 @device_api.route('/<device_id>/control', methods=['POST'])
