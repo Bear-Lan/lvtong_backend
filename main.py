@@ -2,9 +2,10 @@
 
 前后端分离架构：
 - 前端: Vue3 + Vite (端口 5173)
-- 后端: Flask REST API (端口 8080)
+- 后端: Flask REST API (HTTP 8080 + HTTPS 8082)
 - WebSocket: /ws
 """
+import logging
 import signal
 import sys
 
@@ -104,6 +105,21 @@ def _shutdown_handler(signum, frame):
 signal.signal(signal.SIGINT, _shutdown_handler)
 signal.signal(signal.SIGTERM, _shutdown_handler)
 
+
+# 屏蔽健康检测端点的 access log（Android 移动 app + mock_back 探测刷屏）
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return not ('/api/mobile/health' in msg or '/api/internal/health' in msg)
+
+
+# 给所有可能输出 access log 的 logger 都加过滤器
+for _name in ('werkzeug', 'gevent.pywsgi', 'gevent.server', 'gevent'):
+    logging.getLogger(_name).addFilter(_HealthCheckFilter())
+# 同时给 root 加一份，防止子 logger 没继承
+logging.getLogger().addFilter(_HealthCheckFilter())
+
+
 if __name__ == '__main__':
     print(f'[启动] 绿通快检后端 API 服务启动于 http://{HOST}:{PORT}')
     print(f'[API] 已注册模块:')
@@ -191,17 +207,18 @@ if __name__ == '__main__':
     mgr.start_health_check()
     print('[设备] 健康检查已启动 (间隔 20s)')
 
-    # ===== 双协议启动：HTTP 8080 + HTTPS 8081 =====
+    # ===== 双协议启动：HTTP 8080 + HTTPS 8082 =====
     # - HTTP 8080：前端 Vite 代理 / mock_back HTTP 调用 / curl 测试
-    # - HTTPS 8081：Android 移动 app 上传（自签证书）
+    # - HTTPS 8082：Android 移动 app 上传（自签证书）
     # 共享同一个 Flask app + SocketIO
 
     from gevent import pywsgi
     import gevent
-    import socketio as sio_pkg  # python-socketio
 
-    # 创建 WSGI 包装（SocketIO + Flask）
-    wsgi_app = sio_pkg.WSGIApp(socketio, flask_app)
+    # 关键：flask_socketio.init_app() 已自动创建 socketio.sockio_mw（_SocketIOMiddleware）
+    # 它正确处理 /socket.io/* 请求（EngineIO 协议）+ 其他请求转发给 Flask app
+    # 不能用 WSGIApp(socketio, flask_app) 或 socketio 本身（会触发 handle_request 错误）
+    wsgi_app = socketio.sockio_mw
 
     # HTTPS 证书路径（gevent 用 ssl_args 传 certfile/keyfile）
     cert_path = None
