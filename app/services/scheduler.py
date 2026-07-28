@@ -121,24 +121,22 @@ class DistanceScheduler:
         return True
 
     def _activate_devices(self, threshold: DistanceThreshold, distance: float):
-        """激活设备动作 — 通过 DeviceManager 真实调用硬件
+        """激活设备动作 — 走 device_action（mock agent / 真实硬件自动切换）
 
         参考 Qt DistanceBasedScheduler::activateDevices()
         """
         threshold.status = True
-        from app.devices.manager import DeviceManager
-        mgr = DeviceManager()
+        from app.services.device_action import execute_device_action
 
         for device_id, action_config in threshold.device_actions.items():
-            ctrl = mgr.get_device(device_id)
-            if ctrl:
-                try:
-                    ctrl.execute_action(action_config.action, action_config.params)
+            try:
+                ok = execute_device_action(device_id, action_config.action, action_config.params)
+                if ok:
                     print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 成功')
-                except Exception as e:
-                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 失败: {e}')
-            else:
-                print(f'[SCHEDULER] {threshold.description}: 设备 {device_id} 未找到')
+                else:
+                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 失败')
+            except Exception as e:
+                print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 异常: {e}')
             self._device_activation_status[device_id] = True
 
         # 推送检测步骤更新

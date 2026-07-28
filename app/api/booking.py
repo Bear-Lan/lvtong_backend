@@ -55,10 +55,26 @@ def open_booking_session():
 
     对齐 Qt OrderDialog 打开时的初始化：
     1. 设备健康检查
-    2. 返回视频流 URL 和当前状态
+    2. PLC 红灯 + 关光闸（防人闯入）— 对齐 Qt onBookingDebounceTimeout
+    3. 关闸
+    4. LED step2 "绿通车辆 按键检测"
+    5. 返回视频流 URL 和当前状态
     """
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
+
+    from app.services.device_action import execute_device_action
+
+    # 设备联动（对齐 Qt onBookingDebounceTimeout 防抖后动作）
+    execute_device_action('plc_001', 'setPLC', {
+        'redlight': True, 'yellowlight': False, 'greenlight': False,
+        'lightgate200': False, 'lightgate160': False,
+    })
+    execute_device_action('gate_001', 'close')
+    execute_device_action('led_001', 'set_step2')
+
+    # 标记预约弹窗已显示（对齐 Qt m_bookingDialogShown）
+    _booking_state['booking_dialog_shown'] = True
 
     return ok({
         'devicesReady': devices_ready,
@@ -138,11 +154,11 @@ def accept_booking():
     Body: { vehicleHeight, carHeadLength, xrayEnabled, linePosition }
 
     参考 Qt LvTongPro::onOrderAccept()
-    1. 健康检查（设备是否在线）
-    2. 关闭栏杆、设置红灯
-    3. LED 显示 "待检车辆 请通行"
-    4. 启动距离调度器
-    5. 进入检测流程
+    1. PLC 红灯 / 关闭栏杆 / LED step4（走 device_action：mock agent 或真实硬件）
+    2. 启动距离调度器
+    3. 进入检测流程（acceptanceTime 后端打点）
+
+    摄像头（camera1/2）由前端 useHikvisionPlayer 直连海康插件，不经此处。
     """
     body = request.get_json(silent=True) or {}
     user = request.gc_user
@@ -154,6 +170,12 @@ def accept_booking():
     print(f'[BOOKING] 用户 {user["username"]} 受理预约: '
           f'车高={vehicle_height}, 车头长={car_head_length}, X光={xray_enabled}')
 
+    from app.services.device_action import execute_device_action
+
+    # 后端打点 acceptanceTime（对齐 Qt QDateTime::currentDateTime()）
+    from datetime import datetime
+    acceptance_time = datetime.now().isoformat(timespec='seconds')
+
     # 更新全局状态
     _booking_state.update({
         'car_height': vehicle_height,
@@ -163,39 +185,21 @@ def accept_booking():
         'check_step': 1,
         'radar_count': 0,
         'btn_prebook_state': False,
+        'acceptance_time': acceptance_time,
     })
 
-    # 硬件操作（对齐 Qt）
-    mgr = DeviceManager()
+    # 1. PLC 红灯
+    execute_device_action('plc_001', 'setPLC', {
+        'redlight': True, 'yellowlight': False, 'greenlight': False
+    })
 
-    # 1. 健康检查
-    if not mgr.health_check_all():
-        print('[BOOKING] 警告: 部分设备离线，继续受理')
+    # 2. LED 步骤4: "待检车辆 请通行 勿停车倒车"
+    execute_device_action('led_001', 'set_step4')
 
-    # 2. PLC 红灯
-    for plc in mgr.get_devices_by_type('controller'):
-        try:
-            plc.execute_action('setPLC', {
-                'redlight': True, 'yellowlight': False, 'greenlight': False
-            })
-        except Exception as e:
-            print(f'[BOOKING] PLC 红灯设置失败: {e}')
+    # 3. 关闭栏杆
+    execute_device_action('gate_001', 'close')
 
-    # 3. LED 步骤4: "待检车辆 请通行 勿停车倒车"
-    for led in mgr.get_devices_by_type('led'):
-        try:
-            led.execute_action('set_step4')
-        except Exception as e:
-            print(f'[BOOKING] LED 步骤4设置失败: {e}')
-
-    # 4. 关闭栏杆
-    for gate in mgr.get_devices_by_type('gate'):
-        try:
-            gate.execute_action('close')
-        except Exception as e:
-            print(f'[BOOKING] 关闭栏杆失败: {e}')
-
-    # 5. 启动距离调度器
+    # 4. 启动距离调度器
     try:
         from app.services.scheduler import DistanceScheduler
         scheduler = DistanceScheduler()
@@ -215,13 +219,16 @@ def accept_booking():
                 'vehicleHeight': vehicle_height,
                 'carHeadLength': car_head_length,
                 'xrayEnabled': xray_enabled,
+                'acceptanceTime': acceptance_time,
                 'operator': user['real_name'],
             },
         })
     except Exception as e:
         print(f'[WS] 推送失败: {e}')
 
-    return ok(message='受理成功')
+    return ok({
+        'acceptanceTime': acceptance_time,
+    }, '受理成功')
 
 
 @booking_api.route('/reject', methods=['POST'])
@@ -232,13 +239,13 @@ def reject_booking():
     POST /api/booking/reject
 
     参考 Qt LvTongPro::onOrderReject()
-    1. 复位 PLC（黄灯）
-    2. 打开栏杆
-    3. LED 恢复 "绿通车辆 按键检测"
-    4. 停止调度器检测
+    1. PLC 黄灯 / 开闸 / LED step1（走 device_action）
+    2. 停止调度器
     """
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 驳回预约')
+
+    from app.services.device_action import execute_device_action
 
     # 恢复状态
     _booking_state.update({
@@ -247,31 +254,16 @@ def reject_booking():
         'check_step': 0,
     })
 
-    # 硬件操作（对齐 Qt）
-    mgr = DeviceManager()
-
     # 1. PLC 黄灯
-    for plc in mgr.get_devices_by_type('controller'):
-        try:
-            plc.execute_action('setPLC', {
-                'redlight': False, 'yellowlight': True, 'greenlight': False
-            })
-        except Exception as e:
-            print(f'[BOOKING] PLC 黄灯设置失败: {e}')
+    execute_device_action('plc_001', 'setPLC', {
+        'redlight': False, 'yellowlight': True, 'greenlight': False
+    })
 
-    # 2. 开门
-    for gate in mgr.get_devices_by_type('gate'):
-        try:
-            gate.execute_action('open')
-        except Exception as e:
-            print(f'[BOOKING] 开门失败: {e}')
+    # 2. 开闸
+    execute_device_action('gate_001', 'open')
 
-    # 3. LED 步骤1: "绿通车辆 按键检测"
-    for led in mgr.get_devices_by_type('led'):
-        try:
-            led.execute_action('set_step1')
-        except Exception as e:
-            print(f'[BOOKING] LED 步骤1设置失败: {e}')
+    # 3. LED step1: "绿通车辆 按键检测"
+    execute_device_action('led_001', 'set_step1')
 
     # 4. 停止调度器
     try:
@@ -308,26 +300,13 @@ def urgent_stop():
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 执行急停')
 
+    from app.services.device_action import execute_device_action
+
     # 对齐 Qt: m_plc->executeAction("setPLC", {urgentstop: true})
-    controllers = DeviceManager().get_devices_by_type('controller')
-    if not controllers:
-        return fail(503, '未配置 PLC 控制器，无法执行急停')
-
-    success = False
-    errors = []
-    for ctrl in controllers:
-        try:
-            if ctrl.execute_action('setPLC', {'urgentstop': True}):
-                success = True
-            else:
-                errors.append(f'{ctrl.device_id}: {ctrl.last_error}')
-        except Exception as e:
-            errors.append(f'{ctrl.device_id}: {str(e)}')
-
+    success = execute_device_action('plc_001', 'setPLC', {'urgentstop': True})
     if not success:
-        return fail(500, f'PLC 急停控制失败: {"; ".join(errors)}')
+        return fail(503, 'PLC 急停控制失败，请检查设备连接')
 
-    # 主动推送 PLC 状态 → 前端弹窗 "设备急停！ 是否复位？"
     socketio.emit('message', {
         'type': 'plc_status',
         'timestamp': int(time.time() * 1000),
@@ -352,26 +331,13 @@ def stop_reset():
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 急停复位')
 
+    from app.services.device_action import execute_device_action
+
     # 对齐 Qt: m_plc->executeAction("setPLC", {urgentstop: false})
-    controllers = DeviceManager().get_devices_by_type('controller')
-    if not controllers:
-        return fail(503, '未配置 PLC 控制器，无法执行复位')
-
-    success = False
-    errors = []
-    for ctrl in controllers:
-        try:
-            if ctrl.execute_action('setPLC', {'urgentstop': False}):
-                success = True
-            else:
-                errors.append(f'{ctrl.device_id}: {ctrl.last_error}')
-        except Exception as e:
-            errors.append(f'{ctrl.device_id}: {str(e)}')
-
+    success = execute_device_action('plc_001', 'setPLC', {'urgentstop': False})
     if not success:
-        return fail(500, f'PLC 复位失败: {"; ".join(errors)}')
+        return fail(503, 'PLC 复位失败，请检查设备连接')
 
-    # 主动推送 PLC 状态 → 前端解除急停状态
     socketio.emit('message', {
         'type': 'plc_status',
         'timestamp': int(time.time() * 1000),
@@ -401,3 +367,66 @@ def stop_video_session():
 def booking_state():
     """获取当前预约/检测状态"""
     return ok(_booking_state)
+
+
+@booking_api.route('/reset', methods=['POST'])
+@login_required
+def reset_booking():
+    """重置预约状态机 — 对齐 LvTongPro::onReset
+
+    POST /api/booking/reset
+
+    1. 重置 _booking_state（is_detection=false, check_step=0, ...）
+    2. 停止 DistanceScheduler
+    3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
+    4. WS 推 booking_reset 事件同步前端
+    """
+    user = request.gc_user
+    print(f'[BOOKING] 用户 {user["username"]} 重置预约状态')
+
+    from app.services.device_action import execute_device_action
+
+    # 1. 重置 _booking_state 到初始值
+    _booking_state.update({
+        'is_detection': False,
+        'last_booking_state': False,
+        'booking_dialog_shown': False,
+        'btn_prebook_state': False,
+        'car_height': 3.0,
+        'car_length': 2.5,
+        'is_check_xray': True,
+        'check_step': 0,
+        'radar_count': 0,
+    })
+
+    # 2. 停止距离调度器
+    try:
+        from app.services.scheduler import DistanceScheduler
+        DistanceScheduler().set_detection_state(False)
+        DistanceScheduler().stop()
+        print('[BOOKING] 距离调度器已停止')
+    except Exception as e:
+        print(f'[BOOKING] 调度器停止失败: {e}')
+
+    # 3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
+    execute_device_action('plc_001', 'setPLC', {
+        'redlight': False, 'yellowlight': True, 'greenlight': False
+    })
+    execute_device_action('gate_001', 'open')
+    execute_device_action('led_001', 'set_step1')
+
+    # 4. WS 推 booking_reset 给前端
+    try:
+        from app.websocket.handler import socketio
+        socketio.emit('message', {
+            'type': 'booking_reset',
+            'timestamp': int(time.time() * 1000),
+            'data': {
+                'state': dict(_booking_state),
+                'operator': user['real_name'],
+            },
+        })
+    except Exception as e:
+        print(f'[WS] 推送 booking_reset 失败: {e}')
+
+    return ok(_booking_state, '重置成功')

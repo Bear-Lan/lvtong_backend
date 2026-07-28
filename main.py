@@ -5,6 +5,9 @@
 - 后端: Flask REST API (端口 8080)
 - WebSocket: /ws
 """
+import signal
+import sys
+
 from gevent import monkey
 monkey.patch_all()
 
@@ -23,6 +26,9 @@ from app.api.device import device_api
 from app.api.imaging import imaging_api
 from app.api.history import history_api
 from app.api.capture import capture_api
+from app.api.internal import internal_api
+from app.api.mobile import mobile_api
+from app.api.file import file_api
 
 # WebSocket
 from app.websocket.handler import init_socketio
@@ -54,6 +60,9 @@ def create_app() -> Flask:
     app.register_blueprint(device_api)
     app.register_blueprint(imaging_api)
     app.register_blueprint(history_api)
+    app.register_blueprint(internal_api)
+    app.register_blueprint(mobile_api)
+    app.register_blueprint(file_api)
 
     # 图像文件服务：接收任意本地绝对路径，返回文件内容
     @app.route('/api/image')
@@ -75,6 +84,26 @@ def create_app() -> Flask:
 flask_app = create_app()
 socketio = init_socketio(flask_app)
 
+# gevent + flask-socketio 默认不能干净处理 Ctrl+C（raise KeyboardInterrupt in gevent hub）。
+# 注册 SIGINT/SIGTERM 让 Ctrl+C 能立即终止进程。
+def _shutdown_handler(signum, frame):
+    print(f'\n[SHUTDOWN] 收到信号 {signum}，正在关闭…', flush=True)
+    try:
+        from app.services.scheduler import DistanceScheduler
+        DistanceScheduler().stop()
+    except Exception:
+        pass
+    try:
+        from app.services.mobile_watcher import stop_mobile_watcher
+        stop_mobile_watcher()
+    except Exception:
+        pass
+    import os
+    os._exit(0)  # 强制退出，跳过 gevent 清理
+
+signal.signal(signal.SIGINT, _shutdown_handler)
+signal.signal(signal.SIGTERM, _shutdown_handler)
+
 if __name__ == '__main__':
     print(f'[启动] 绿通快检后端 API 服务启动于 http://{HOST}:{PORT}')
     print(f'[API] 已注册模块:')
@@ -86,7 +115,13 @@ if __name__ == '__main__':
     print(f'  device     GET /api/device/status|health, POST /api/device/...')
     print(f'  imaging    GET|POST /api/imaging/...')
     print(f'  history    GET /api/history/list|export|logs')
+    print(f'  mobile     GET /api/mobile/health, POST /api/mobile/upload/{{image,json}}')
     print(f'  ws         /ws (WebSocket)')
+
+    # ---- 启动移动 app 文件目录监听器（对齐 Qt JsonFolderWatcher） ----
+    print('[移动] 启动移动 app 目录监听器...')
+    from app.services.mobile_watcher import start_mobile_watcher
+    start_mobile_watcher()
 
     # ---- 初始化设备管理器（对齐 Qt 启动流程） ----
     print('[设备] 正在初始化设备管理器...')
@@ -156,4 +191,52 @@ if __name__ == '__main__':
     mgr.start_health_check()
     print('[设备] 健康检查已启动 (间隔 20s)')
 
-    socketio.run(flask_app, host=HOST, port=PORT, debug=DEBUG, allow_unsafe_werkzeug=True)
+    # ===== 双协议启动：HTTP 8080 + HTTPS 8081 =====
+    # - HTTP 8080：前端 Vite 代理 / mock_back HTTP 调用 / curl 测试
+    # - HTTPS 8081：Android 移动 app 上传（自签证书）
+    # 共享同一个 Flask app + SocketIO
+
+    from gevent import pywsgi
+    import gevent
+    import socketio as sio_pkg  # python-socketio
+
+    # 创建 WSGI 包装（SocketIO + Flask）
+    wsgi_app = sio_pkg.WSGIApp(socketio, flask_app)
+
+    # HTTPS 证书路径（gevent 用 ssl_args 传 certfile/keyfile）
+    cert_path = None
+    key_path = None
+    try:
+        from app.services.tls_cert import _ensure_cert
+        cert_path, key_path = _ensure_cert()
+        print(f'[HTTPS] 自签证书加载完成: {cert_path}')
+    except Exception as e:
+        print(f'[HTTPS] 加载证书失败: {e}')
+
+    http_port = PORT  # 8080
+    # HTTPS 端口（避开 mock_back 的 8081）：默认 8082
+    https_port = int(os.environ.get('HTTPS_PORT', '8082'))
+
+    http_server = pywsgi.WSGIServer((HOST, http_port), wsgi_app)
+    if cert_path and key_path:
+        https_server = pywsgi.WSGIServer(
+            (HOST, https_port), wsgi_app,
+            certfile=cert_path,
+            keyfile=key_path,
+        )
+    else:
+        https_server = pywsgi.WSGIServer((HOST, https_port), wsgi_app)  # 回退 HTTP
+
+    print(f'[SERVER] HTTP  启动 http://{HOST}:{http_port}')
+    print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
+
+    try:
+        gevent.joinall([
+            gevent.spawn(http_server.serve_forever),
+            gevent.spawn(https_server.serve_forever),
+        ])
+    except KeyboardInterrupt:
+        print('[SHUTDOWN] 收到 Ctrl+C，正在关闭…')
+    finally:
+        http_server.stop()
+        https_server.stop()

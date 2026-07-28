@@ -134,36 +134,84 @@ def submit_inspection():
     """提交检测记录
 
     POST /api/inspection/submit
-    Body: VehicleInspection 完整数据
+    Body: VehicleInspection 完整数据（50+ 字段 + 7 个时间戳 + 14 个 passcode_* 字段）
 
-    参考 Qt LvTongPro::onConfirmClicked()
+    参考 Qt LvTongPro::slotsOnCommitData()
     """
     body = request.get_json(silent=True)
     if not body:
         return fail(400, '请求数据不能为空')
 
     user = request.gc_user
+    print(f'[INSPECTION] 用户 {user["username"]} 提交检测: plate={body.get("plate_number")} '
+          f'goods={body.get("goods_type")} passcode_vehicle={body.get("passcode_vehicle_display_id", "")[:30]}')
+
+    # 字段映射：前端 vehicle_container_type → DB vehicle_containertype
+    if 'vehicle_container_type' in body and 'vehicle_containertype' not in body:
+        body['vehicle_containertype'] = body.pop('vehicle_container_type')
+    body.pop('goods_name', None)  # DB 不存
+
+    # 必填字段校验（对齐 Qt slotsOnCommitData 12 个必填）
+    missing = _validate_required_fields(body)
+    if missing:
+        print(f'[INSPECTION] 必填字段缺失: {missing}')
+        return fail(400, f'必填字段缺失: {", ".join(missing)}', {
+            'missingFields': missing,
+        })
 
     # 设置操作员信息
     body.setdefault('operator_name', user['real_name'])
     body.setdefault('inspector_phone', body.get('inspector_phone', ''))
+    body.setdefault('reviewer_phone', body.get('reviewer_phone', ''))
 
     # 设置提交时间
     if not body.get('inspection_time'):
         body['inspection_time'] = datetime.now(timezone.utc)
 
-    # 获取复核人信息（从请求中读取或默认值）
-    body.setdefault('reviewer_name', '')
-    body.setdefault('reviewer_phone', '')
-
     # 写入数据库
-    db = DBVehicle()
-    inspection_id = db.addInspection(body)
+    try:
+        db = DBVehicle()
+        inspection_id = db.addInspection(body)
+    except Exception as e:
+        print(f'[INSPECTION] 写库失败: {e}')
+        return fail(500, f'数据库写入失败: {e}')
 
     if inspection_id > 0:
+        print(f'[INSPECTION] 提交成功, id={inspection_id}, 字段数={len(body)}')
         return ok({'id': inspection_id}, '提交成功')
     else:
-        return fail(500, '提交失败')
+        return fail(500, '提交失败（addInspection 返回 -1）')
+
+
+# Qt slotsOnCommitData 12 个必填字段校验
+_REQUIRED_FIELDS = [
+    ('plate_number', '车牌号'),
+    ('driver_phone', '司机电话（11位）'),
+    ('goods_type', '货物类型'),
+    ('vehicle_size', '车辆长宽高'),
+    ('head_image_path', '车头照片'),
+    ('body_image_path', '车身照片'),
+    ('tail_image_path', '车尾照片'),
+    ('license_image_path', '行驶证照片'),
+    # 通行码必填（Qt 是 ETC 解析后必填，前端如果没拿到留空不阻断提交）
+    # ('passcode_en_station_id', '入口站'),
+    # ('passcode_ex_station_id', '出口站'),
+    # ('passcode_ex_weight', '出口称量'),
+]
+
+
+def _validate_required_fields(body: dict) -> list:
+    """校验 Qt 必填字段，返回缺失字段名列表"""
+    missing = []
+    for field, desc in _REQUIRED_FIELDS:
+        v = body.get(field)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            missing.append(f'{field}({desc})')
+    # driver_phone 必须 11 位
+    phone = body.get('driver_phone', '')
+    if phone and len(str(phone)) != 11:
+        missing.append('driver_phone(必须11位手机号)')
+    return missing
 
 
 @inspection_api.route('/query', methods=['GET'])
