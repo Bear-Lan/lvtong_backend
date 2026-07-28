@@ -234,15 +234,24 @@ if __name__ == '__main__':
     # HTTPS 端口（避开 mock_back 的 8081）：默认 8082
     https_port = int(os.environ.get('HTTPS_PORT', '8082'))
 
-    http_server = pywsgi.WSGIServer((HOST, http_port), wsgi_app)
+    # gevent.pywsgi 默认 log=sys.stderr（不走 logging），要让 filter 生效必须显式传 logger
+    gevent_logger = logging.getLogger('gevent.pywsgi')
+    http_server = pywsgi.WSGIServer(
+        (HOST, http_port), wsgi_app,
+        log=gevent_logger,
+    )
     if cert_path and key_path:
         https_server = pywsgi.WSGIServer(
             (HOST, https_port), wsgi_app,
             certfile=cert_path,
             keyfile=key_path,
+            log=gevent_logger,
         )
     else:
-        https_server = pywsgi.WSGIServer((HOST, https_port), wsgi_app)  # 回退 HTTP
+        https_server = pywsgi.WSGIServer(
+            (HOST, https_port), wsgi_app,
+            log=gevent_logger,
+        )  # 回退 HTTP
 
     print(f'[SERVER] HTTP  启动 http://{HOST}:{http_port}')
     print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
