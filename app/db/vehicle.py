@@ -102,6 +102,22 @@ class DBVehicle(BaseRepo):
         )
         return _normalize(d) if d else None
 
+    def findRecentDuplicateId(self, plate_number: str, within_seconds: int = 5) -> int | None:
+        """防重：返回该车牌最近 within_seconds 秒内最近一次提交记录的 id。
+
+        用于 submit 接口防止前端双击或重试造成重复入库。
+        """
+        if not plate_number:
+            return None
+        row = self._one(
+            "SELECT id FROM vehicle_inspections "
+            "WHERE plate_number = :plate AND status = 0 "
+            "AND created_time >= NOW() - (:sec || ' seconds')::interval "
+            "ORDER BY created_time DESC LIMIT 1",
+            {'plate': plate_number, 'sec': str(within_seconds)},
+        )
+        return row['id'] if row else None
+
     def getInspectionsByPlate(self, plate: str) -> list[dict]:
         rows = self._rows(
             "SELECT * FROM vehicle_inspections "

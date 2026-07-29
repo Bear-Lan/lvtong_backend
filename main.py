@@ -68,13 +68,36 @@ def create_app() -> Flask:
     # 图像文件服务：接收任意本地绝对路径，返回文件内容
     @app.route('/api/image')
     def serve_image():
-        """GET /api/image?path=<磁盘绝对路径>"""
+        """GET /api/image?path=<磁盘绝对路径>（保留兼容，新代码请用 /api/images/<rel>）"""
         import os
         from urllib.parse import unquote
         path = unquote(request.args.get('path', ''))
         if not path or not os.path.isfile(path):
             return jsonify({'code': 404, 'message': '文件不存在', 'data': None}), 404
         return send_file(path)
+
+    # 图像文件服务（新）：/api/images/<relative>，绑定 IMAGE_STORAGE_ROOT
+    @app.route('/api/images/<path:rel>')
+    def serve_storage_image(rel: str):
+        """GET /api/images/<rel> — 把 IMAGE_STORAGE_ROOT 下的相对路径作为静态文件返回。
+
+        强制沙箱：拒绝任何越级访问（.. 或绝对路径）。
+        """
+        import os
+        from config import IMAGE_STORAGE_ROOT
+        if not rel or '..' in rel.split('/'):
+            return jsonify({'code': 400, 'message': '非法的相对路径', 'data': None}), 400
+        norm_root = os.path.normpath(IMAGE_STORAGE_ROOT)
+        target = os.path.normpath(os.path.join(norm_root, rel))
+        # 再次确保在根目录之内（防 ../ 与 symlink）
+        try:
+            if os.path.commonpath([target, norm_root]) != norm_root:
+                return jsonify({'code': 403, 'message': '访问被拒绝', 'data': None}), 403
+        except ValueError:
+            return jsonify({'code': 403, 'message': '访问被拒绝', 'data': None}), 403
+        if not os.path.isfile(target):
+            return jsonify({'code': 404, 'message': '文件不存在', 'data': None}), 404
+        return send_file(target)
 
     # 注册图像采集蓝图
     app.register_blueprint(capture_api)
