@@ -1,0 +1,36 @@
+# 本仓库摄像头配置（主页实时视频）
+# 启动: .\deploy\mediamtx\start.ps1  或由 Flask 自动拉起
+# Linux: ./deploy/mediamtx/start.sh
+
+logLevel: info
+logDestinations: [stdout]
+
+api: yes
+apiAddress: :9997
+
+rtsp: yes
+rtspAddress: :8554
+
+rtmp: no
+hls: no
+srt: no
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcIPsFromInterfaces: yes
+# 浏览器与 MediaMTX 不在同一台机器时，填本机局域网 IP，例如:
+# webrtcAdditionalHosts: ["192.168.88.253"]
+webrtcAdditionalHosts: []
+
+pathDefaults:
+  sourceOnDemand: yes
+  sourceOnDemandStartTimeout: 15s
+  sourceOnDemandCloseAfter: 30s
+
+paths:
+  # 前端: /mtx/cam1/whep （Vite 代理到 :8889）
+  # source 由 Flask 启动时从 devices.id=20（可用 LIVE_VIDEO_DEVICE_PK 覆盖）自动写入
+  cam1:
+    source: rtsp://admin:whds%402025@192.168.88.104:554/Streaming/Channels/101
+    rtspTransport: tcp

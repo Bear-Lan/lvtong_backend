@@ -18,6 +18,15 @@ build/
 # 环境变量
 .env
 
+# MediaMTX 二进制与运行残留（download 脚本拉取，勿提交）
+deploy/mediamtx/mediamtx.exe
+deploy/mediamtx/mediamtx
+deploy/mediamtx/mediamtx.zip
+deploy/mediamtx/_extract/
+deploy/mediamtx/mediamtx.default.yml
+deploy/mediamtx/auto.crt
+deploy/mediamtx/auto.key
+
 # 系统文件
 .DS_Store
 Thumbs.db
