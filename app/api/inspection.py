@@ -341,6 +341,17 @@ def submit_inspection():
     if not body.get('inspection_time'):
         body['inspection_time'] = datetime.now(timezone.utc)
 
+    # ---- 4.5 注入 6 个时间字段（统一从 _booking_state 读，确保权威源唯一） ----
+    try:
+        from app.api.booking import _booking_state as _bs
+        for f in ('btn_prebook_time', 'acceptance_time', 'opengate_time',
+                  'openlightscreen_time', 'closelightscreen_time', 'cd_photo_time'):
+            # 后端字段优先；前端发的值仅在缺失时回退（前端不应该传时间字段，这里只是兜底）
+            if not body.get(f) and _bs.get(f):
+                body[f] = _bs[f]
+    except Exception as e:
+        print(f'[INSPECTION] 时间字段注入失败（不影响提交）: {e}')
+
     # ---- 5. 写入数据库 ----
     try:
         db = DBVehicle()
@@ -351,6 +362,16 @@ def submit_inspection():
 
     if inspection_id > 0:
         print(f'[INSPECTION] 提交成功, id={inspection_id}, 字段数={len(body)}')
+
+        # ---- 5.5 推进 last_acceptance_time，让下一辆车取更早的栈元素 ----
+        try:
+            from app.api.booking import _booking_state as _bs
+            if body.get('acceptance_time'):
+                _bs['last_acceptance_time'] = body['acceptance_time']
+                print(f'[INSPECTION] last_acceptance_time 推进 -> {_bs["last_acceptance_time"]}')
+        except Exception as e:
+            print(f'[INSPECTION] 推进 last_acceptance_time 失败（不影响提交）: {e}')
+
         return ok({'id': inspection_id}, '提交成功')
     else:
         return fail(500, '提交失败（addInspection 返回 -1）')

@@ -26,10 +26,11 @@ from app.api.inspection import inspection_api
 from app.api.device import device_api
 from app.api.imaging import imaging_api
 from app.api.history import history_api
-from app.api.capture import capture_api
 from app.api.internal import internal_api
 from app.api.mobile import mobile_api
 from app.api.file import file_api
+from app.api.debug import debug_api
+from app.api.capture import capture_api
 
 # WebSocket
 from app.websocket.handler import init_socketio
@@ -64,6 +65,7 @@ def create_app() -> Flask:
     app.register_blueprint(internal_api)
     app.register_blueprint(mobile_api)
     app.register_blueprint(file_api)
+    app.register_blueprint(debug_api)
 
     # 图像文件服务：接收任意本地绝对路径，返回文件内容
     @app.route('/api/image')

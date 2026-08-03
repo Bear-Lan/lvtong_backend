@@ -31,12 +31,21 @@ def init_socketio(app):
     return socketio
 
 
+def get_socketio_clients_count() -> int:
+    """返回当前 socketio 已连接客户端数量（调试期排查 WS 是否有人订阅）"""
+    try:
+        # flask-socketio 没有公开 API；用内部 manager 兜底
+        return len(getattr(socketio.server, 'manager', {}).get('rooms', {}).get('/', {}))
+    except Exception:
+        return -1
+
+
 def register_handlers():
     """注册 WebSocket 事件处理器"""
 
     @socketio.on('connect')
     def handle_connect():
-        print(f'[WS] 客户端连接: {id(handle_connect)}')
+        print(f'[WS] 客户端连接: {id(handle_connect)} (在线 {get_socketio_clients_count()})')
         emit('message', {
             'type': 'connect_ack',
             'timestamp': int(time.time() * 1000),
@@ -45,7 +54,7 @@ def register_handlers():
 
     @socketio.on('disconnect')
     def handle_disconnect():
-        print('[WS] 客户端断开')
+        print(f'[WS] 客户端断开 (在线 {get_socketio_clients_count()})')
 
     @socketio.on('message')
     def handle_message(payload):

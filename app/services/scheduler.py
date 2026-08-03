@@ -139,6 +139,28 @@ class DistanceScheduler:
                 print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 异常: {e}')
             self._device_activation_status[device_id] = True
 
+        # 打点 4 个时间字段到 _booking_state（Qt m_VehicleInspection 对齐）
+        # threshold.id 与时间字段的对应：
+        #   auto_capture_top   -> cd_photo_time
+        #   led_step5_plc_yellow -> openlightscreen_time（首次进光幕）
+        #   led_step7          -> closelightscreen_time（光幕结束）
+        #   arrived            -> opengate_time（车辆到达，开闸放行）
+        _TIME_FIELD_MAP = {
+            'auto_capture_top': 'cd_photo_time',
+            'led_step5_plc_yellow': 'openlightscreen_time',
+            'led_step7': 'closelightscreen_time',
+            'arrived': 'opengate_time',
+        }
+        field = _TIME_FIELD_MAP.get(threshold.id)
+        if field:
+            try:
+                from app.api.booking import _booking_state as _bs
+                from datetime import datetime
+                _bs[field] = datetime.now().isoformat(timespec='seconds')
+                print(f'[SCHEDULER] 打点 {field} = {_bs[field]} (threshold={threshold.id})')
+            except Exception as e:
+                print(f'[SCHEDULER] 打点 {field} 失败: {e}')
+
         # 推送检测步骤更新
         self._push_step_update(threshold)
 

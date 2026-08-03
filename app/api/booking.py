@@ -35,6 +35,18 @@ _booking_state = {
     'is_check_xray': True,
     'check_step': 0,
     'radar_count': 0,
+
+    # ---- 时间字段（对齐 Qt m_VehicleInspection.* 字段命名） ----
+    'btn_prebook_time': '',          # 本轮：受理时从栈中取出的最早按键时间（ISO 秒）
+    'acceptance_time': '',           # 用户点受理的时刻
+    'opengate_time': '',             # 开闸时间（PLC green 或 arrived 触发）
+    'openlightscreen_time': '',      # 光幕开启
+    'closelightscreen_time': '',     # 光幕关闭
+    'cd_photo_time': '',             # 车顶拍照时间
+
+    # ---- 栈与上一轮锚点（Qt m_lstPreBookTime + 闭区间对照） ----
+    'btn_prebook_stack': [],         # 司机按键时间戳栈（按到达顺序追加；受理时 pop）
+    'last_acceptance_time': '',       # 上一辆车的 acceptance_time，用于"取 > last 的最早"判定
 }
 
 
@@ -44,6 +56,55 @@ def get_booking_state():
 
 def set_booking_state(**kwargs):
     _booking_state.update(kwargs)
+
+
+def _now_iso() -> str:
+    """返回 ISO 格式（秒级）的本地时间戳 — 数据库列 timestamp without time zone 本地时间。"""
+    from datetime import datetime
+    return datetime.now().isoformat(timespec='seconds')
+
+
+def _book_button_stack_push() -> str:
+    """司机按键入栈 — 升沿（Qt 注释：booking && !m_lastBookingState 才打）。
+
+    调用方应保证调用频率受控（去重由调用方做，例如仅在 /api/internal/emit
+    收到 msg_type=='booking' action=='book_button' 时调用）。
+    """
+    now = _now_iso()
+    _booking_state['btn_prebook_stack'].append(now)
+    return now
+
+
+def _book_button_stack_pop_for_acceptance(acceptance_time: str) -> str:
+    """Qt 风格：取最早一个 > last_acceptance_time 的；如果没有 > last 的，取栈底最老。
+
+    取出后从栈里删除该元素，同时把 < last_acceptance_time 的老尾巴清理掉。
+    """
+    stack = list(_booking_state['btn_prebook_stack'])
+    last = _booking_state.get('last_acceptance_time', '')
+
+    # 1. 优先：栈里 > last_acceptance_time 的最早一个
+    candidates = [t for t in stack if (not last or t > last)]
+    if candidates:
+        picked = min(candidates)  # ISO 时间字符串字典序与时间顺序一致
+    elif stack:
+        # 2. 退化：栈里全是老车时间，取最老的一个作为本轮（视为"上一轮的尾巴"）
+        picked = min(stack)
+    else:
+        picked = ''
+
+    # 3. 清理：只保留 picked 之后的元素
+    if picked and picked in stack:
+        remaining = [t for t in stack if t != picked]
+    else:
+        remaining = stack
+
+    # 4. 再清：< last_acceptance_time 的老尾巴
+    if last:
+        remaining = [t for t in remaining if t > last]
+
+    _booking_state['btn_prebook_stack'] = remaining
+    return picked
 
 
 @booking_api.route('/open', methods=['POST'])
@@ -173,8 +234,15 @@ def accept_booking():
     from app.services.device_action import execute_device_action
 
     # 后端打点 acceptanceTime（对齐 Qt QDateTime::currentDateTime()）
-    from datetime import datetime
-    acceptance_time = datetime.now().isoformat(timespec='seconds')
+    acceptance_time = _now_iso()
+
+    # 从 btn_prebook_stack 取出本轮司机的最早按键时间（Qt m_lstPreBookTime 语义）
+    btn_prebook_time = _book_button_stack_pop_for_acceptance(acceptance_time)
+    if btn_prebook_time:
+        print(f'[BOOKING] 从栈中取出 btn_prebook_time={btn_prebook_time} '
+              f'(栈剩余 {len(_booking_state["btn_prebook_stack"])} 项)')
+    else:
+        print(f'[BOOKING] 栈为空，btn_prebook_time 留空（司机未按键直接受理）')
 
     # 更新全局状态
     _booking_state.update({
@@ -186,6 +254,8 @@ def accept_booking():
         'radar_count': 0,
         'btn_prebook_state': False,
         'acceptance_time': acceptance_time,
+        'btn_prebook_time': btn_prebook_time,
+        # opengate/openlight/closelight/cd_photo 在 scheduler 触发时按需打
     })
 
     # 1. PLC 红灯
@@ -220,6 +290,7 @@ def accept_booking():
                 'carHeadLength': car_head_length,
                 'xrayEnabled': xray_enabled,
                 'acceptanceTime': acceptance_time,
+                'btnPrebookTime': btn_prebook_time,
                 'operator': user['real_name'],
             },
         })
@@ -228,7 +299,30 @@ def accept_booking():
 
     return ok({
         'acceptanceTime': acceptance_time,
+        'btnPrebookTime': btn_prebook_time,
     }, '受理成功')
+
+
+@booking_api.route('/btn-press', methods=['POST'])
+def btn_press():
+    """司机按键预约（Qt LvTongPro::onPLCBookingChanged 上升沿）
+
+    POST /api/booking/btn-press
+
+    行为：把当前时间压入 _booking_state.btn_prebook_stack。
+    注意：不要求登录（PLC 触发），但要求来源为 mock_back/同机
+    （main.py 会通过 /api/internal/emit 调用，或者直接调此 endpoint）。
+
+    返回：当前栈长度 + 栈内容。
+    """
+    btn_time = _book_button_stack_push()
+    stack = _booking_state['btn_prebook_stack']
+    print(f'[BOOKING] btn-press 入栈: {btn_time}, 栈长度={len(stack)}')
+    return ok({
+        'btnPressTime': btn_time,
+        'stackLen': len(stack),
+        'stack': stack,
+    })
 
 
 @booking_api.route('/reject', methods=['POST'])
@@ -397,6 +491,15 @@ def reset_booking():
         'is_check_xray': True,
         'check_step': 0,
         'radar_count': 0,
+        # 时间字段 + 栈 + 锚点全清
+        'btn_prebook_time': '',
+        'acceptance_time': '',
+        'opengate_time': '',
+        'openlightscreen_time': '',
+        'closelightscreen_time': '',
+        'cd_photo_time': '',
+        'btn_prebook_stack': [],
+        'last_acceptance_time': '',
     })
 
     # 2. 停止距离调度器
