@@ -11,19 +11,19 @@ from urllib.parse import quote
 
 _proc: subprocess.Popen | None = None
 
-_DEPLOY_DIR = Path(__file__).resolve().parents[2] / 'deploy' / 'mediamtx'
+_MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
 # 默认连 public.devices.id = 21（camera2，192.168.88.101）
 _DEFAULT_DEVICE_PK = 21
 
 
 def _bin_path() -> Path:
     if sys.platform.startswith('win'):
-        return _DEPLOY_DIR / 'mediamtx.exe'
-    return _DEPLOY_DIR / 'mediamtx'
+        return _MTX_DIR / 'mediamtx.exe'
+    return _MTX_DIR / 'mediamtx'
 
 
 def _cfg_path() -> Path:
-    return _DEPLOY_DIR / 'mediamtx.local.yml'
+    return _MTX_DIR / 'mediamtx.local.yml'
 
 
 def is_enabled() -> bool:
@@ -162,11 +162,7 @@ def start_mediamtx() -> bool:
         return False
 
     if not bin_path.is_file():
-        print(f'[MediaMTX] 未找到 {bin_path.name}，请先运行:')
-        if sys.platform.startswith('win'):
-            print(r'  .\deploy\mediamtx\download.ps1')
-        else:
-            print('  ./deploy/mediamtx/download.sh')
+        print(f'[MediaMTX] 未找到 {bin_path.name}，请将 mediamtx.exe 放到 tools/mediamtx/')
         return False
 
     _stop_foreign_mediamtx()
@@ -177,7 +173,7 @@ def start_mediamtx() -> bool:
             creationflags = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
         _proc = subprocess.Popen(
             [str(bin_path), str(cfg)],
-            cwd=str(_DEPLOY_DIR),
+            cwd=str(_MTX_DIR),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,

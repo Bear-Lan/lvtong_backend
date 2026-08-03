@@ -1,6 +1,5 @@
-# 本仓库摄像头配置（主页实时视频）
-# 启动: .\deploy\mediamtx\start.ps1  或由 Flask 自动拉起
-# Linux: ./deploy/mediamtx/start.sh
+# 本仓库摄像头配置（主页实时视频 / 预约弹窗）
+# 由 Flask（python main.py）自动拉起 tools/mediamtx/mediamtx.exe
 
 logLevel: info
 logDestinations: [stdout]
