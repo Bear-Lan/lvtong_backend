@@ -115,6 +115,11 @@ socketio = init_socketio(flask_app)
 def _shutdown_handler(signum, frame):
     print(f'\n[SHUTDOWN] 收到信号 {signum}，正在关闭…', flush=True)
     try:
+        from app.services.mediamtx_launcher import stop_mediamtx
+        stop_mediamtx()
+    except Exception:
+        pass
+    try:
         from app.services.scheduler import DistanceScheduler
         DistanceScheduler().stop()
     except Exception:
@@ -232,6 +237,13 @@ if __name__ == '__main__':
     mgr.start_health_check()
     print('[设备] 健康检查已启动 (间隔 20s)')
 
+    # 4.5 主页实时视频：MediaMTX（WHEP）
+    try:
+        from app.services.mediamtx_launcher import start_mediamtx
+        start_mediamtx()
+    except Exception as e:
+        print(f'[MediaMTX] 自动启动异常: {e}')
+
     # ===== 双协议启动：HTTP 8080 + HTTPS 8082 =====
     # - HTTP 8080：前端 Vite 代理 / mock_back HTTP 调用 / curl 测试
     # - HTTPS 8082：Android 移动 app 上传（自签证书）
@@ -289,5 +301,10 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('[SHUTDOWN] 收到 Ctrl+C，正在关闭…')
     finally:
+        try:
+            from app.services.mediamtx_launcher import stop_mediamtx
+            stop_mediamtx()
+        except Exception:
+            pass
         http_server.stop()
         https_server.stop()
