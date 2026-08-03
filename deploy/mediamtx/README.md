@@ -9,8 +9,8 @@ cd E:\bibl\lvtong-backend
 .\deploy\mediamtx\download.ps1
 ```
 
-摄像头一般改数据库 `devices`（默认 `id=20` / camera1），Flask 启动时会同步到 `mediamtx.local.yml` 的 `cam1.source`。  
-环境变量：`LIVE_VIDEO_DEVICE_PK`（默认 20）、`LIVE_VIDEO_STREAM_TYPE`（1 主码流 / 2 子码流）。
+摄像头一般改数据库 `devices`（默认 `id=21` / camera2 / 192.168.88.101），Flask 启动时会同步到 `mediamtx.local.yml` 的 `cam1.source`。  
+环境变量：`LIVE_VIDEO_DEVICE_PK`（默认 21）、`LIVE_VIDEO_STREAM_TYPE`（1 主码流 / 2 子码流）。
 
 ## 日常使用
 
@@ -20,7 +20,7 @@ python main.py
 ```
 
 Flask 默认自动拉起 MediaMTX（`MEDIAMTX_AUTO_START=true`）。  
-再开前端 Vite，主页「实时视频」走 `/mtx/cam1/whep`。
+再开前端 Vite；主页「实时视频」与预约弹窗右侧视频均走 `/mtx/cam1/whep`（同一路球机）。
 
 关闭自动启动：
 

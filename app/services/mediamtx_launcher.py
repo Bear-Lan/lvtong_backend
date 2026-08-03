@@ -12,8 +12,8 @@ from urllib.parse import quote
 _proc: subprocess.Popen | None = None
 
 _DEPLOY_DIR = Path(__file__).resolve().parents[2] / 'deploy' / 'mediamtx'
-# 默认连 public.devices.id = 20（camera1）
-_DEFAULT_DEVICE_PK = 20
+# 默认连 public.devices.id = 21（camera2，192.168.88.101）
+_DEFAULT_DEVICE_PK = 21
 
 
 def _bin_path() -> Path:

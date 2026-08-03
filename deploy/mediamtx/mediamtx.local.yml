@@ -30,7 +30,7 @@ pathDefaults:
 
 paths:
   # 前端: /mtx/cam1/whep （Vite 代理到 :8889）
-  # source 由 Flask 启动时从 devices.id=20（可用 LIVE_VIDEO_DEVICE_PK 覆盖）自动写入
+  # source 由 Flask 启动时从 devices.id=21（可用 LIVE_VIDEO_DEVICE_PK 覆盖）自动写入
   cam1:
-    source: rtsp://admin:whds%402025@192.168.88.104:554/Streaming/Channels/101
+    source: rtsp://admin:whds%402025@192.168.88.101:554/Streaming/Channels/101
     rtspTransport: tcp
