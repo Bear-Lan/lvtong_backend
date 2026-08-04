@@ -35,8 +35,8 @@ paths:
     source: rtsp://admin:whds%402025@192.168.88.101:554/Streaming/Channels/101
     rtspTransport: tcp
 
-  # 前端: /mtx/cam4/whep — 预约弹窗右侧 / 可视对讲
-  # source 由 Flask 从 devices.device_id=camera4（可用 TALK_VIDEO_DEVICE_ID 覆盖）写入
-  cam4:
-    source: rtsp://admin:whds%402025@192.168.88.103:554/Streaming/Channels/101
+  # 前端: /mtx/cam5/whep — 预约弹窗右侧画面
+  # source 由 Flask 从 devices.device_id=camera5（可用 TALK_VIDEO_DEVICE_ID 覆盖）写入
+  cam5:
+    source: rtsp://admin:whds%402025@192.168.88.106:554/Streaming/Channels/101
     rtspTransport: tcp

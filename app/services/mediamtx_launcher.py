@@ -1,7 +1,7 @@
 """从 devices 表按 device_id 同步 RTSP 到 MediaMTX 配置，并拉起进程。
 
 - paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 camera2）→ 主页实时视频
-- paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 camera4）→ 预约 / 可视对讲
+- paths.cam5 ← TALK_VIDEO_DEVICE_ID（默认 camera5）→ 预约 / 可视对讲
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ _proc: subprocess.Popen | None = None
 
 _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
 _DEFAULT_LIVE_DEVICE_ID = 'camera2'
-_DEFAULT_TALK_DEVICE_ID = 'camera4'
+_DEFAULT_TALK_DEVICE_ID = 'camera5'
 
 
 def _bin_path() -> Path:
@@ -130,10 +130,10 @@ def sync_cam1_source_from_db(device_id: str | None = None) -> str | None:
     return _sync_path_from_device_id('cam1', did)
 
 
-def sync_cam4_source_from_db(device_id: str | None = None) -> str | None:
-    """预约/可视对讲：device_id → paths.cam4.source（默认 camera4）。"""
+def sync_cam5_source_from_db(device_id: str | None = None) -> str | None:
+    """预约/可视对讲：device_id → paths.cam5.source（默认 camera5）。"""
     did = (device_id or os.environ.get('TALK_VIDEO_DEVICE_ID') or _DEFAULT_TALK_DEVICE_ID).strip()
-    return _sync_path_from_device_id('cam4', did)
+    return _sync_path_from_device_id('cam5', did)
 
 
 def _stop_foreign_mediamtx() -> None:
@@ -178,9 +178,9 @@ def start_mediamtx() -> bool:
         print(f'[MediaMTX] 同步 cam1 RTSP 失败: {e}')
 
     try:
-        sync_cam4_source_from_db()
+        sync_cam5_source_from_db()
     except Exception as e:
-        print(f'[MediaMTX] 同步 cam4 RTSP 失败: {e}')
+        print(f'[MediaMTX] 同步 cam5 RTSP 失败: {e}')
 
     if _proc is not None and _proc.poll() is None:
         print('[MediaMTX] 已在运行')
@@ -213,7 +213,7 @@ def start_mediamtx() -> bool:
         print(
             f'[MediaMTX] 已启动 pid={_proc.pid}  '
             f'WHEP=http://127.0.0.1:8889/cam1/whep  '
-            f'http://127.0.0.1:8889/cam4/whep'
+            f'http://127.0.0.1:8889/cam5/whep'
         )
         return True
     except Exception as e:
