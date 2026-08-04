@@ -1,4 +1,8 @@
-"""从 devices 表同步主页实时视频 RTSP 到 MediaMTX 配置，并拉起进程。"""
+"""从 devices 表按 device_id 同步 RTSP 到 MediaMTX 配置，并拉起进程。
+
+- paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 camera2）→ 主页实时视频
+- paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 camera4）→ 预约 / 可视对讲
+"""
 from __future__ import annotations
 
 import atexit
@@ -12,8 +16,8 @@ from urllib.parse import quote
 _proc: subprocess.Popen | None = None
 
 _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
-# 默认连 public.devices.id = 21（camera2，192.168.88.101）
-_DEFAULT_DEVICE_PK = 21
+_DEFAULT_LIVE_DEVICE_ID = 'camera2'
+_DEFAULT_TALK_DEVICE_ID = 'camera4'
 
 
 def _bin_path() -> Path:
@@ -31,17 +35,21 @@ def is_enabled() -> bool:
     return raw in ('1', 'true', 'yes', 'on')
 
 
-def _load_device_row(device_pk: int) -> dict | None:
+def _load_device_by_device_id(device_id: str) -> dict | None:
     from sqlalchemy import text
     from app.db.engine import engine
+
+    did = (device_id or '').strip()
+    if not did:
+        return None
 
     with engine.connect() as conn:
         row = conn.execute(
             text(
                 'SELECT id, device_id, device_name, ip_address, port, username, password, config '
-                'FROM devices WHERE id = :pk'
+                'FROM devices WHERE device_id = :did'
             ),
-            {'pk': device_pk},
+            {'did': did},
         ).mappings().first()
     return dict(row) if row else None
 
@@ -73,41 +81,59 @@ def build_hik_rtsp_from_device(row: dict, *, stream_type: int = 1) -> str:
     return f'rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{channel_num}'
 
 
-def sync_cam1_source_from_db(device_pk: int | None = None) -> str | None:
-    """把 devices.id 对应相机的 RTSP 写入 mediamtx.local.yml 的 paths.cam1.source。"""
-    pk = device_pk
-    if pk is None:
-        pk = int(os.environ.get('LIVE_VIDEO_DEVICE_PK', str(_DEFAULT_DEVICE_PK)))
-
-    row = _load_device_row(pk)
-    if not row:
-        print(f'[MediaMTX] devices.id={pk} 不存在，跳过 RTSP 同步')
-        return None
-
-    # 主页预览可用子码流压延时：LIVE_VIDEO_STREAM_TYPE=2
-    stream_type = int(os.environ.get('LIVE_VIDEO_STREAM_TYPE', '1'))
-    rtsp = build_hik_rtsp_from_device(row, stream_type=stream_type)
+def _write_path_source(path_name: str, rtsp: str) -> bool:
+    """只改 paths.<path_name> 块内的 source:，不碰其它 path。"""
     cfg_path = _cfg_path()
     if not cfg_path.is_file():
         print(f'[MediaMTX] 缺少配置文件: {cfg_path}')
-        return None
+        return False
 
     text = cfg_path.read_text(encoding='utf-8')
-    new_text, n = re.subn(
-        r'(?m)^(\s+source:\s*).+$',
-        r'\g<1>' + rtsp,
-        text,
-        count=1,
+    # 匹配 "  cam1:\n    source: ..." 这类块内第一处 source
+    pattern = re.compile(
+        rf'(?m)^(\s*{re.escape(path_name)}:\s*\n(?:.*\n)*?\s+source:\s*).+$'
     )
+    new_text, n = pattern.subn(r'\g<1>' + rtsp, text, count=1)
     if n == 0:
-        print('[MediaMTX] 未能写入 cam1.source，请检查 yml 结构')
-        return None
+        print(f'[MediaMTX] 未能写入 {path_name}.source，请检查 yml 结构')
+        return False
 
     cfg_path.write_text(new_text, encoding='utf-8')
+    return True
+
+
+def _stream_type() -> int:
+    return int(os.environ.get('LIVE_VIDEO_STREAM_TYPE', '1'))
+
+
+def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
+    row = _load_device_by_device_id(device_id)
+    if not row:
+        print(f'[MediaMTX] devices.device_id={device_id} 不存在，跳过 {path_name} 同步')
+        return None
+
+    rtsp = build_hik_rtsp_from_device(row, stream_type=_stream_type())
+    if not _write_path_source(path_name, rtsp):
+        return None
+
     ip = row.get('ip_address')
-    did = row.get('device_id')
-    print(f'[MediaMTX] 已从 DB 同步 RTSP: devices.id={pk} ({did}) ip={ip}')
+    print(
+        f'[MediaMTX] 已从 DB 同步 RTSP: path={path_name} '
+        f'device_id={device_id} ip={ip} WHEP=/mtx/{path_name}/whep'
+    )
     return rtsp
+
+
+def sync_cam1_source_from_db(device_id: str | None = None) -> str | None:
+    """主页实时：device_id → paths.cam1.source（默认 camera2）。"""
+    did = (device_id or os.environ.get('LIVE_VIDEO_DEVICE_ID') or _DEFAULT_LIVE_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam1', did)
+
+
+def sync_cam4_source_from_db(device_id: str | None = None) -> str | None:
+    """预约/可视对讲：device_id → paths.cam4.source（默认 camera4）。"""
+    did = (device_id or os.environ.get('TALK_VIDEO_DEVICE_ID') or _DEFAULT_TALK_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam4', did)
 
 
 def _stop_foreign_mediamtx() -> None:
@@ -149,7 +175,12 @@ def start_mediamtx() -> bool:
     try:
         sync_cam1_source_from_db()
     except Exception as e:
-        print(f'[MediaMTX] 同步 DB RTSP 失败: {e}')
+        print(f'[MediaMTX] 同步 cam1 RTSP 失败: {e}')
+
+    try:
+        sync_cam4_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam4 RTSP 失败: {e}')
 
     if _proc is not None and _proc.poll() is None:
         print('[MediaMTX] 已在运行')
@@ -179,16 +210,10 @@ def start_mediamtx() -> bool:
             creationflags=creationflags,
         )
         atexit.register(stop_mediamtx)
-        # 再读一遍确认配置 IP，避免看错文件
-        try:
-            yml = cfg.read_text(encoding='utf-8')
-            m = re.search(r'@([0-9.]+):554', yml)
-            ip_hint = m.group(1) if m else '?'
-        except Exception:
-            ip_hint = '?'
         print(
-            f'[MediaMTX] 已启动 pid={_proc.pid}  source_ip={ip_hint}  '
-            f'WHEP=http://127.0.0.1:8889/cam1/whep'
+            f'[MediaMTX] 已启动 pid={_proc.pid}  '
+            f'WHEP=http://127.0.0.1:8889/cam1/whep  '
+            f'http://127.0.0.1:8889/cam4/whep'
         )
         return True
     except Exception as e:

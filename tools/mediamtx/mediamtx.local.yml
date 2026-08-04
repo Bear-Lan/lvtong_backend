@@ -1,5 +1,6 @@
-# 本仓库摄像头配置（主页实时视频 / 预约弹窗）
+# 本仓库摄像头配置（主页实时视频 / 预约·可视对讲）
 # 由 Flask（python main.py）自动拉起 tools/mediamtx/mediamtx.exe
+# source 启动时按 devices.device_id 写入，勿手写死 IP
 
 logLevel: info
 logDestinations: [stdout]
@@ -28,8 +29,14 @@ pathDefaults:
   sourceOnDemandCloseAfter: 30s
 
 paths:
-  # 前端: /mtx/cam1/whep （Vite 代理到 :8889）
-  # source 由 Flask 启动时从 devices.id=21（可用 LIVE_VIDEO_DEVICE_PK 覆盖）自动写入
+  # 前端: /mtx/cam1/whep — 主页实时视频
+  # source 由 Flask 从 devices.device_id=camera2（可用 LIVE_VIDEO_DEVICE_ID 覆盖）写入
   cam1:
     source: rtsp://admin:whds%402025@192.168.88.101:554/Streaming/Channels/101
+    rtspTransport: tcp
+
+  # 前端: /mtx/cam4/whep — 预约弹窗右侧 / 可视对讲
+  # source 由 Flask 从 devices.device_id=camera4（可用 TALK_VIDEO_DEVICE_ID 覆盖）写入
+  cam4:
+    source: rtsp://admin:whds%402025@192.168.88.103:554/Streaming/Channels/101
     rtspTransport: tcp
