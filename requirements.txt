@@ -10,3 +10,10 @@ numpy
 pyserial
 gunicorn
 gevent
+# 实时视频检测（YOLO）；torch 建议按平台单独安装：
+#   CPU:  pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   CUDA: 按 https://pytorch.org 选择对应 wheel
+ultralytics
+lapx
+# 实时视频拉流（PyAV/ffmpeg，丢弃撕裂帧）
+av

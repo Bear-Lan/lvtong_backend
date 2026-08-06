@@ -31,6 +31,7 @@ from app.api.mobile import mobile_api
 from app.api.file import file_api
 from app.api.debug import debug_api
 from app.api.capture import capture_api
+from app.api.live import live_api
 
 # WebSocket
 from app.websocket.handler import init_socketio
@@ -103,6 +104,8 @@ def create_app() -> Flask:
 
     # 注册图像采集蓝图
     app.register_blueprint(capture_api)
+    # 内置实时视频检测（MJPEG + YOLO）
+    app.register_blueprint(live_api)
 
     return app
 
@@ -114,6 +117,11 @@ socketio = init_socketio(flask_app)
 # 注册 SIGINT/SIGTERM 让 Ctrl+C 能立即终止进程。
 def _shutdown_handler(signum, frame):
     print(f'\n[SHUTDOWN] 收到信号 {signum}，正在关闭…', flush=True)
+    try:
+        from app.services.live_detect import stop_live_detect
+        stop_live_detect()
+    except Exception:
+        pass
     try:
         from app.services.mediamtx_launcher import stop_mediamtx
         stop_mediamtx()
@@ -237,12 +245,15 @@ if __name__ == '__main__':
     mgr.start_health_check()
     print('[设备] 健康检查已启动 (间隔 20s)')
 
-    # 4.5 主页实时视频：MediaMTX（WHEP）
+    # 4.5 主页实时视频：MediaMTX（WHEP，预约/对讲 cam4）
     try:
         from app.services.mediamtx_launcher import start_mediamtx
         start_mediamtx()
     except Exception as e:
         print(f'[MediaMTX] 自动启动异常: {e}')
+
+    # 注意：LiveDetect / YOLO 绝不能在 HTTP 服务起来之前同步启动。
+    # torch/ultralytics 初始化会长时间占用 GIL，导致登录等接口全部 502。
 
     # ===== 双协议启动：HTTP 8080 + HTTPS 8082 =====
     # - HTTP 8080：前端 Vite 代理 / mock_back HTTP 调用 / curl 测试
@@ -293,6 +304,13 @@ if __name__ == '__main__':
     print(f'[SERVER] HTTP  启动 http://{HOST}:{http_port}')
     print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
 
+    # 4.6 HTTP 起来后再延迟启动检测，避免 torch 初始化堵住登录
+    try:
+        from app.services.live_detect import schedule_live_detect_start
+        schedule_live_detect_start(delay_sec=2.0)
+    except Exception as e:
+        print(f'[LiveDetect] 延迟启动调度异常: {e}')
+
     try:
         gevent.joinall([
             gevent.spawn(http_server.serve_forever),
@@ -301,6 +319,11 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print('[SHUTDOWN] 收到 Ctrl+C，正在关闭…')
     finally:
+        try:
+            from app.services.live_detect import stop_live_detect
+            stop_live_detect()
+        except Exception:
+            pass
         try:
             from app.services.mediamtx_launcher import stop_mediamtx
             stop_mediamtx()
