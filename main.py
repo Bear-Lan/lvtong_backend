@@ -303,13 +303,7 @@ if __name__ == '__main__':
 
     print(f'[SERVER] HTTP  启动 http://{HOST}:{http_port}')
     print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
-
-    # 4.6 HTTP 起来后再延迟启动检测，避免 torch 初始化堵住登录
-    try:
-        from app.services.live_detect import schedule_live_detect_start
-        schedule_live_detect_start(delay_sec=2.0)
-    except Exception as e:
-        print(f'[LiveDetect] 延迟启动调度异常: {e}')
+    # LiveDetect 不自动启动：需前端 POST /api/live/ensure 手动拉起
 
     try:
         gevent.joinall([

@@ -59,12 +59,9 @@ def live_reconnect():
 
 @live_api.route('/frame.jpg', methods=['GET'])
 def live_frame():
-    """单帧 JPEG：前端轮询用，避免 multipart MJPEG 灰屏闪烁。"""
+    """单帧 JPEG：不自动启动检测，未运行时返回 503。"""
     if not is_running():
-        try:
-            start_live_detect()
-        except Exception:
-            pass
+        return fail('检测未启动，请先调用 POST /api/live/ensure', http_status=503)
     jpeg = get_latest_jpeg()
     if not jpeg:
         return fail('暂无画面', http_status=503)
@@ -81,13 +78,9 @@ def live_frame():
 
 @live_api.route('/stream.mjpg', methods=['GET'])
 def live_stream():
-    """MJPEG 流：无登录（供 <img> 直连，兼容保留）。"""
+    """MJPEG 流：无登录（供 <img> 直连）；不自动启动检测。"""
     if not is_running():
-        # 懒启动：前端打开页面时自动拉起
-        try:
-            start_live_detect()
-        except Exception:
-            pass
+        return fail('检测未启动，请先调用 POST /api/live/ensure', http_status=503)
     return Response(
         mjpeg_generator(),
         mimetype='multipart/x-mixed-replace; boundary=live-frame',

@@ -415,7 +415,8 @@ def schedule_live_detect_start(delay_sec=2.0):
     在 monkey-patch 后的原生线程里访问 DB/socket 会与 gevent hub 死锁，
     表现为登录全面 502。
     """
-    raw = os.environ.get('LIVE_DETECT_AUTO_START', 'true').strip().lower()
+    # 默认 false：检测服务仅通过 POST /api/live/ensure 手动启动
+    raw = os.environ.get('LIVE_DETECT_AUTO_START', 'false').strip().lower()
     if raw not in ('1', 'true', 'yes', 'on'):
         print('[LiveDetect] 已跳过自动启动（LIVE_DETECT_AUTO_START=false）')
         return
