@@ -1,7 +1,7 @@
 """图像采集 API 蓝图
 
 提供检测流程中各类型图像的采集接口。
-实际拉图/存盘逻辑在 app.services.capture_service。
+实际拉图并推前端预览（dataUrl）；落盘在提交检测单时 persist。
 """
 from flask import Blueprint, request, jsonify
 

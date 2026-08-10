@@ -53,10 +53,19 @@ class DistanceScheduler:
     # ---- 控制 ----
 
     def start(self):
+        """启动调度；新一轮检测前清掉阈值已执行标记。"""
+        self._reset_threshold_status()
         self._is_running = True
 
     def stop(self):
         self._is_running = False
+
+    def _reset_threshold_status(self):
+        for t in self._distance_thresholds:
+            t.status = False
+        for rule in self._plc_state_rules:
+            rule.last_satisfied = False
+        self._device_activation_status.clear()
 
     def set_detection_state(self, is_detection: bool):
         self._is_detection = is_detection
@@ -90,32 +99,32 @@ class DistanceScheduler:
     def _process_distance_update(self, distance: float):
         """处理距离更新
 
-        参考 Qt DistanceBasedScheduler::processDistanceUpdate()
+        同一距离可能落在多个重叠区间（如 initial_approach 10~100 与
+        auto_capture_head 28~32）。必须把所有尚未执行的匹配阈值都激活，
+        不能只取列表里第一个，否则宽区间会吞掉车头/车顶/X光等窄区间。
         """
-        # 查找匹配的阈值
-        threshold = self._find_matching_threshold(distance)
-
-        if threshold and self._should_activate(threshold, distance):
-            self._activate_devices(threshold, distance)
+        for threshold in self._matching_thresholds(distance):
+            if self._should_activate(threshold, distance):
+                self._activate_devices(threshold, distance)
 
         # 评估 PLC 规则
         self._evaluate_plc_rules()
 
-    def _find_matching_threshold(self, distance: float) -> DistanceThreshold | None:
-        """查找匹配的距离阈值
+    def _matching_thresholds(self, distance: float) -> list[DistanceThreshold]:
+        """返回当前距离命中的全部有效阈值（可重叠）。"""
+        return [
+            t
+            for t in self._distance_thresholds
+            if t.is_active and t.min_distance <= distance <= t.max_distance
+        ]
 
-        参考 Qt DistanceBasedScheduler::findMatchingThreshold()
-        """
-        for t in self._distance_thresholds:
-            if t.is_active and t.min_distance <= distance <= t.max_distance:
-                return t
-        return None
+    def _find_matching_threshold(self, distance: float) -> DistanceThreshold | None:
+        """兼容旧调用：返回第一个匹配项。新逻辑请用 _matching_thresholds。"""
+        matched = self._matching_thresholds(distance)
+        return matched[0] if matched else None
 
     def _should_activate(self, threshold: DistanceThreshold, distance: float) -> bool:
-        """判断是否应激活设备
-
-        参考 Qt DistanceBasedScheduler::shouldActivateDevices()
-        """
+        """判断是否应激活设备（每条阈值整轮检测只执行一次）。"""
         if threshold.status:
             return False
         return True

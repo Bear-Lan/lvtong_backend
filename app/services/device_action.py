@@ -3,7 +3,7 @@
 flask_backend 的业务代码（如 accept_booking / reject_booking / urgent_stop）
 调用 execute_device_action()：
 
-- action=capture（调度器车头/车尾/车顶）：走 capture_service（HTTP 拉图存盘）
+- action=capture（调度器车头/车尾/车顶）：走 capture_service（RTSP 抽帧推前端，提交再落盘）
 - 其它动作：MOCK_DEVICE_AGENT_URL 可达则转 mock，否则 DeviceManager
 
 海康预览摄像头不在这里走：前端插件直连。

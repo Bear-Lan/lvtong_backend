@@ -1,26 +1,30 @@
 """图像采集服务
 
-车头/车尾/车顶：从海康摄像头 ISAPI 抓图（默认 camera2，与前端约定一致）
-其它类别：仍可用设备 config 里的 *_capture_url
+车头/车尾/车顶：从海康摄像头 RTSP 抽帧（默认 camera2）
+  - camera2 为抓拍机：ISAPI /picture 走 4K 抓拍通道常全黑；码流预览正常
+  - 因此统一用视频流截帧，不取 4K 抓拍静图
+  - 自动拍与手动拍一致：只推 dataUrl 给前端预览，提交检测单时再 persist 落盘
+其它类别：仍可用设备 config 里的 *_capture_url（同样推 dataUrl，不预落盘）
 
 X 光影像走另一路：http://.../xray/image?id=...（不在本服务）
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
+from urllib.parse import quote
 
+import cv2
 import requests
-from requests.auth import HTTPDigestAuth
-
-from app.services.image_store import ImageStore
 
 logger = logging.getLogger('capture_service')
 
 # 与 vue_frontend/src/config/hikvision.ts 一致：车身三类共用枪机 camera2
 BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
-# 海康抓图通道：本现场 camera2 实测 channels/1 返回 JPEG（101 返回空 XML）
-HIK_SNAPSHOT_CHANNEL = os.environ.get('HIK_SNAPSHOT_CHANNEL', '1')
+# RTSP 通道：默认 101（通道1主码流）；抓拍机上 1/101、2/102 均可
+HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL', '101')
+JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '90'))
 
 CATEGORY_DEVICE_MAP = {
     'head': BODY_CAPTURE_DEVICE_ID,
@@ -38,56 +42,92 @@ def _load_camera_row(device_id: str) -> dict | None:
         return None
 
 
-def _hik_snapshot_url(ip: str, port: int | None, channel: str) -> str:
-    port = int(port or 80)
-    # 80 可省略端口；其它端口写上
-    host = ip if port in (80, 0) else f'{ip}:{port}'
-    return f'http://{host}/ISAPI/Streaming/channels/{channel}/picture'
+def _cfg_dict(row: dict) -> dict:
+    cfg = row.get('config') or {}
+    if isinstance(cfg, str):
+        import json
+        try:
+            cfg = json.loads(cfg)
+        except Exception:
+            cfg = {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _resolve_rtsp_channel(row: dict) -> int:
+    """解析 RTSP Channels/{n}。优先 config / 环境变量，否则 channelId*100+streamType。"""
+    cfg = _cfg_dict(row)
+    raw = (
+        cfg.get('rtsp_channel')
+        or cfg.get('rtspChannel')
+        or os.environ.get('HIK_RTSP_CHANNEL')
+        or HIK_RTSP_CHANNEL
+    )
+    if raw not in (None, ''):
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            pass
+    try:
+        channel_id = int(cfg.get('channelId', cfg.get('channel_id', 1)))
+    except (TypeError, ValueError):
+        channel_id = 1
+    try:
+        stream_type = int(cfg.get('streamType', cfg.get('stream_type', 1)))
+    except (TypeError, ValueError):
+        stream_type = 1
+    if stream_type not in (1, 2):
+        stream_type = 1
+    return max(1, channel_id) * 100 + stream_type
+
+
+def _rtsp_url(row: dict, channel: int) -> str:
+    ip = (row.get('ip_address') or '').strip()
+    if not ip:
+        raise RuntimeError('设备未配置 IP')
+    user = quote((row.get('username') or 'admin').strip(), safe='')
+    pwd = quote(row.get('password') or '', safe='')
+    return f'rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{channel}'
 
 
 def snapshot_from_camera(device_id: str) -> bytes:
-    """对指定海康设备做一次 ISAPI 抓图，返回 JPEG bytes"""
+    """对指定海康设备做一次 RTSP 抽帧，返回 JPEG bytes。"""
     row = _load_camera_row(device_id)
     if not row:
         raise RuntimeError(f'设备不存在: {device_id}')
 
-    ip = (row.get('ip_address') or '').strip()
-    if not ip:
-        raise RuntimeError(f'设备 {device_id} 未配置 IP')
+    channel = _resolve_rtsp_channel(row)
+    url = _rtsp_url(row, channel)
+    # 日志里不要带账号密码
+    safe_url = f'rtsp://***@{ (row.get("ip_address") or "").strip() }:554/Streaming/Channels/{channel}'
 
-    username = (row.get('username') or 'admin').strip()
-    password = row.get('password') or ''
-    cfg = row.get('config') if isinstance(row.get('config'), dict) else {}
-    channel = str(
-        cfg.get('snapshot_channel')
-        or os.environ.get('HIK_SNAPSHOT_CHANNEL')
-        or HIK_SNAPSHOT_CHANNEL
-        or '1'
-    )
+    os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
+    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+    if not cap.isOpened():
+        raise RuntimeError(f'摄像头 RTSP 打开失败 ({device_id} {safe_url})')
 
-    url = _hik_snapshot_url(ip, row.get('port'), channel)
+    frame = None
     try:
-        resp = requests.get(
-            url,
-            auth=HTTPDigestAuth(username, password),
-            timeout=10,
-        )
-    except requests.RequestException as e:
-        raise RuntimeError(f'摄像头抓图连接失败 ({device_id} {url}): {e}') from e
+        # 多读几帧，避开首帧未就绪/非关键帧
+        for _ in range(5):
+            ok, buf = cap.read()
+            if ok and buf is not None and getattr(buf, 'size', 0) > 0:
+                frame = buf
+    finally:
+        cap.release()
 
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f'摄像头抓图失败 ({device_id}): HTTP {resp.status_code} {url}'
-        )
+    if frame is None:
+        raise RuntimeError(f'摄像头 RTSP 读帧失败 ({device_id} {safe_url})')
 
-    data = resp.content or b''
-    ctype = (resp.headers.get('Content-Type') or '').lower()
-    if not data.startswith(b'\xff\xd8') and 'jpeg' not in ctype and 'image' not in ctype:
-        preview = data[:200].decode('utf-8', errors='replace')
-        raise RuntimeError(
-            f'摄像头未返回 JPEG ({device_id} channel={channel}): {ctype} {preview}'
-        )
-
+    ok, encoded = cv2.imencode(
+        '.jpg',
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, JPEG_QUALITY))],
+    )
+    if not ok:
+        raise RuntimeError(f'JPEG 编码失败 ({device_id})')
+    data = encoded.tobytes()
+    if not data.startswith(b'\xff\xd8'):
+        raise RuntimeError(f'摄像头未返回 JPEG ({device_id} channel={channel})')
     return data
 
 
@@ -103,9 +143,8 @@ def fetch_url_bytes(url: str) -> bytes:
 
 
 def capture_category(category: str) -> dict:
-    """按类别完成一次采集并推送前端"""
+    """按类别采集一帧，推 dataUrl 到前端；不落盘（提交时 persist）。"""
     category = (category or '').strip() or 'head'
-    store = ImageStore()
 
     if category in CATEGORY_DEVICE_MAP:
         device_id = CATEGORY_DEVICE_MAP[category]
@@ -118,7 +157,7 @@ def capture_category(category: str) -> dict:
             if override:
                 device_id = str(override)
         print(
-            f'[CAPTURE] {category} ← 海康抓图 device_id={device_id}',
+            f'[CAPTURE] {category} ← RTSP 抽帧 device_id={device_id}（仅预览，提交再落盘）',
             flush=True,
         )
         data = snapshot_from_camera(device_id)
@@ -134,14 +173,19 @@ def capture_category(category: str) -> dict:
             pass
         if not url:
             raise ValueError(f'采集类别 "{category}" 未配置摄像头或 URL')
-        print(f'[CAPTURE] {category} ← HTTP {url}', flush=True)
+        print(f'[CAPTURE] {category} ← HTTP {url}（仅预览，提交再落盘）', flush=True)
         data = fetch_url_bytes(url)
 
-    api_path = store.save_image_bytes(data, category)
-    _push_image_ready(category, api_path)
-    logger.info('[CAPTURE] %s → %s (%s bytes)', category, api_path, len(data))
-    print(f'[CAPTURE] {category} 成功 → {api_path} ({len(data)} bytes)', flush=True)
-    return {'apiPath': api_path, 'size': len(data)}
+    # 非 JPEG 时仍按 jpeg mime 推（前端 <img> 多数可显示；提交时按 dataUrl mime 写盘）
+    mime = 'image/jpeg' if data.startswith(b'\xff\xd8') else 'image/jpeg'
+    if data.startswith(b'\x89PNG'):
+        mime = 'image/png'
+    data_url = f'data:{mime};base64,' + base64.b64encode(data).decode('ascii')
+
+    _push_image_ready(category, data_url)
+    logger.info('[CAPTURE] %s → dataUrl (%s bytes, 未落盘)', category, len(data))
+    print(f'[CAPTURE] {category} 成功 → dataUrl ({len(data)} bytes, 未落盘)', flush=True)
+    return {'dataUrl': data_url, 'size': len(data)}
 
 
 def _push_image_ready(image_type: str, url: str) -> None:

@@ -33,7 +33,7 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
     'http://192.168.88.201:5006/xray/capture?frames=500&triggeroffset=2.5&id='
 )
 
-# ---- 车身影像（面板车身/点云位暂用占位图；枪机抓图仍走海康 ISAPI）----
+# ---- 车身影像（面板车身/点云位暂用占位图；枪机抓图走 RTSP 抽帧）----
 BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', PLACEHOLDER_IMAGE_URL)
 BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
 
