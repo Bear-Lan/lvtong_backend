@@ -279,6 +279,14 @@ def accept_booking():
     except Exception as e:
         print(f'[BOOKING] 调度器启动失败: {e}')
 
+    # 5. 临时：六类面板图共用占位链接，受理后异步拉取并推前端
+    try:
+        from app.services.placeholder_images import publish_placeholder_async
+        from config import PLACEHOLDER_IMAGE_ID
+        publish_placeholder_async(PLACEHOLDER_IMAGE_ID)
+    except Exception as e:
+        print(f'[BOOKING] 占位出图调度失败: {e}')
+
     # 通过 WebSocket 推送受理状态
     try:
         from app.websocket.handler import socketio

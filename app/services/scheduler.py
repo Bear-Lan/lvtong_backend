@@ -72,19 +72,19 @@ class DistanceScheduler:
     # ---- 雷达数据处理 ----
 
     def on_radar_data(self, distance: float, mode: int = 1):
-        """接收雷达距离数据
+        """接收雷达距离数据。
 
-        参考 Qt DistanceBasedScheduler::onRadarActionCompleted()
+        仅在受理预约后 scheduler.start() 时处理；未受理则忽略，不做阈值动作。
         """
         if not self._is_running:
             return
 
         self._current_distance = distance
 
-        # 推送 WebSocket
+        # 推送 WebSocket（仅受理后）
         push_radar_distance(distance, mode)
 
-        # 距离处理
+        # 距离阈值 → 设备动作（仅受理后）
         self._process_distance_update(distance)
 
     def _process_distance_update(self, distance: float):
@@ -130,13 +130,9 @@ class DistanceScheduler:
 
         for device_id, action_config in threshold.device_actions.items():
             try:
-                ok = execute_device_action(device_id, action_config.action, action_config.params)
-                if ok:
-                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 成功')
-                else:
-                    print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 失败')
-            except Exception as e:
-                print(f'[SCHEDULER] {threshold.description}: {device_id}.{action_config.action} 异常: {e}')
+                execute_device_action(device_id, action_config.action, action_config.params)
+            except Exception:
+                pass
             self._device_activation_status[device_id] = True
 
         # 打点 4 个时间字段到 _booking_state（Qt m_VehicleInspection 对齐）
@@ -157,9 +153,8 @@ class DistanceScheduler:
                 from app.api.booking import _booking_state as _bs
                 from datetime import datetime
                 _bs[field] = datetime.now().isoformat(timespec='seconds')
-                print(f'[SCHEDULER] 打点 {field} = {_bs[field]} (threshold={threshold.id})')
-            except Exception as e:
-                print(f'[SCHEDULER] 打点 {field} 失败: {e}')
+            except Exception:
+                pass
 
         # 推送检测步骤更新
         self._push_step_update(threshold)
@@ -170,11 +165,12 @@ class DistanceScheduler:
         mgr = DeviceManager()
         for device_id, action_config in rule.device_actions.items():
             ctrl = mgr.get_device(device_id)
-            if ctrl:
-                try:
-                    ctrl.execute_action(action_config.action, action_config.params)
-                except Exception as e:
-                    print(f'[SCHEDULER] PLC规则 {rule.rule_id}: {device_id} 执行失败: {e}')
+            if not ctrl:
+                continue
+            try:
+                ctrl.execute_action(action_config.action, action_config.params)
+            except Exception:
+                pass
 
     def _push_step_update(self, threshold):
         """根据阈值推送检测步骤"""
@@ -216,11 +212,6 @@ class DistanceScheduler:
             if actual != cond.expected_value:
                 return False
         return True
-
-    def _trigger_plc_rule_actions(self, rule: PlcStateRule):
-        for device_id, action_config in rule.device_actions.items():
-            print(f'[SCHEDULER] PLC规则触发 {rule.rule_id}: '
-                  f'{device_id} -> {action_config.action}')
 
     # ---- PLC 状态更新 ----
 

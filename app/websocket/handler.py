@@ -193,7 +193,7 @@ def push_detection_step(step: int, message: str = ''):
 
 
 def push_image_ready(image_type: str, url: str):
-    """推送新图像可用通知
+    """推送新图像可用通知（单张）
 
     image_type: body/transparent/head/tail/top/goods/evidence/license
     """
@@ -203,6 +203,22 @@ def push_image_ready(image_type: str, url: str):
         'data': {
             'imageType': image_type,
             'url': url,
+        },
+    })
+
+
+def push_image_ready_group(image_type: str, urls: dict, group: int = 1):
+    """推送分组图像（对齐前端 mock_back：urls['1'|'2'|'3']）
+
+    image_type: body | transparent
+    """
+    socketio.emit('message', {
+        'type': 'image_ready',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'imageType': image_type,
+            'group': group,
+            'urls': urls,
         },
     })
 

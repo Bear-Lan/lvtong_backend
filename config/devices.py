@@ -1,10 +1,24 @@
 """设备 & 外部服务 URL 配置 — 对齐 Qt config/app.json"""
 import os
 
-# ---- 雷达 ----
-RADAR_HEAD_URL = os.environ.get(
-    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/radar/image'
+# ---- 临时占位出图（现场中间层未齐时，六类图共用同一张）----
+# 200/160 透视、拼接、车身/点云、预约雷达 均暂用此链接
+PLACEHOLDER_IMAGE_ID = os.environ.get('PLACEHOLDER_IMAGE_ID', '20260706183600')
+PLACEHOLDER_IMAGE_URL = os.environ.get(
+    'PLACEHOLDER_IMAGE_URL',
+    f'http://192.168.88.201:5006/xray/image?id={PLACEHOLDER_IMAGE_ID}',
 )
+# True：受理后自动拉占位图并推送 body/transparent 到前端
+USE_PLACEHOLDER_IMAGES = os.environ.get('USE_PLACEHOLDER_IMAGES', 'true').lower() == 'true'
+
+# ---- 雷达（预约弹窗来车图）——暂指占位图 ----
+RADAR_HEAD_URL = os.environ.get('RADAR_HEAD_URL', PLACEHOLDER_IMAGE_URL)
+
+# 现场组播（$VMRMC 距离 / $NTRMC 状态），默认启用
+RADAR_TRANSPORT = os.environ.get('RADAR_TRANSPORT', 'multicast').lower()
+MCAST_GROUP = os.environ.get('MCAST_GROUP', '224.0.0.100')
+MCAST_PORT = int(os.environ.get('MCAST_PORT', '9000'))
+MCAST_IFACE_IP = os.environ.get('MCAST_IFACE_IP', '')
 
 # ---- X 光机 ----
 XRAY_BASE_URL = os.environ.get(
@@ -19,22 +33,22 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
     'http://192.168.88.201:5006/xray/capture?frames=500&triggeroffset=2.5&id='
 )
 
-# ---- 车身影像 ----
-BODY_IMAGE_URL = os.environ.get(
-    'BODY_IMAGE_URL', 'http://192.168.88.201:5002/body/image'
-)
+# ---- 车身影像（面板车身/点云位暂用占位图；枪机抓图仍走海康 ISAPI）----
+BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', PLACEHOLDER_IMAGE_URL)
+BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
 
-# ---- 透视影像 ----
+# ---- 透视 / 拼接（暂用同一占位图）----
 TRANSPARENT_IMAGE_URL = os.environ.get(
-    'TRANSPARENT_IMAGE_URL', 'http://192.168.88.201:5003/xray/image?id='
+    'TRANSPARENT_IMAGE_URL',
+    'http://192.168.88.201:5006/xray/image?id=',
 )
 YR_TRANSPARENT_IMAGE_URL = os.environ.get(
-    'YR_TRANSPARENT_IMAGE_URL', 'http://192.168.88.201:5006/xray/image?id='
+    'YR_TRANSPARENT_IMAGE_URL',
+    'http://192.168.88.201:5006/xray/image?id=',
 )
-
-# ---- 拼接图像 ----
 STITCH_IMAGE_URL = os.environ.get(
-    'STITCH_IMAGE_URL', 'http://192.168.88.201:5006/xray/stitch?id='
+    'STITCH_IMAGE_URL',
+    'http://192.168.88.201:5006/xray/image?id=',
 )
 
 # ---- AI / OCR ----

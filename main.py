@@ -232,14 +232,16 @@ if __name__ == '__main__':
     scheduler.load_configuration_from_file(config_path)
     print(f'[调度器] 配置加载完成: {config_path}')
 
-    # 注册雷达距离回调 → 调度器
+    # 注册雷达距离回调 → 调度器（组播 $VMRMC；仅受理后 scheduler.start() 才处理）
     for radar in mgr.get_devices_by_type('udpradar'):
         def _make_distance_cb(sched=scheduler):
             def _on_distance(distance: float, mode: int):
+                if not sched.is_running:
+                    return
                 sched.on_radar_data(distance, mode)
             return _on_distance
         radar.set_distance_callback(_make_distance_cb())
-        print(f'[设备]   {radar.device_id}: 距离调度器已注入')
+        print(f'[设备]   {radar.device_id}: 距离调度器已注入 ($VMRMC，受理后生效)')
 
     # 4. 启动 20 秒定时健康检查 + 自动重连
     mgr.start_health_check()

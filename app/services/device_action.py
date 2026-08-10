@@ -3,11 +3,10 @@
 flask_backend 的业务代码（如 accept_booking / reject_booking / urgent_stop）
 调用 execute_device_action()：
 
-- 如果设置了 MOCK_DEVICE_AGENT_URL（或探测到 mock_back），把动作 HTTP 转发给 mock agent
-- 否则走真实 DeviceManager（调硬件）
+- action=capture（调度器车头/车尾/车顶）：走 capture_service（HTTP 拉图存盘）
+- 其它动作：MOCK_DEVICE_AGENT_URL 可达则转 mock，否则 DeviceManager
 
-摄像头不在这里走：camera1/2 由前端 useHikvisionPlayer 直连海康插件，
-flask_backend 不参与。
+海康预览摄像头不在这里走：前端插件直连。
 """
 import logging
 import os
@@ -16,7 +15,6 @@ from typing import Any
 
 import requests
 
-# 强制 INFO 级别（默认 WARNING 会让 logger.info 不打印）
 logger = logging.getLogger('device_action')
 if logger.level == logging.NOTSET or logger.level > logging.INFO:
     logger.setLevel(logging.INFO)
@@ -29,7 +27,6 @@ _mock_probed: bool = False
 
 
 def _probe_mock_agent() -> bool:
-    """探测 mock agent 是否就绪"""
     if not MOCK_DEVICE_AGENT_URL:
         return False
     try:
@@ -40,7 +37,6 @@ def _probe_mock_agent() -> bool:
 
 
 def _is_mock_enabled() -> bool:
-    """是否启用 mock agent 模式（探测一次后缓存结果）"""
     global _mock_enabled, _mock_probed
     if not _mock_probed:
         with _lock:
@@ -57,18 +53,35 @@ def _is_mock_enabled() -> bool:
 def execute_device_action(device_id: str, action: str, params: dict[str, Any] | None = None) -> bool:
     """执行设备动作
 
-    device_id: 'plc_001' / 'gate_001' / 'led_001' / 'udpradar_001'
-    action: 'setPLC' / 'set_step4' / 'open' / 'close' 等
-    params: 动作参数
-
-    Returns: 是否成功
+    device_id: 'plc_001' / 'gate_001' / 'led_001' / 'camera_001' / ...
+    action: 'setPLC' / 'capture' / 'open' / 'close' 等
     """
-    print(f'[DEVICE-ACTION] {device_id}.{action} params={params or {}}', flush=True)
+    params = params or {}
+    print(f'[DEVICE-ACTION] {device_id}.{action} params={params}', flush=True)
+
+    # 调度器自动拍照：不走 camera 设备驱动 / mock，直接调采集服务
+    if action == 'capture':
+        return _execute_capture(params)
+
     if _is_mock_enabled():
         print(f'[DEVICE-ACTION] → mock agent ({MOCK_DEVICE_AGENT_URL})', flush=True)
-        return _execute_via_mock_agent(device_id, action, params or {})
+        return _execute_via_mock_agent(device_id, action, params)
     print('[DEVICE-ACTION] → 真实硬件', flush=True)
-    return _execute_via_hardware(device_id, action, params or {})
+    return _execute_via_hardware(device_id, action, params)
+
+
+def _execute_capture(params: dict) -> bool:
+    """车头/车尾/车顶等：HTTP 抓图并入库"""
+    category = str(params.get('category') or 'head').strip() or 'head'
+    print(f'[DEVICE-ACTION] → capture_service category={category}', flush=True)
+    try:
+        from app.services.capture_service import capture_category
+        capture_category(category)
+        return True
+    except Exception as e:
+        logger.warning(f'[CAPTURE] {category} 失败: {e}')
+        print(f'[DEVICE-ACTION] capture 失败: {e}', flush=True)
+        return False
 
 
 def _execute_via_mock_agent(device_id: str, action: str, params: dict) -> bool:
@@ -89,7 +102,6 @@ def _execute_via_mock_agent(device_id: str, action: str, params: dict) -> bool:
 
 
 def _execute_via_hardware(device_id: str, action: str, params: dict) -> bool:
-    """通过真实 DeviceManager 执行（保留原 Qt 风格）"""
     from app.devices.manager import DeviceManager
     mgr = DeviceManager()
     ctrl = mgr.get_device(device_id)
@@ -106,7 +118,6 @@ def _execute_via_hardware(device_id: str, action: str, params: dict) -> bool:
 
 
 def reset_mock_cache() -> None:
-    """重置 mock 探测缓存（测试用）"""
     global _mock_enabled, _mock_probed
     with _lock:
         _mock_enabled = False

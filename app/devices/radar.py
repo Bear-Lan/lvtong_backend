@@ -1,16 +1,40 @@
 """雷达数据读取器
 
-对齐 Qt UDPRadar (device/udpradar.h/.cpp)
+现场组播（默认）:
+  - $VMRMC,时间,物体个数,前端位置,前端速度  — 车辆距离
+  - $NTRMC,PLC,<hex>                       — PLC 状态
+  - $NTRMC,XRAY160/XRAY200/DM200,...       — 预留
 
-UDP 数据包支持两种协议（与 Qt 一致，同一端口复用）：
-  - JSON: { distance: float, mode: int }          — 雷达距离
-  - 文本: $NTRMC,PLC,<hex>\r\n                     — PLC 状态（含急停标志）
-  - 文本: $NTRMC,XRAY200,<hex>\r\n 等              — X光状态（预留）
+兼容旧版单播 JSON:
+  - { "distance": float, "mode": int }
 """
-import socket
+from __future__ import annotations
+
 import json
+import os
+import socket
+import struct
 import threading
+
 from app.devices.base import DeviceBase, DeviceStatus
+
+
+def _guess_mcast_iface(preferred: str = '') -> str:
+    """选择组播入组网卡。优先显式配置，否则选通往播发源的路由网卡。"""
+    if preferred:
+        return preferred
+    # 播发源在 192.168.0.188（现场实测）
+    for probe in ('192.168.0.188', '192.168.88.201'):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((probe, 1))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip and not ip.startswith('127.'):
+                return ip
+        except OSError:
+            continue
+    return '0.0.0.0'
 
 
 class RadarReader(DeviceBase):
@@ -19,75 +43,136 @@ class RadarReader(DeviceBase):
         super().__init__(*args, **kwargs)
         self._distance = 0.0
         self._mode = 1
+        self._speed = 0.0
+        self._object_count = 0
         self._running = False
         self._thread = None
+        self._sock: socket.socket | None = None
         self._distance_callback = None
         self._plc_status_callback = None
+        self._transport = 'multicast'
+        self._iface_ip = '0.0.0.0'
 
     @property
     def distance(self) -> float:
         return self._distance
 
+    @property
+    def speed(self) -> float:
+        return self._speed
+
     def set_distance_callback(self, cb):
         self._distance_callback = cb
 
     def set_plc_status_callback(self, cb):
-        """注册 PLC 状态回调 cb(text: str)
-
-        对齐 Qt UDPRadar::actionCompleted("plc_status", ...)
-        当收到 $NTRMC,PLC,<hex> 包时触发。
-        """
+        """注册 PLC 状态回调 cb(parsed: dict)"""
         self._plc_status_callback = cb
 
     def initialize(self) -> bool:
-        udp_port = self.config.get('port', self.port)
-        if not udp_port:
-            self.status = DeviceStatus.Online
-            return True
-        self._start_listen(udp_port)
-        self.status = DeviceStatus.Online
-        return True
+        cfg = self.config or {}
+        try:
+            from config import (
+                RADAR_TRANSPORT,
+                MCAST_GROUP,
+                MCAST_PORT,
+                MCAST_IFACE_IP,
+            )
+        except ImportError:
+            RADAR_TRANSPORT, MCAST_GROUP, MCAST_PORT, MCAST_IFACE_IP = (
+                'multicast', '224.0.0.100', 9000, ''
+            )
+
+        self._transport = (
+            cfg.get('transport')
+            or os.environ.get('RADAR_TRANSPORT')
+            or RADAR_TRANSPORT
+            or 'multicast'
+        ).lower()
+
+        if self._transport == 'unicast':
+            udp_port = int(cfg.get('port') or self.port or 0)
+            if not udp_port:
+                self.status = DeviceStatus.Online
+                return True
+            ok = self._start_unicast_listen(udp_port)
+        else:
+            # 组播端口：只用 mcast_port / 环境默认 9000，不用 DB 残留的旧 unicast port
+            group = cfg.get('mcast_group') or MCAST_GROUP
+            port = int(
+                cfg.get('mcast_port')
+                or os.environ.get('MCAST_PORT')
+                or MCAST_PORT
+                or 9000
+            )
+            iface = cfg.get('iface_ip') or MCAST_IFACE_IP or ''
+            self._iface_ip = _guess_mcast_iface(iface)
+            ok = self._start_multicast_listen(group, port, self._iface_ip)
+            if ok:
+                print(
+                    f'[雷达] {self.device_id}: 组播监听 {group}:{port} '
+                    f'iface={self._iface_ip}',
+                    flush=True,
+                )
+
+        self.status = DeviceStatus.Online if ok else DeviceStatus.Offline
+        if not ok:
+            self._last_error = '雷达监听启动失败'
+        return ok
 
     def health_check(self) -> bool:
         return self._running
 
     def reconnect(self) -> bool:
-        if not self._running:
-            return self.initialize()
-        return True
-
-    def _start_listen(self, port: int):
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._listen, args=(port,), daemon=True)
-        self._thread.start()
+        self.shutdown()
+        return self.initialize()
 
     def stop(self):
         self._running = False
+        sock = self._sock
+        self._sock = None
+        if sock:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def shutdown(self):
+        self.stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
+
+    # ---- 解析 ----
+
+    @staticmethod
+    def parse_vmrmc(text: str) -> dict | None:
+        """解析 $VMRMC,时间,物体个数,前端位置,前端速度"""
+        try:
+            parts = text.strip().split(',')
+            if len(parts) < 5 or not parts[0].startswith('$VMRMC'):
+                return None
+            return {
+                'timestamp': float(parts[1]),
+                'object_count': int(float(parts[2])),
+                'distance': float(parts[3]),
+                'speed': float(parts[4]),
+            }
+        except (ValueError, IndexError):
+            return None
 
     @staticmethod
     def parse_plc_status(text: str) -> dict | None:
-        """解析 $NTRMC,PLC,<hex> 协议包
-
-        对齐 Qt UDPRadar::processPLCData() (udpradar.cpp:256-348)
-
-        包格式: $NTRMC,PLC,<32-bit hex>\r\n
-
-        返回 dict 包含所有 PLC 状态字段，解析失败返回 None。
-        """
+        """解析 $NTRMC,PLC,<hex> 协议包"""
         try:
-            # 提取 hex 值: $NTRMC,PLC,<hex>\r\n
             parts = text.strip().split(',')
             if len(parts) < 3:
                 return None
 
             hex_str = parts[2].split('\r')[0].split('\n')[0].strip()
             status_value = int(hex_str, 16)
-            s16status_value = status_value >> 16  # 高 16 位 = 命令位
+            s16status_value = status_value >> 16
 
             return {
-                # 命令位（高 16 位移位后）— 对齐 Qt s16statusValue 位掩码
                 'redLightCmd': (s16status_value & 0x0200) != 0,
                 'yellowLightCmd': (s16status_value & 0x0400) != 0,
                 'greenLightCmd': (s16status_value & 0x0800) != 0,
@@ -95,7 +180,6 @@ class RadarReader(DeviceBase):
                 'soundalarmCmd': (s16status_value & 0x8000) != 0,
                 'interlock160Cmd': (s16status_value & 0x4000) != 0,
                 'interlock200Cmd': (s16status_value & 0x2000) != 0,
-                # 状态位（完整 32 位）— 对齐 Qt statusValue 位掩码
                 'urgentStopStatus': (status_value & 0x0100) != 0,
                 'bookingStatus': (status_value & 0x0200) != 0,
                 'groundSensorStatus': (status_value & 0x0800) != 0,
@@ -108,48 +192,113 @@ class RadarReader(DeviceBase):
         except (ValueError, IndexError):
             return None
 
-    def _listen(self, port: int):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
-        try:
-            sock.bind(('0.0.0.0', port))
-        except OSError:
-            self._running = False
-            sock.close()
+    def _dispatch(self, text: str) -> None:
+        if text.startswith('$VMRMC'):
+            parsed = self.parse_vmrmc(text)
+            if not parsed:
+                return
+            self._distance = parsed['distance']
+            self._speed = parsed['speed']
+            self._object_count = parsed['object_count']
+            # mode: 有目标=1，无目标=0（兼容旧 JSON mode 语义）
+            self._mode = 1 if self._object_count > 0 else 0
+            if self._distance_callback:
+                self._distance_callback(self._distance, self._mode)
             return
+
+        if text.startswith('$NTRMC,PLC,'):
+            if self._plc_status_callback:
+                parsed = self.parse_plc_status(text)
+                if parsed is not None:
+                    self._plc_status_callback(parsed)
+            return
+
+        if text.startswith('{'):
+            try:
+                payload = json.loads(text)
+                self._distance = float(payload.get('distance', 0))
+                self._mode = int(payload.get('mode', 1))
+                if self._distance_callback:
+                    self._distance_callback(self._distance, self._mode)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+            return
+
+        # $NTRMC,XRAY200 / XRAY160 / DM200 预留
+
+    # ---- 监听 ----
+
+    def _start_multicast_listen(self, group: str, port: int, iface_ip: str) -> bool:
+        if self._running:
+            return True
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.setsockopt(
+                    socket.IPPROTO_IP,
+                    socket.IP_MULTICAST_IF,
+                    socket.inet_aton(iface_ip),
+                )
+            except OSError:
+                pass
+            sock.bind(('', port))
+            mreq = struct.pack(
+                '4s4s',
+                socket.inet_aton(group),
+                socket.inet_aton(iface_ip),
+            )
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            sock.settimeout(1.0)
+        except OSError as e:
+            self._last_error = str(e)
+            print(f'[雷达] {self.device_id}: 组播启动失败: {e}', flush=True)
+            return False
+
+        self._sock = sock
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._listen_loop, args=(sock,), daemon=True, name=f'radar-mcast-{self.device_id}'
+        )
+        self._thread.start()
+        return True
+
+    def _start_unicast_listen(self, port: int) -> bool:
+        if self._running:
+            return True
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(1.0)
+            sock.bind(('0.0.0.0', port))
+        except OSError as e:
+            self._last_error = str(e)
+            print(f'[雷达] {self.device_id}: 单播启动失败: {e}', flush=True)
+            return False
+
+        self._sock = sock
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._listen_loop, args=(sock,), daemon=True, name=f'radar-udp-{self.device_id}'
+        )
+        self._thread.start()
+        print(f'[雷达] {self.device_id}: 单播监听 0.0.0.0:{port}', flush=True)
+        return True
+
+    def _listen_loop(self, sock: socket.socket) -> None:
         while self._running:
             try:
                 data, _ = sock.recvfrom(4096)
                 if not data:
                     continue
                 text = data.decode('utf-8', errors='ignore').strip()
-                if not text:
-                    continue
-
-                # 协议分发（对齐 Qt UDPRadar::processData()）
-                if text.startswith('{'):
-                    # JSON: 雷达距离
-                    payload = json.loads(text)
-                    self._distance = float(payload.get('distance', 0))
-                    self._mode = int(payload.get('mode', 1))
-                    if self._distance_callback:
-                        self._distance_callback(self._distance, self._mode)
-
-                elif text.startswith('$NTRMC,PLC,'):
-                    # 文本协议: PLC 状态（对齐 Qt processPLCData）
-                    if self._plc_status_callback:
-                        parsed = self.parse_plc_status(text)
-                        if parsed is not None:
-                            self._plc_status_callback(parsed)
-
-                # $NTRMC,XRAY200 / $NTRMC,XRAY160 / $NTRMC,DM200 预留
-                # 对齐 Qt processXray200Data / processXray160Data / processXrayTemperature
-
+                if text:
+                    self._dispatch(text)
             except socket.timeout:
                 continue
-            except Exception:
+            except OSError:
+                if self._running:
+                    break
+            except Exception as e:
+                print(f'[雷达] {self.device_id}: 收包异常: {e}', flush=True)
                 break
-        sock.close()
-
-    def shutdown(self):
-        self.stop()
+        self._running = False
