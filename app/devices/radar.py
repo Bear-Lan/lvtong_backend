@@ -20,9 +20,16 @@ from app.devices.base import DeviceBase, DeviceStatus
 
 
 def _guess_mcast_iface(preferred: str = '') -> str:
-    """选择组播入组网卡。优先显式配置，否则选通往播发源的路由网卡。"""
+    """选择组播入组网卡。优先显式配置，否则选通往播发源的路由网卡。
+
+    注意：若本机开了 VPN，默认路由可能把探测指到 10.x 等虚拟网卡，
+    组播会加错口导致收不到 $VMRMC（小车不跑）。故优先与播发源同网段的地址。
+    """
     if preferred:
         return preferred
+
+    # (优先级, ip)：同网段优先，再按探测顺序
+    ranked: list[tuple[int, str]] = []
     # 播发源在 192.168.0.188（现场实测）
     for probe in ('192.168.0.188', '192.168.88.201'):
         try:
@@ -30,11 +37,22 @@ def _guess_mcast_iface(preferred: str = '') -> str:
             s.connect((probe, 1))
             ip = s.getsockname()[0]
             s.close()
-            if ip and not ip.startswith('127.'):
-                return ip
         except OSError:
             continue
-    return '0.0.0.0'
+        if not ip or ip.startswith('127.'):
+            continue
+        probe_prefix = probe.rsplit('.', 1)[0]
+        ip_prefix = ip.rsplit('.', 1)[0]
+        same_subnet = 0 if ip_prefix == probe_prefix else 1
+        # 惩罚常见 VPN/隧道网段，避免抢走现场局域网
+        vpn_like = 1 if ip.startswith(('10.', '172.16.', '172.17.', '172.18.', '172.19.',
+                                       '172.2', '172.3', '100.')) else 0
+        ranked.append((same_subnet + vpn_like, ip))
+
+    if not ranked:
+        return '0.0.0.0'
+    ranked.sort(key=lambda x: (x[0], x[1]))
+    return ranked[0][1]
 
 
 class RadarReader(DeviceBase):

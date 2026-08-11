@@ -55,6 +55,7 @@ class DistanceScheduler:
     def start(self):
         """启动调度；新一轮检测前清掉阈值已执行标记。"""
         self._reset_threshold_status()
+        self._radar_push_count = 0
         self._is_running = True
 
     def stop(self):
@@ -90,8 +91,16 @@ class DistanceScheduler:
 
         self._current_distance = distance
 
-        # 推送 WebSocket（仅受理后）
+        # 推送 WebSocket（仅受理后）— 驱动前端底部小车
         push_radar_distance(distance, mode)
+        # 低频日志，便于确认「受理后有距离 → 小车应移动」
+        n = getattr(self, '_radar_push_count', 0) + 1
+        self._radar_push_count = n
+        if n == 1 or n % 20 == 0:
+            print(
+                f'[SCHEDULER] radar_distance → WS #{n} distance={distance:.2f} mode={mode}',
+                flush=True,
+            )
 
         # 距离阈值 → 设备动作（仅受理后）
         self._process_distance_update(distance)

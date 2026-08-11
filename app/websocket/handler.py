@@ -12,10 +12,15 @@
 - image_ready       新图像可用通知
 - lane_occupied     车道占用告警
 """
+import threading
 import time
 from flask_socketio import SocketIO, emit
 
 socketio = SocketIO()
+
+# 自维护连接数：flask-socketio 无稳定公开 API，挖内部 rooms 常失败会打出「在线 -1」
+_ws_clients = 0
+_ws_clients_lock = threading.Lock()
 
 
 def init_socketio(app):
@@ -32,12 +37,9 @@ def init_socketio(app):
 
 
 def get_socketio_clients_count() -> int:
-    """返回当前 socketio 已连接客户端数量（调试期排查 WS 是否有人订阅）"""
-    try:
-        # flask-socketio 没有公开 API；用内部 manager 兜底
-        return len(getattr(socketio.server, 'manager', {}).get('rooms', {}).get('/', {}))
-    except Exception:
-        return -1
+    """返回当前已连接客户端数量（调试日志用）"""
+    with _ws_clients_lock:
+        return _ws_clients
 
 
 def register_handlers():
@@ -45,7 +47,11 @@ def register_handlers():
 
     @socketio.on('connect')
     def handle_connect():
-        print(f'[WS] 客户端连接: {id(handle_connect)} (在线 {get_socketio_clients_count()})')
+        global _ws_clients
+        with _ws_clients_lock:
+            _ws_clients += 1
+            n = _ws_clients
+        print(f'[WS] 客户端连接 (在线 {n})')
         emit('message', {
             'type': 'connect_ack',
             'timestamp': int(time.time() * 1000),
@@ -54,7 +60,11 @@ def register_handlers():
 
     @socketio.on('disconnect')
     def handle_disconnect():
-        print(f'[WS] 客户端断开 (在线 {get_socketio_clients_count()})')
+        global _ws_clients
+        with _ws_clients_lock:
+            _ws_clients = max(0, _ws_clients - 1)
+            n = _ws_clients
+        print(f'[WS] 客户端断开 (在线 {n})')
 
     @socketio.on('message')
     def handle_message(payload):

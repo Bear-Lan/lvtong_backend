@@ -18,6 +18,8 @@ RADAR_HEAD_URL = os.environ.get('RADAR_HEAD_URL', PLACEHOLDER_IMAGE_URL)
 RADAR_TRANSPORT = os.environ.get('RADAR_TRANSPORT', 'multicast').lower()
 MCAST_GROUP = os.environ.get('MCAST_GROUP', '224.0.0.100')
 MCAST_PORT = int(os.environ.get('MCAST_PORT', '9000'))
+# 空=自动猜网卡（优先与 192.168.0.188 同网段）。VPN 抢走路由时可强制：
+#   set MCAST_IFACE_IP=192.168.0.138
 MCAST_IFACE_IP = os.environ.get('MCAST_IFACE_IP', '')
 
 # ---- X 光机 ----
