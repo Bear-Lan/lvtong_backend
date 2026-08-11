@@ -321,10 +321,47 @@ def submit_inspection():
         except Exception as e:
             print(f'[INSPECTION] 防重查询失败（不影响提交）: {e}')
 
-    # ---- 4. 设置操作员信息与提交时间 ----
+    # ---- 4. 设置操作员 / 查验 / 复核 / 班组 与提交时间 ----
+    # JWT 旧 token 可能无 phone/group_id，提交时从 users 表补全，保证详情下拉能回显
+    profile = {}
+    try:
+        from app.db.user import DBUser
+        profile = DBUser().getUserByUsername(user['username']) or {}
+    except Exception as e:
+        print(f'[INSPECTION] 读取用户资料失败（不影响提交）: {e}')
+
+    user_phone = (
+        (body.get('inspector_phone') or '').strip()
+        or (user.get('phone') or '').strip()
+        or (profile.get('phone') or '').strip()
+    )
+    user_group = (
+        body.get('group_id')
+        if body.get('group_id') not in (None, '', 0, '0')
+        else (profile.get('usergroup') or profile.get('group_id') or user.get('group_id') or '')
+    )
+
     body.setdefault('operator_name', user['real_name'])
-    body.setdefault('inspector_phone', body.get('inspector_phone', ''))
-    body.setdefault('reviewer_phone', body.get('reviewer_phone', ''))
+    if not (body.get('inspector_phone') or '').strip():
+        body['inspector_phone'] = user_phone
+    # reviewer_phone 暂时留空，不自动填登录用户
+    if body.get('reviewer_phone') is None:
+        body['reviewer_phone'] = ''
+    if body.get('group_id') in (None, '', 0, '0'):
+        body['group_id'] = str(user_group) if user_group not in (None, '') else ''
+
+    # 前端 no_pass_type → DB nopass_type
+    if 'no_pass_type' in body and 'nopass_type' not in body:
+        body['nopass_type'] = body.pop('no_pass_type')
+
+    # 0=正常，1=异常；未传则默认正常
+    if body.get('result_status') is None or body.get('result_status') == '':
+        body['result_status'] = 0
+    else:
+        try:
+            body['result_status'] = 1 if int(body['result_status']) == 1 else 0
+        except (TypeError, ValueError):
+            body['result_status'] = 0
     if not body.get('inspection_time'):
         body['inspection_time'] = datetime.now(timezone.utc)
 
@@ -457,6 +494,12 @@ def update_inspection(inspection_id):
     body = request.get_json(silent=True)
     if not body:
         return fail(400, '请求数据不能为空')
+
+    # 字段映射：前端命名 → DB 列名
+    if 'vehicle_container_type' in body and 'vehicle_containertype' not in body:
+        body['vehicle_containertype'] = body.pop('vehicle_container_type')
+    if 'no_pass_type' in body and 'nopass_type' not in body:
+        body['nopass_type'] = body.pop('no_pass_type')
 
     db = DBVehicle()
     if db.updateInspection(inspection_id, body):

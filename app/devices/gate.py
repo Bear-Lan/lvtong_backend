@@ -38,7 +38,7 @@ class GateController(DeviceBase):
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.1,
-                write_timeout=3,
+                write_timeout=0.5,
             )
             self._serial.reset_input_buffer()
 

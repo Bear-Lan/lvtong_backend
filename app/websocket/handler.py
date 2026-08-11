@@ -100,16 +100,40 @@ def register_handlers():
 
 # ========== 服务端推送工具函数 ==========
 
+# 雷达距离推送节流：硬件常 ~10Hz；过密会压 gevent + 前端重绘
+_RADAR_MIN_INTERVAL_SEC = 0.08  # ≈12.5 Hz 上限
+_RADAR_MIN_DELTA_M = 0.05
+_radar_push_state = {'t': 0.0, 'd': None, 'mode': None}
+_radar_push_lock = threading.Lock()
+
+
 def push_radar_distance(distance: float, mode: int = 1):
-    """推送雷达距离更新（高频：~100ms）
+    """推送雷达距离更新（节流后约 ≤12Hz，且距离变化过小则跳过）
 
     Qt 参考: DistanceBasedScheduler::distanceChanged
     """
+    now = time.monotonic()
+    rounded = round(distance, 2)
+    with _radar_push_lock:
+        last_t = _radar_push_state['t']
+        last_d = _radar_push_state['d']
+        last_mode = _radar_push_state['mode']
+        if (
+            last_d is not None
+            and last_mode == mode
+            and (now - last_t) < _RADAR_MIN_INTERVAL_SEC
+            and abs(rounded - float(last_d)) < _RADAR_MIN_DELTA_M
+        ):
+            return
+        _radar_push_state['t'] = now
+        _radar_push_state['d'] = rounded
+        _radar_push_state['mode'] = mode
+
     socketio.emit('message', {
         'type': 'radar_distance',
         'timestamp': int(time.time() * 1000),
         'data': {
-            'distance': round(distance, 2),
+            'distance': rounded,
             'mode': mode,
         },
     })

@@ -48,6 +48,7 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
     返回 {body: {1,2,3}, transparent: {1,2,3}, sourceUrl}
     """
     from config import PLACEHOLDER_IMAGE_ID
+    from app.services.image_preview import get_remembered_preview, preview_from_raw
 
     sid = (scan_id or PLACEHOLDER_IMAGE_ID or '').strip() or 'placeholder'
     url = _placeholder_url()
@@ -55,16 +56,30 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
         sep = '&' if '?' in url else '?'
         url = f'{url}{sep}id={sid}'
 
-    data = fetch_placeholder_bytes(url)
-    # 同一份字节只缓存一次；六面板共用 URL，提交时再按字段分别落正式库
-    preview_url = temp_image_cache.put_and_url(data)
+    # 预约弹窗已拉过同 URL 时直接复用，避免抓拍窗口再下 13MB / 再占 GIL
+    preview = get_remembered_preview(url)
+    raw_note = 'cache'
+    if preview:
+        print(
+            f'[PLACEHOLDER] 复用预约预览 cache bytes={len(preview)} url={url}',
+            flush=True,
+        )
+    else:
+        data = fetch_placeholder_bytes(url)
+        preview = preview_from_raw(data, source_url=url)
+        raw_note = str(len(data))
+
+    preview_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
 
     body = {'1': preview_url, '2': preview_url, '3': preview_url}
     transparent = {'1': preview_url, '2': preview_url, '3': preview_url}
 
     from app.websocket.handler import push_image_ready_group
 
+    # 先推车身、再推透视，错开前端同帧解码+色阶
     push_image_ready_group('body', body, group=1)
+    import time as _time
+    _time.sleep(0.05)
     push_image_ready_group('transparent', transparent, group=1)
 
     result = {
@@ -73,7 +88,8 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
         'transparent': transparent,
     }
     print(
-        f'[PLACEHOLDER] 已推送六面板位(预览未落盘) url={preview_url} bytes={len(data)}',
+        f'[PLACEHOLDER] 已推送六面板位(预览未落盘) url={preview_url} '
+        f'bytes={len(preview)} (raw={raw_note})',
         flush=True,
     )
     return result

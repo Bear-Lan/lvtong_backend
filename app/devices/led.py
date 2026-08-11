@@ -62,7 +62,8 @@ class LedController(DeviceBase):
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
                 timeout=0.1,
-                write_timeout=3,
+                # 过长 write_timeout 会在串口异常时长时间堵住调用方
+                write_timeout=0.5,
             )
             self._serial.reset_input_buffer()
 

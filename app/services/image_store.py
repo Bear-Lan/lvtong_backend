@@ -157,7 +157,9 @@ class ImageStore:
 
         # 1b. 内存临时预览图：提交时才写入正式库
         if s.startswith('/api/temp-images/'):
-            return ImageStore._save_temp_image(s[len('/api/temp-images/'):].strip('/'), category)
+            tid = s[len('/api/temp-images/'):].strip('/')
+            tid = tid.split('?', 1)[0].split('#', 1)[0]
+            return ImageStore._save_temp_image(tid, category)
 
         # 2. http(s) 外部链接：不接管
         lower = s.lower()

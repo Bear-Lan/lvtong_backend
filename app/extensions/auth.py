@@ -13,6 +13,8 @@ def create_token(user: dict) -> str:
         'sub': user['username'],
         'real_name': user.get('real_name', ''),
         'role': user.get('role', '1'),
+        'phone': user.get('phone', '') or '',
+        'group_id': int(user.get('group_id') or user.get('usergroup') or 0),
         'iat': datetime.now(timezone.utc),
         'exp': datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
     }
@@ -52,6 +54,8 @@ def login_required(f):
             'username': payload['sub'],
             'real_name': payload.get('real_name', ''),
             'role': payload.get('role', '1'),
+            'phone': payload.get('phone', '') or '',
+            'group_id': int(payload.get('group_id') or 0),
         }
         return f(*args, **kwargs)
 

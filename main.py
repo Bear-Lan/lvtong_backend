@@ -115,7 +115,9 @@ def create_app() -> Flask:
             BytesIO(entry.data),
             mimetype=entry.mime,
             download_name=f'{temp_id}.jpg',
-            max_age=0,
+            # 内容按 id 不可变；允许浏览器缓存，避免六面板重复拉同一张
+            max_age=3600,
+            conditional=True,
         )
 
     # 注册图像采集蓝图

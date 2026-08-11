@@ -70,10 +70,15 @@ class DBUser(BaseRepo):
 
     def loginUser(self, username: str, password: str) -> dict | None:
         return self._one(
-            "SELECT username, real_name, password, role, phone FROM users "
-            "WHERE username = :uid AND password = :pw",
+            "SELECT username, real_name, password, role, phone, group_id "
+            "FROM users WHERE username = :uid AND password = :pw",
             {'uid': username, 'pw': _sha256(password)},
         )
+
+    def getUserByUsername(self, username: str) -> dict | None:
+        """按用户名取一条（含 phone / group_id），供提交兜底回填。"""
+        rows = self.users(username)
+        return rows[0] if rows else None
 
     def delUser(self, username: str):
         with self._tx() as conn:

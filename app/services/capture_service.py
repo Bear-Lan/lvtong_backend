@@ -3,8 +3,9 @@
 车头/车尾/车顶：从海康摄像头 RTSP 抽帧（默认 camera2）
   - camera2 为抓拍机：ISAPI /picture 走 4K 抓拍通道常全黑；码流预览正常
   - 因此统一用视频流截帧，不取 4K 抓拍静图
-  - 自动拍与手动拍一致：只推 dataUrl 给前端预览，提交检测单时再 persist 落盘
-其它类别：仍可用设备 config 里的 *_capture_url（同样推 dataUrl，不预落盘）
+  - 自动拍与手动拍一致：WS 推 /api/temp-images/<id>（避免巨型 base64 堵链路），
+    提交检测单时再 persist 落盘
+其它类别：仍可用设备 config 里的 *_capture_url（同样推 temp URL，不预落盘）
 
 X 光影像走另一路：http://.../xray/image?id=...（不在本服务）
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import threading
 from urllib.parse import quote
 
 import cv2
@@ -24,7 +26,10 @@ logger = logging.getLogger('capture_service')
 BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
 # RTSP 通道：默认 101（通道1主码流）；抓拍机上 1/101、2/102 均可
 HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL', '101')
-JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '90'))
+JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '85'))
+# 同机串行抽帧，避免多线程同时 VideoCapture 把 GIL/网络打满导致距离 WS 卡顿
+_capture_lock = threading.Lock()
+_RTSP_WARMUP_FRAMES = int(os.environ.get('CAPTURE_RTSP_WARMUP_FRAMES', '2'))
 
 CATEGORY_DEVICE_MAP = {
     'head': BODY_CAPTURE_DEVICE_ID,
@@ -101,34 +106,37 @@ def snapshot_from_camera(device_id: str) -> bytes:
     safe_url = f'rtsp://***@{ (row.get("ip_address") or "").strip() }:554/Streaming/Channels/{channel}'
 
     os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    if not cap.isOpened():
-        raise RuntimeError(f'摄像头 RTSP 打开失败 ({device_id} {safe_url})')
 
-    frame = None
-    try:
-        # 多读几帧，避开首帧未就绪/非关键帧
-        for _ in range(5):
-            ok, buf = cap.read()
-            if ok and buf is not None and getattr(buf, 'size', 0) > 0:
-                frame = buf
-    finally:
-        cap.release()
+    with _capture_lock:
+        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            raise RuntimeError(f'摄像头 RTSP 打开失败 ({device_id} {safe_url})')
 
-    if frame is None:
-        raise RuntimeError(f'摄像头 RTSP 读帧失败 ({device_id} {safe_url})')
+        frame = None
+        try:
+            # 少读几帧：降低 OpenCV 占 GIL 时间，避免距离推送在前端“卡住”
+            warmup = max(1, min(5, _RTSP_WARMUP_FRAMES))
+            for _ in range(warmup):
+                ok, buf = cap.read()
+                if ok and buf is not None and getattr(buf, 'size', 0) > 0:
+                    frame = buf
+        finally:
+            cap.release()
 
-    ok, encoded = cv2.imencode(
-        '.jpg',
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, JPEG_QUALITY))],
-    )
-    if not ok:
-        raise RuntimeError(f'JPEG 编码失败 ({device_id})')
-    data = encoded.tobytes()
-    if not data.startswith(b'\xff\xd8'):
-        raise RuntimeError(f'摄像头未返回 JPEG ({device_id} channel={channel})')
-    return data
+        if frame is None:
+            raise RuntimeError(f'摄像头 RTSP 读帧失败 ({device_id} {safe_url})')
+
+        ok, encoded = cv2.imencode(
+            '.jpg',
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, JPEG_QUALITY))],
+        )
+        if not ok:
+            raise RuntimeError(f'JPEG 编码失败 ({device_id})')
+        data = encoded.tobytes()
+        if not data.startswith(b'\xff\xd8'):
+            raise RuntimeError(f'摄像头未返回 JPEG ({device_id} channel={channel})')
+        return data
 
 
 def fetch_url_bytes(url: str) -> bytes:
@@ -143,7 +151,7 @@ def fetch_url_bytes(url: str) -> bytes:
 
 
 def capture_category(category: str) -> dict:
-    """按类别采集一帧，推 dataUrl 到前端；不落盘（提交时 persist）。"""
+    """按类别采集一帧，推 temp URL 到前端；不落盘（提交时 persist）。"""
     category = (category or '').strip() or 'head'
 
     if category in CATEGORY_DEVICE_MAP:
@@ -180,12 +188,23 @@ def capture_category(category: str) -> dict:
     mime = 'image/jpeg' if data.startswith(b'\xff\xd8') else 'image/jpeg'
     if data.startswith(b'\x89PNG'):
         mime = 'image/png'
-    data_url = f'data:{mime};base64,' + base64.b64encode(data).decode('ascii')
 
-    _push_image_ready(category, data_url)
-    logger.info('[CAPTURE] %s → dataUrl (%s bytes, 未落盘)', category, len(data))
-    print(f'[CAPTURE] {category} 成功 → dataUrl ({len(data)} bytes, 未落盘)', flush=True)
-    return {'dataUrl': data_url, 'size': len(data)}
+    # WS 只推短 URL：大图 base64 会堵 Socket.IO/主线程，导致小车卡顿
+    from app.services import temp_image_cache
+    preview_url = temp_image_cache.put_and_url(data, mime)
+    _push_image_ready(category, preview_url)
+
+    data_url = f'data:{mime};base64,' + base64.b64encode(data).decode('ascii')
+    logger.info(
+        '[CAPTURE] %s → temp %s (%s bytes, 未落盘)',
+        category, preview_url, len(data),
+    )
+    print(
+        f'[CAPTURE] {category} 成功 → {preview_url} ({len(data)} bytes, 未落盘)',
+        flush=True,
+    )
+    # dataUrl 仍返回给手动 HTTP 调用方；WS 已改用 temp URL
+    return {'url': preview_url, 'dataUrl': data_url, 'size': len(data)}
 
 
 def _push_image_ready(image_type: str, url: str) -> None:

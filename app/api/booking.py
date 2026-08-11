@@ -176,9 +176,12 @@ def fetch_radar_image():
         # 大图偶发 >10s；预览进内存临时缓存，不落 IMAGE_STORAGE_ROOT（预约图本身不提交）
         resp = requests.get(radar_head_url, timeout=20)
         if resp.status_code == 200 and resp.content:
-            image_url = temp_image_cache.put_and_url(resp.content)
+            from app.services.image_preview import preview_from_raw
+            preview = preview_from_raw(resp.content, source_url=radar_head_url)
+            image_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
             print(
-                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} bytes={len(resp.content)}',
+                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} '
+                f'bytes={len(preview)} (raw={len(resp.content)})',
                 flush=True,
             )
 

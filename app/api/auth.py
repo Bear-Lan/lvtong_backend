@@ -51,6 +51,7 @@ def login():
             'realName': user['real_name'],
             'phone': user.get('phone', ''),
             'role': int(user['role']),
+            'groupId': int(user.get('group_id') or 0),
         },
     }, '登录成功')
 
@@ -60,11 +61,23 @@ def login():
 def get_current_user():
     """获取当前登录用户信息"""
     user = request.gc_user
+    # 旧 token 可能无 phone/group_id，从库补全
+    phone = user.get('phone', '')
+    group_id = int(user.get('group_id') or 0)
+    try:
+        from app.db.user import DBUser
+        full = DBUser().getUserByUsername(user['username'])
+        if full:
+            phone = full.get('phone') or phone
+            group_id = int(full.get('usergroup') or full.get('group_id') or group_id or 0)
+    except Exception:
+        pass
     return ok({
         'username': user['username'],
         'realName': user['real_name'],
-        'phone': user.get('phone', ''),
+        'phone': phone or '',
         'role': int(user['role']),
+        'groupId': group_id,
     })
 
 

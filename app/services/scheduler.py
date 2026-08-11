@@ -142,16 +142,39 @@ class DistanceScheduler:
         """激活设备动作 — 走 device_action（mock agent / 真实硬件自动切换）
 
         参考 Qt DistanceBasedScheduler::activateDevices()
+
+        重要：本方法跑在雷达收包线程里。LED 串口 write_timeout、PLC/XRAY HTTP
+        等同步调用会堵住 on_radar_data → 距离推送停顿 → 前端小车卡顿。
+        因此设备动作一律丢到后台线程；时间戳与 detection_step 仍同步（轻量）。
         """
         threshold.status = True
-        from app.services.device_action import execute_device_action
-
-        for device_id, action_config in threshold.device_actions.items():
-            try:
-                execute_device_action(device_id, action_config.action, action_config.params)
-            except Exception:
-                pass
+        actions = [
+            (device_id, action_config.action, dict(action_config.params or {}))
+            for device_id, action_config in threshold.device_actions.items()
+        ]
+        for device_id, _, _ in actions:
             self._device_activation_status[device_id] = True
+
+        if actions:
+            threshold_id = threshold.id
+
+            def _run_actions() -> None:
+                from app.services.device_action import execute_device_action
+                for device_id, action, params in actions:
+                    try:
+                        execute_device_action(device_id, action, params)
+                    except Exception as e:
+                        print(
+                            f'[SCHEDULER] async action failed '
+                            f'{threshold_id}/{device_id}.{action}: {e}',
+                            flush=True,
+                        )
+
+            threading.Thread(
+                target=_run_actions,
+                daemon=True,
+                name=f'threshold-{threshold.id}',
+            ).start()
 
         # 打点 4 个时间字段到 _booking_state（Qt m_VehicleInspection 对齐）
         # threshold.id 与时间字段的对应：
@@ -178,17 +201,29 @@ class DistanceScheduler:
         self._push_step_update(threshold)
 
     def _trigger_plc_rule_actions(self, rule: PlcStateRule):
-        """触发 PLC 规则关联的设备动作"""
-        from app.devices.manager import DeviceManager
-        mgr = DeviceManager()
-        for device_id, action_config in rule.device_actions.items():
-            ctrl = mgr.get_device(device_id)
-            if not ctrl:
-                continue
-            try:
-                ctrl.execute_action(action_config.action, action_config.params)
-            except Exception:
-                pass
+        """触发 PLC 规则关联的设备动作（异步，避免堵雷达线程）"""
+        actions = [
+            (device_id, action_config.action, dict(action_config.params or {}))
+            for device_id, action_config in rule.device_actions.items()
+        ]
+        if not actions:
+            return
+
+        def _run() -> None:
+            from app.devices.manager import DeviceManager
+            mgr = DeviceManager()
+            for device_id, action, params in actions:
+                ctrl = mgr.get_device(device_id)
+                if not ctrl:
+                    continue
+                try:
+                    ctrl.execute_action(action, params)
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=_run, daemon=True, name=f'plc-rule-{rule.rule_id}',
+        ).start()
 
     def _push_step_update(self, threshold):
         """根据阈值推送检测步骤"""
