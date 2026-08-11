@@ -71,17 +71,27 @@ def execute_device_action(device_id: str, action: str, params: dict[str, Any] | 
 
 
 def _execute_capture(params: dict) -> bool:
-    """车头/车尾/车顶等：HTTP 抓图并入库"""
+    """车头/车尾/车顶等：调度器触发的抓图。
+
+    必须异步：调度器跑在雷达收包线程里，同步 OpenCV/RTSP 会堵住
+    on_radar_data → 距离推送中断 → 前端小车卡住。
+    手动 /api/capture/* 仍同步调用 capture_category，不受影响。
+    """
     category = str(params.get('category') or 'head').strip() or 'head'
-    print(f'[DEVICE-ACTION] → capture_service category={category}', flush=True)
-    try:
-        from app.services.capture_service import capture_category
-        capture_category(category)
-        return True
-    except Exception as e:
-        logger.warning(f'[CAPTURE] {category} 失败: {e}')
-        print(f'[DEVICE-ACTION] capture 失败: {e}', flush=True)
-        return False
+    print(f'[DEVICE-ACTION] → capture_service category={category} (async)', flush=True)
+
+    def _run() -> None:
+        try:
+            from app.services.capture_service import capture_category
+            capture_category(category)
+        except Exception as e:
+            logger.warning(f'[CAPTURE] {category} 失败: {e}')
+            print(f'[DEVICE-ACTION] capture 失败: {e}', flush=True)
+
+    threading.Thread(
+        target=_run, daemon=True, name=f'capture-{category}',
+    ).start()
+    return True
 
 
 def _execute_via_mock_agent(device_id: str, action: str, params: dict) -> bool:

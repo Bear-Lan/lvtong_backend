@@ -50,7 +50,7 @@ def _persist_images(body: dict) -> None:
 
     落盘规则：
       - 单图字段：原值或空串 → persist_to_storage(value, category)
-      - 多图字段：按 | 切（兼 容 ,），逐项持久化，过滤空，最终用 | 拼回
+      - 多图字段：按 | 切分（统一分隔符；dataUrl 含逗号，禁止用 ,），逐项持久化后用 | 拼回
       - 所有结果为磁盘绝对路径；前端展示时由 db_path_to_api 转 /api/images/<rel>
     """
     for field in _SINGLE_IMAGE_FIELDS:
@@ -64,22 +64,9 @@ def _persist_images(body: dict) -> None:
         val = body.get(field)
         if not val:
             continue
-        s = str(val)
-        # 安全切分 | 或 ,：dataUrl 整段占位成 token，避开其中可能的 ,
-        import re as _re
-        # data: 起，至下一个 | 或字符串尾止（标准 base64 无空白字符，所以 \S+ 安全）
-        token_re = _re.compile(r"data:\S+")
-        tokens: list[str] = []
-        def _put(m):
-            tokens.append(m.group(0))
-            return f'__DATAURL_{len(tokens) - 1}__'
-        s_safe = token_re.sub(_put, s)
-        parts = [p.strip() for p in s_safe.replace(',', '|').split('|') if p.strip()]
+        parts = [p.strip() for p in str(val).split('|') if p.strip()]
         persisted = []
         for p in parts:
-            pm = _re.fullmatch(r'__DATAURL_(\d+)__', p)
-            if pm:
-                p = tokens[int(pm.group(1))]
             ap = persist_to_storage(p, _IMAGE_CATEGORY.get(field, 'misc'))
             if ap:
                 persisted.append(ap)

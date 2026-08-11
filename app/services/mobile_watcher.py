@@ -296,9 +296,9 @@ class MobileJsonFolderWatcher:
                 if p:
                     result[k] = p
         if goods_list:
-            result['goods_image_path'] = ','.join(goods_list)
+            result['goods_image_path'] = '|'.join(goods_list)
         if evidences_list:
-            result['evidences_image_path'] = ','.join(evidences_list)
+            result['evidences_image_path'] = '|'.join(evidences_list)
 
         # 解析通行码 14 字段
         passcode = _parse_passcode(doc.get('passcodeQRCodeInfo', ''))
