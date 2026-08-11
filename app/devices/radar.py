@@ -180,7 +180,10 @@ class RadarReader(DeviceBase):
 
     @staticmethod
     def parse_plc_status(text: str) -> dict | None:
-        """解析 $NTRMC,PLC,<hex> 协议包"""
+        """解析 $NTRMC,PLC,<hex> 协议包
+
+        32 位寄存器：高 16 = CMD_*，低 16 = STATUS_*（不含 RESERVE）。
+        """
         try:
             parts = text.strip().split(',')
             if len(parts) < 3:
@@ -188,24 +191,35 @@ class RadarReader(DeviceBase):
 
             hex_str = parts[2].split('\r')[0].split('\n')[0].strip()
             status_value = int(hex_str, 16)
-            s16status_value = status_value >> 16
+            cmd = status_value >> 16
+            st = status_value & 0xFFFF
 
             return {
-                'redLightCmd': (s16status_value & 0x0200) != 0,
-                'yellowLightCmd': (s16status_value & 0x0400) != 0,
-                'greenLightCmd': (s16status_value & 0x0800) != 0,
-                'createLightCmd': (s16status_value & 0x1000) != 0,
-                'soundalarmCmd': (s16status_value & 0x8000) != 0,
-                'interlock160Cmd': (s16status_value & 0x4000) != 0,
-                'interlock200Cmd': (s16status_value & 0x2000) != 0,
-                'urgentStopStatus': (status_value & 0x0100) != 0,
-                'bookingStatus': (status_value & 0x0200) != 0,
-                'groundSensorStatus': (status_value & 0x0800) != 0,
-                'lightScreenStatus': (status_value & 0x1000) != 0,
-                'lightGate200Status': (status_value & 0x2000) != 0,
-                'lightGate160Status': (status_value & 0x4000) != 0,
-                'lightSource200Status': (status_value & 0x0002) != 0,
-                'lightSource160Status': (status_value & 0x0004) != 0,
+                # ---- CMD（高 16）----
+                'urgentStopCmd': (cmd & 0x0100) != 0,       # CMD_URGENT_STOP
+                'redLightCmd': (cmd & 0x0200) != 0,         # CMD_RED_LIGHT
+                'yellowLightCmd': (cmd & 0x0400) != 0,      # CMD_YELLOW_LIGHT
+                'greenLightCmd': (cmd & 0x0800) != 0,       # CMD_GREEN_LIGHT
+                'createLightCmd': (cmd & 0x1000) != 0,      # CMD_CREATE_LIGHT
+                'interlock200Cmd': (cmd & 0x2000) != 0,     # CMD_200_INTERLOCK
+                'interlock160Cmd': (cmd & 0x4000) != 0,     # CMD_160_INTERLOCK
+                'soundalarmCmd': (cmd & 0x8000) != 0,       # CMD_SOUND_ALARM
+                'xrayGate200Cmd': (cmd & 0x0001) != 0,      # CMD_XRAY_200_GATE
+                'xrayGate160Cmd': (cmd & 0x0002) != 0,      # CMD_XRAY_160_GATE
+                'xrayMotorRest200Cmd': (cmd & 0x0004) != 0, # CMD_XRAY_200_MOTORREST
+                'xrayMotorRest160Cmd': (cmd & 0x0008) != 0, # CMD_XRAY_160_MOTORREST
+                # ---- STATUS（低 16）----
+                'urgentStopStatus': (st & 0x0100) != 0,     # STATUS_URGENT_STOP
+                'bookingStatus': (st & 0x0200) != 0,        # STATUS_BOOKING
+                'stickDownStatus': (st & 0x0400) != 0,      # STATUS_STICK_DOWN
+                'groundSensorStatus': (st & 0x0800) != 0,   # STATUS_GROUND_SENSOR
+                'lightScreenStatus': (st & 0x1000) != 0,    # STATUS_LIGHT_SCREEN
+                'lightGate200Status': (st & 0x2000) != 0,   # STATUS_200_LIGHT_GATE
+                'lightGate160Status': (st & 0x4000) != 0,   # STATUS_160_LIGHT_GATE
+                'gateMotor200Status': (st & 0x8000) != 0,   # STATUS_200_GATE_MOTOR
+                'gateMotor160Status': (st & 0x0001) != 0,   # STATUS_160_GATE_MOTOR
+                'lightSource200Status': (st & 0x0002) != 0, # STATUS_200_LIGHT_SOURCE
+                'lightSource160Status': (st & 0x0004) != 0, # STATUS_160_LIGHT_SOURCE
             }
         except (ValueError, IndexError):
             return None

@@ -158,37 +158,86 @@ def push_device_status(device_id: str, status_code: int, status_text: str = ''):
 def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False,
                     greatlight: bool = False, lightgate200: bool = False,
                     lightgate160: bool = False,
-                    # 对齐 Qt udpradar.cpp 位掩码解析 (0x0100~0x4000)
                     urgentstop: bool = False,
                     booking: bool = False,
                     groundsensor: bool = False,
                     lightscreen: bool = False,
                     lightsource200: bool = False,
-                    lightsource160: bool = False):
+                    lightsource160: bool = False,
+                    # CMD 补全
+                    urgentstop_cmd: bool = False,
+                    soundalarm: bool = False,
+                    interlock160: bool = False,
+                    interlock200: bool = False,
+                    xraygate200_cmd: bool = False,
+                    xraygate160_cmd: bool = False,
+                    xraymotorreset200: bool = False,
+                    xraymotorreset160: bool = False,
+                    # STATUS 补全
+                    stickdown: bool = False,
+                    gatemotor200: bool = False,
+                    gatemotor160: bool = False,
+                    # 完整 camelCase（与 parse_plc_status 一致，供前端优先读取）
+                    parsed: dict | None = None):
     """推送 PLC 状态变化
 
-    Qt 参考: UDPRadar::processPLCData() → LvTongPro::onPLCStatusUpdate()
-    字段对齐 Qt udpradar.cpp 位掩码:
-      0x0100 urgentStopStatus  0x0200 bookingStatus
-      0x0800 groundSensorStatus  0x1000 lightScreenStatus
-      0x2000 lightGate200Status  0x4000 lightGate160Status
-      0x0002 lightSource200Status  0x0004 lightSource160Status
+    位定义对齐硬件 CMD_*/STATUS_*；parsed 有值时以其为准并带上短别名。
     """
+    data = {
+        'red': red, 'yellow': yellow, 'green': green,
+        'greatlight': greatlight,
+        'lightgate200': lightgate200,
+        'lightgate160': lightgate160,
+        'urgentstop': urgentstop,
+        'booking': booking,
+        'groundsensor': groundsensor,
+        'lightscreen': lightscreen,
+        'lightsource200': lightsource200,
+        'lightsource160': lightsource160,
+        'urgentstop_cmd': urgentstop_cmd,
+        'soundalarm': soundalarm,
+        'interlock160': interlock160,
+        'interlock200': interlock200,
+        'xraygate200_cmd': xraygate200_cmd,
+        'xraygate160_cmd': xraygate160_cmd,
+        'xraymotorreset200': xraymotorreset200,
+        'xraymotorreset160': xraymotorreset160,
+        'stickdown': stickdown,
+        'gatemotor200': gatemotor200,
+        'gatemotor160': gatemotor160,
+    }
+    if parsed:
+        data.update(parsed)
+        # 短别名覆盖，保证 Dashboard / 旧逻辑仍可读
+        data.update({
+            'red': parsed.get('redLightCmd', red),
+            'yellow': parsed.get('yellowLightCmd', yellow),
+            'green': parsed.get('greenLightCmd', green),
+            'greatlight': parsed.get('createLightCmd', greatlight),
+            'lightgate200': parsed.get('lightGate200Status', lightgate200),
+            'lightgate160': parsed.get('lightGate160Status', lightgate160),
+            'urgentstop': parsed.get('urgentStopStatus', urgentstop),
+            'booking': parsed.get('bookingStatus', booking),
+            'groundsensor': parsed.get('groundSensorStatus', groundsensor),
+            'lightscreen': parsed.get('lightScreenStatus', lightscreen),
+            'lightsource200': parsed.get('lightSource200Status', lightsource200),
+            'lightsource160': parsed.get('lightSource160Status', lightsource160),
+            'urgentstop_cmd': parsed.get('urgentStopCmd', urgentstop_cmd),
+            'soundalarm': parsed.get('soundalarmCmd', soundalarm),
+            'interlock160': parsed.get('interlock160Cmd', interlock160),
+            'interlock200': parsed.get('interlock200Cmd', interlock200),
+            'xraygate200_cmd': parsed.get('xrayGate200Cmd', xraygate200_cmd),
+            'xraygate160_cmd': parsed.get('xrayGate160Cmd', xraygate160_cmd),
+            'xraymotorreset200': parsed.get('xrayMotorRest200Cmd', xraymotorreset200),
+            'xraymotorreset160': parsed.get('xrayMotorRest160Cmd', xraymotorreset160),
+            'stickdown': parsed.get('stickDownStatus', stickdown),
+            'gatemotor200': parsed.get('gateMotor200Status', gatemotor200),
+            'gatemotor160': parsed.get('gateMotor160Status', gatemotor160),
+        })
     socketio.emit('message', {
         'type': 'plc_status',
         'timestamp': int(time.time() * 1000),
-        'data': {
-            'red': red, 'yellow': yellow, 'green': green,
-            'greatlight': greatlight,
-            'lightgate200': lightgate200,
-            'lightgate160': lightgate160,
-            'urgentstop': urgentstop,
-            'booking': booking,
-            'groundsensor': groundsensor,
-            'lightscreen': lightscreen,
-            'lightsource200': lightsource200,
-            'lightsource160': lightsource160,
-        },
+        'data': data,
     })
 
 

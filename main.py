@@ -220,22 +220,9 @@ if __name__ == '__main__':
 
     def _on_plc_status(parsed: dict):
         """RadarReader 收到 $NTRMC,PLC,<hex> 包时的回调
-        对齐 Qt LvTongPro::onPLCStatusUpdate() 的字段映射
+        对齐硬件 CMD_*/STATUS_* 位图（见 radar.parse_plc_status）
         """
-        push_plc_status(
-            red=parsed.get('redLightCmd', False),
-            yellow=parsed.get('yellowLightCmd', False),
-            green=parsed.get('greenLightCmd', False),
-            greatlight=parsed.get('createLightCmd', False),
-            lightgate200=parsed.get('lightGate200Status', False),
-            lightgate160=parsed.get('lightGate160Status', False),
-            urgentstop=parsed.get('urgentStopStatus', False),
-            booking=parsed.get('bookingStatus', False),
-            groundsensor=parsed.get('groundSensorStatus', False),
-            lightscreen=parsed.get('lightScreenStatus', False),
-            lightsource200=parsed.get('lightSource200Status', False),
-            lightsource160=parsed.get('lightSource160Status', False),
-        )
+        push_plc_status(parsed=parsed)
 
     for radar in mgr.get_devices_by_type('udpradar'):
         radar.set_plc_status_callback(_on_plc_status)
