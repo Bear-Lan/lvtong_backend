@@ -102,6 +102,22 @@ def create_app() -> Flask:
             return jsonify({'code': 404, 'message': '文件不存在', 'data': None}), 404
         return send_file(target)
 
+    # 检测中预览图：内存临时缓存，不落 IMAGE_STORAGE_ROOT；提交时再 persist
+    @app.route('/api/temp-images/<temp_id>')
+    def serve_temp_image(temp_id: str):
+        """GET /api/temp-images/<id> — 返回预览期内存图。"""
+        from io import BytesIO
+        from app.services.temp_image_cache import get as temp_get
+        entry = temp_get(temp_id)
+        if entry is None:
+            return jsonify({'code': 404, 'message': '临时图不存在或已过期', 'data': None}), 404
+        return send_file(
+            BytesIO(entry.data),
+            mimetype=entry.mime,
+            download_name=f'{temp_id}.jpg',
+            max_age=0,
+        )
+
     # 注册图像采集蓝图
     app.register_blueprint(capture_api)
     # 内置实时视频检测（MJPEG + YOLO）

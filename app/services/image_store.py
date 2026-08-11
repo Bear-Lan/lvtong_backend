@@ -128,6 +128,7 @@ class ImageStore:
         接收形态：
           - 空串                         -> ''（不入库字段）
           - data:image/...;base64,...    -> 解码 + 写盘，返回新绝对路径
+          - '/api/temp-images/<id>'      -> 从内存临时缓存取字节写盘（预览图提交落库）
           - 任意磁盘上的图片（含已经在 IMAGE_STORAGE_ROOT 内的）
                                         -> **统一**复制并重命名为
                                             IMAGE_STORAGE_ROOT/<yyyy>/<MM>/<dd>/<category>/<seq>.<ext>
@@ -153,6 +154,10 @@ class ImageStore:
         # 1. dataUrl 形态：解码 + 写盘（已自行落到规范目录）
         if s.startswith('data:image/') or s.startswith('data:application/octet-stream;base64,'):
             return ImageStore._save_data_url(s, category)
+
+        # 1b. 内存临时预览图：提交时才写入正式库
+        if s.startswith('/api/temp-images/'):
+            return ImageStore._save_temp_image(s[len('/api/temp-images/'):].strip('/'), category)
 
         # 2. http(s) 外部链接：不接管
         lower = s.lower()
@@ -194,6 +199,38 @@ class ImageStore:
         return ImageStore._copy_to_standard(os.path.normpath(s), category)
 
     @staticmethod
+    def _save_bytes(blob: bytes, category: str, prefix: str = 'dataurl',
+                    mime: str = 'image/jpeg') -> str:
+        """字节写盘到 IMAGE_STORAGE_ROOT，返回绝对路径。"""
+        if not blob:
+            return ''
+        ext_map = {
+            'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+            'image/gif': 'gif', 'image/bmp': 'bmp', 'image/webp': 'webp',
+            'image/tiff': 'tiff',
+        }
+        ext = ext_map.get((mime or '').strip().lower(), 'jpg')
+        inst = ImageStore()
+        directory = inst._category_dir(category)
+        filename = inst._generate_filename(category, prefix=prefix, ext=ext)
+        abs_path = os.path.join(directory, filename)
+        with inst._write_lock:
+            with open(abs_path, 'wb') as f:
+                f.write(blob)
+        return abs_path
+
+    @staticmethod
+    def _save_temp_image(temp_id: str, category: str) -> str:
+        """从内存临时缓存取图并写入正式库。"""
+        from app.services.temp_image_cache import get as temp_get
+        entry = temp_get(temp_id)
+        if entry is None:
+            return ''
+        return ImageStore._save_bytes(
+            entry.data, category, prefix='temp', mime=entry.mime,
+        )
+
+    @staticmethod
     def _save_data_url(data_url: str, category: str) -> str:
         """把 base64 dataUrl 解码写盘到 IMAGE_STORAGE_ROOT，返回绝对路径。"""
         import base64
@@ -203,25 +240,11 @@ class ImageStore:
             return ''
         mime = m.group('mime').strip().lower()
         raw = m.group('data').strip()
-        ext_map = {
-            'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
-            'image/gif': 'gif', 'image/bmp': 'bmp', 'image/webp': 'webp',
-            'image/tiff': 'tiff',
-        }
-        ext = ext_map.get(mime, 'jpg')
         try:
             blob = base64.b64decode(raw, validate=False)
         except Exception:
             return ''
-        # 走 singleton instance，使用 _write_lock
-        inst = ImageStore()
-        directory = inst._category_dir(category)
-        filename = inst._generate_filename(category, prefix='dataurl', ext=ext)
-        abs_path = os.path.join(directory, filename)
-        with inst._write_lock:
-            with open(abs_path, 'wb') as f:
-                f.write(blob)
-        return abs_path
+        return ImageStore._save_bytes(blob, category, prefix='dataurl', mime=mime)
 
     @staticmethod
     def _copy_to_standard(source_abs: str, category: str) -> str:

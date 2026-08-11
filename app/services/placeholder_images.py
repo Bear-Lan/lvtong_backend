@@ -8,7 +8,8 @@
   5. 车身顶/侧（点云面板位）
   6. 预约雷达图（booking /radar-image 另走同 URL）
 
-拉一次远程图，存多份分类，再按前端 mock 形态推 image_ready。
+拉一次远程图 → 放内存临时缓存 → 推 image_ready（/api/temp-images/<id>）。
+正式落盘仅在用户点提交时由 persist_to_storage 完成。
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import threading
 
 import requests
 
-from app.services.image_store import ImageStore
+from app.services import temp_image_cache
 
 logger = logging.getLogger('placeholder_images')
 
@@ -42,44 +43,37 @@ def fetch_placeholder_bytes(url: str | None = None) -> bytes:
 
 
 def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
-    """拉取占位图并推送 body + transparent 两组（共 6 个面板位）。
+    """拉取占位图并推送 body + transparent 两组（共 6 个面板位，预览不落盘）。
 
     返回 {body: {1,2,3}, transparent: {1,2,3}, sourceUrl}
     """
     from config import PLACEHOLDER_IMAGE_ID
 
     sid = (scan_id or PLACEHOLDER_IMAGE_ID or '').strip() or 'placeholder'
-    # 若配置已是完整 URL 则直接用；否则拼 id
     url = _placeholder_url()
     if 'id=' not in url and sid:
         sep = '&' if '?' in url else '?'
         url = f'{url}{sep}id={sid}'
 
     data = fetch_placeholder_bytes(url)
-    store = ImageStore()
+    # 同一份字节只缓存一次；六面板共用 URL，提交时再按字段分别落正式库
+    preview_url = temp_image_cache.put_and_url(data)
 
-    # 六类落盘（雷达留给 /api/booking/radar-image，此处面板 5+1 命名）
-    body1 = store.save_image_bytes(data, 'body', prefix=sid)
-    body2 = store.save_image_bytes(data, 'top', prefix=sid)
-    body3 = store.save_image_bytes(data, 'side', prefix=sid)
-    x200 = store.save_image_bytes(data, 'transparent200', prefix=sid)
-    x160 = store.save_image_bytes(data, 'transparent160', prefix=sid)
-    mosaic = store.save_image_bytes(data, 'mosaic', prefix=sid)
+    body = {'1': preview_url, '2': preview_url, '3': preview_url}
+    transparent = {'1': preview_url, '2': preview_url, '3': preview_url}
 
     from app.websocket.handler import push_image_ready_group
 
-    push_image_ready_group('body', {'1': body1, '2': body2, '3': body3}, group=1)
-    push_image_ready_group(
-        'transparent', {'1': x200, '2': x160, '3': mosaic}, group=1
-    )
+    push_image_ready_group('body', body, group=1)
+    push_image_ready_group('transparent', transparent, group=1)
 
     result = {
         'sourceUrl': url,
-        'body': {'1': body1, '2': body2, '3': body3},
-        'transparent': {'1': x200, '2': x160, '3': mosaic},
+        'body': body,
+        'transparent': transparent,
     }
     print(
-        f'[PLACEHOLDER] 已推送六面板位 body={body1} xray200={x200}',
+        f'[PLACEHOLDER] 已推送六面板位(预览未落盘) url={preview_url} bytes={len(data)}',
         flush=True,
     )
     return result

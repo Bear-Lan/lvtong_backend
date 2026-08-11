@@ -10,7 +10,7 @@ from flask import Blueprint, request, jsonify, current_app
 from config import RADAR_HEAD_URL
 from app.extensions.auth import login_required
 from app.devices.manager import DeviceManager
-from app.services.image_store import ImageStore
+from app.services import temp_image_cache
 from app.websocket.handler import socketio
 
 booking_api = Blueprint('booking', __name__, url_prefix='/api/booking')
@@ -173,11 +173,14 @@ def fetch_radar_image():
     orig_height = 0
 
     try:
-        resp = requests.get(radar_head_url, timeout=10)
-        if resp.status_code == 200:
-            # 保存雷达图像到本地存储
-            store = ImageStore()
-            image_url = store.save_image_bytes(resp.content, 'radar', 'head')
+        # 大图偶发 >10s；预览进内存临时缓存，不落 IMAGE_STORAGE_ROOT（预约图本身不提交）
+        resp = requests.get(radar_head_url, timeout=20)
+        if resp.status_code == 200 and resp.content:
+            image_url = temp_image_cache.put_and_url(resp.content)
+            print(
+                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} bytes={len(resp.content)}',
+                flush=True,
+            )
 
             # 解析响应头
             image_envelope = resp.headers.get('Image-Envelope', '')
