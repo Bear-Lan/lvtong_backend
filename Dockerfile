@@ -1,6 +1,5 @@
 # 已迁移：请使用仓库根下 deploy/docker/backend.Dockerfile
 # docker compose -f deploy/docker-compose.yml 会自动引用。
-# 保留本文件以免旧文档报错；内容与 deploy 版等价（上下文为本目录时使用）。
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
