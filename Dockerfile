@@ -1,39 +1,30 @@
-# 绿通快检系统 - 后端 Docker 镜像
+# 已迁移：请使用仓库根下 deploy/docker/backend.Dockerfile
+# docker compose -f deploy/docker-compose.yml 会自动引用。
+# 保留本文件以免旧文档报错；内容与 deploy 版等价（上下文为本目录时使用）。
 FROM ubuntu:24.04
-
-# 替换 apt 源为清华镜像（加速国内构建）
-RUN sed -i 's|http://archive.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list && \
-    sed -i 's|http://security.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list
-
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    gfortran g++ make vim nano unzip curl \
-    inetutils-ping openssl libssl-dev libaio1t64
-
-# 安装 Python 运行时
-RUN apt-get update && \
-    apt-get install -y python3 python3-venv && \
-    rm -rf /var/lib/apt/lists/*
-
-# 设置工作目录
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    MEDIAMTX_VERSION=v1.19.3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-venv python3-pip curl ca-certificates ffmpeg \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-
-# 复制项目文件
+COPY requirements.txt ./
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -U pip \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple
 COPY . .
-
-# 创建虚拟环境并安装依赖
-RUN python3 -m venv /myenv
-RUN /myenv/bin/pip install --no-cache-dir -r requirements.txt \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 配置环境
-RUN echo "ulimit -s unlimited" >> /root/.bashrc
-
-# 暴露端口
-EXPOSE 8080
-
-# 环境变量
-ENV PATH="/myenv/bin:$PATH"
-
-# 启动
-CMD ["./startup.sh"]
+RUN mkdir -p tools/mediamtx \
+    && if [ ! -f tools/mediamtx/mediamtx ]; then \
+         curl -fsSL \
+           "https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_linux_amd64.tar.gz" \
+           | tar -xz -C tools/mediamtx mediamtx; \
+       fi \
+    && chmod +x tools/mediamtx/mediamtx
+RUN mkdir -p /var/gcms/captures /var/gcms/mobile_ftp uploads/mobile && chmod +x startup.sh || true
+EXPOSE 8080 8082 8889 8554
+CMD ["python3", "main.py"]

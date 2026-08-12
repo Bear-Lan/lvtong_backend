@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.git/
+.idea/
+.vscode/
+*.md
+tests/
+.env
+.env.*
+tools/mediamtx/mediamtx.exe
+tools/mediamtx/mediamtx.zip
+tools/mediamtx/_extract/
+tools/mediamtx/mediamtx.default.yml
+uploads/
+*.log

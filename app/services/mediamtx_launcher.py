@@ -193,7 +193,11 @@ def start_mediamtx() -> bool:
         return False
 
     if not bin_path.is_file():
-        print(f'[MediaMTX] 未找到 {bin_path.name}，请将 mediamtx.exe 放到 tools/mediamtx/')
+        print(
+            f'[MediaMTX] 未找到 {bin_path.name}，'
+            f'请将对应平台二进制放到 tools/mediamtx/ '
+            f'(Windows: mediamtx.exe；Linux: mediamtx，建议 v1.19.3)'
+        )
         return False
 
     _stop_foreign_mediamtx()
