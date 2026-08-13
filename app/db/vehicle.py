@@ -152,6 +152,33 @@ class DBVehicle(BaseRepo):
         )
         return row['plate_number_gc'] if row else ''
 
+    def getLatestInspectionByPlate(self, plate: str) -> dict | None:
+        """该车牌最近一条有效查验（用于主页回填）"""
+        row = self._one(
+            "SELECT * FROM vehicle_inspections "
+            "WHERE plate_number = :plate AND status = 0 "
+            "ORDER BY inspection_time DESC, id DESC LIMIT 1",
+            {'plate': plate},
+        )
+        return _normalize(row) if row else None
+
+    def getInspectionTimeRangeByPlate(self, plate: str) -> tuple[str | None, str | None]:
+        """该车牌最早/最晚 inspection_time（ISO），无记录则 (None, None)"""
+        row = self._one(
+            "SELECT MIN(inspection_time) AS earliest, MAX(inspection_time) AS latest "
+            "FROM vehicle_inspections "
+            "WHERE plate_number = :plate AND status = 0",
+            {'plate': plate},
+        )
+        if not row:
+            return None, None
+        earliest, latest = row.get('earliest'), row.get('latest')
+        if earliest is not None and hasattr(earliest, 'isoformat'):
+            earliest = earliest.isoformat()
+        if latest is not None and hasattr(latest, 'isoformat'):
+            latest = latest.isoformat()
+        return earliest, latest
+
     def getInspectionsCount(self, plate_number='', driver_phone='',
                             vehicle_type='', goods_type='', operator_name='',
                             start_time=None, end_time=None) -> int:

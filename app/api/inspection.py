@@ -484,19 +484,38 @@ def delete_inspection(inspection_id):
 @inspection_api.route('/plate/<plate>', methods=['GET'])
 @login_required
 def by_plate(plate):
-    """按车牌号查询检测记录与统计
+    """按车牌号查询检测记录与统计，并返回最近一条用于主页回填。
 
     参考 Qt VehicleDatabase::getInspectionsByPlateNumber()
     """
     db = DBVehicle()
-    records = db.getInspectionsByPlate(plate)
     count = db.getInspectionCountByPlate(plate)
-    phone = db.getDriverPhoneByPlate(plate)
-    gc_plate = db.getGCPlateByPlate(plate)
+    latest = db.getLatestInspectionByPlate(plate)
+    earliest_time, latest_time = db.getInspectionTimeRangeByPlate(plate)
 
-    return ok({
+    payload = {
         'count': count,
-        'driver_phone': phone,
-        'gc_plate': gc_plate,
-        'records': records,
-    })
+        'driver_phone': '',
+        'gc_plate': '',
+        'vehicle_type': '',
+        'vehicle_container_type': '',
+        'vehicle_size': '',
+        'license_image_path': '',
+        'license_image_path1': '',
+        'earliest_time': earliest_time or '',
+        'latest_time': latest_time or '',
+        'records': db.getInspectionsByPlate(plate),
+    }
+    if latest:
+        payload['driver_phone'] = latest.get('driver_phone') or ''
+        payload['gc_plate'] = latest.get('plate_number_gc') or ''
+        payload['vehicle_type'] = latest.get('vehicle_type') or ''
+        payload['vehicle_container_type'] = latest.get('vehicle_container_type') or ''
+        payload['vehicle_size'] = latest.get('vehicle_size') or ''
+        # 行驶证：转 API URL 供主页缩略图 / 弹窗回显
+        lic = latest.get('license_image_path') or ''
+        lic_gc = latest.get('license_image_path1') or ''
+        payload['license_image_path'] = db_path_to_api(lic) if lic else ''
+        payload['license_image_path1'] = db_path_to_api(lic_gc) if lic_gc else ''
+
+    return ok(payload)
