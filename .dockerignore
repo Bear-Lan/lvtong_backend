@@ -13,5 +13,6 @@ tools/mediamtx/mediamtx.exe
 tools/mediamtx/mediamtx.zip
 tools/mediamtx/_extract/
 tools/mediamtx/mediamtx.default.yml
+tools/yolo/
 uploads/
 *.log

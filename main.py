@@ -284,6 +284,7 @@ if __name__ == '__main__':
         (HOST, http_port), wsgi_app,
         log=gevent_logger,
     )
+    https_server = None
     if cert_path and key_path:
         https_server = pywsgi.WSGIServer(
             (HOST, https_port), wsgi_app,
@@ -292,19 +293,21 @@ if __name__ == '__main__':
             log=gevent_logger,
         )
     else:
-        https_server = pywsgi.WSGIServer(
-            (HOST, https_port), wsgi_app,
-            log=gevent_logger,
-        )  # 回退 HTTP
+        # 切勿在 8082 上回退明文 HTTP：手机会报 net::ERR_SSL_PROTOCOL_ERROR
+        print(
+            f'[HTTPS] 证书不可用，跳过 :{https_port}。'
+            '请确认已安装 cryptography，并检查 TLS_CERT_DIR。'
+        )
 
     print(f'[SERVER] HTTP  启动 http://{HOST}:{http_port}')
-    print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
+    if https_server is not None:
+        print(f'[SERVER] HTTPS 启动 https://{HOST}:{https_port}')
 
     try:
-        gevent.joinall([
-            gevent.spawn(http_server.serve_forever),
-            gevent.spawn(https_server.serve_forever),
-        ])
+        jobs = [gevent.spawn(http_server.serve_forever)]
+        if https_server is not None:
+            jobs.append(gevent.spawn(https_server.serve_forever))
+        gevent.joinall(jobs)
     except KeyboardInterrupt:
         print('[SHUTDOWN] 收到 Ctrl+C，正在关闭…')
     finally:
@@ -314,4 +317,5 @@ if __name__ == '__main__':
         except Exception:
             pass
         http_server.stop()
-        https_server.stop()
+        if https_server is not None:
+            https_server.stop()

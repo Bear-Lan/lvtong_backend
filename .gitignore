@@ -27,13 +27,7 @@ tools/mediamtx/mediamtx.default.yml
 tools/mediamtx/auto.crt
 tools/mediamtx/auto.key
 
-# YOLO 模型权重（勿提交）
-tools/yolo/*.pt
-
 # 系统文件
 .DS_Store
 Thumbs.db
 uploads/
-
-# LiveDetect 运行时产物
-uploads/live_runtime/
