@@ -53,7 +53,16 @@ STITCH_IMAGE_URL = os.environ.get(
     'http://192.168.88.201:5006/xray/image?id=',
 )
 
-# ---- AI / OCR ----
+# ---- AI 统一服务 ----
+# 主检测入口：行驶证 AI 裁剪、车厢装载率 mask（truck_xray_box）等均走此 URL。
+# 部署时优先改环境变量 AI_DETECT_URL；一般无需再配下面两个覆盖项。
+AI_DETECT_URL = os.environ.get(
+    'AI_DETECT_URL', 'http://220.249.109.154:90/detect'
+)
+AI_LICENSE_CROP_URL = os.environ.get('AI_LICENSE_CROP_URL') or AI_DETECT_URL
+AI_LOAD_RATE_URL = os.environ.get('AI_LOAD_RATE_URL') or AI_DETECT_URL
+
+# 其它 AI 相关（路径/端口可能不同，单独配置）
 AI_MODEL_URL = os.environ.get(
     'AI_MODEL_URL', 'http://192.168.88.245:8899'
 )

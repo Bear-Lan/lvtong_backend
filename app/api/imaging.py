@@ -108,6 +108,70 @@ def compute_load_rate():
         return fail(500, f'满载率计算失败: {str(e)}')
 
 
+@imaging_api.route('/ai-load-rate', methods=['POST'])
+@login_required
+def ai_load_rate():
+    """AI 掩码装载率（对齐绿通 AI 智能体 truck_xray_box）
+
+    前提：透视拼接图 + 已选货箱类型。
+    - 厢式货车 → 方案1（中80% + 底20%）
+    - 其他 → 方案2（中20% + 底80%）
+
+    支持：
+      multipart: image + container_type_name | container_type_code
+      JSON: image_base64 | image_url | image_path + container_type_name | container_type_code
+    """
+    from app.services.mask_loading_rate import compute_ai_load_rate
+
+    container_name = ''
+    container_code = ''
+    image_bytes = b''
+    filename = 'xray.jpg'
+
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        f = request.files.get('image')
+        container_name = (request.form.get('container_type_name') or '').strip()
+        container_code = (request.form.get('container_type_code') or '').strip()
+        if f and f.filename:
+            image_bytes = f.read()
+            filename = f.filename
+    else:
+        body = request.get_json(silent=True) or {}
+        container_name = (body.get('container_type_name') or '').strip()
+        container_code = (body.get('container_type_code') or '').strip()
+        # 复用现有读图：转成 jpeg bytes 再送给 AI
+        img = _load_image_from_body(body)
+        if img is not None:
+            ok_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if ok_enc:
+                image_bytes = buf.tobytes()
+
+    if container_code and not container_name:
+        try:
+            from app.db.dictionary import DBDictionary
+            for row in DBDictionary().getAllContainerTypes():
+                if str(row.get('type_code')) == str(container_code):
+                    container_name = str(row.get('type_name') or '')
+                    break
+        except Exception:
+            pass
+
+    if not container_name and not container_code:
+        return fail(400, '请先选择货箱类型')
+    if not container_name:
+        container_name = str(container_code)
+    if not image_bytes:
+        return fail(400, '请先提供透视拼接图')
+
+    try:
+        result = compute_ai_load_rate(image_bytes, container_name, filename)
+        return ok(result, 'AI 装载率计算成功')
+    except ValueError as e:
+        return fail(400, str(e))
+    except Exception as e:
+        return fail(502, f'AI 装载率失败: {e}')
+
+
 # ==================== 200+160 拼接 ====================
 
 @imaging_api.route('/stitch', methods=['POST'])

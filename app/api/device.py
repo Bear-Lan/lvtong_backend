@@ -175,14 +175,18 @@ def health_check():
     offline = [d for d in devices if not d['connected']]
 
     # 检测 AI 和 OCR 服务
-    ai_online = _check_service_url('AI_MODEL_URL', 'http://192.168.88.245:8899')
-    ocr_online = _check_service_url('OCR_SERVICE_URL', 'http://192.168.88.245:8890')
+    from config import AI_DETECT_URL, AI_MODEL_URL, OCR_SERVICE_URL
+    detect_online = _probe_url(AI_DETECT_URL)
+    ai_online = _probe_url(AI_MODEL_URL)
+    ocr_online = _probe_url(OCR_SERVICE_URL)
 
     return ok({
         'healthy': healthy,
         'total': len(devices),
         'offlineCount': len(offline),
         'offlineDevices': [d['deviceName'] for d in offline],
+        'aiDetectOnline': detect_online,
+        'aiDetectUrl': AI_DETECT_URL,
         'aiOnline': ai_online,
         'ocrOnline': ocr_online,
     })
@@ -224,13 +228,20 @@ def plc_control():
     return ok(message='PLC 控制指令已发送')
 
 
-def _check_service_url(config_key: str, default_url: str) -> bool:
-    """探活外部服务 URL"""
+def _probe_url(url: str) -> bool:
+    """探活外部服务 URL（直接用配置值，不依赖 Flask app.config）"""
     import requests as req
-    from flask import current_app
-    url = current_app.config.get(config_key, default_url)
+    if not url:
+        return False
     try:
         resp = req.get(url, timeout=3)
         return resp.status_code < 500
     except Exception:
         return False
+
+
+def _check_service_url(config_key: str, default_url: str) -> bool:
+    """探活外部服务 URL"""
+    from flask import current_app
+    url = current_app.config.get(config_key, default_url)
+    return _probe_url(url)

@@ -173,9 +173,7 @@ def merge_license_images():
 
 # ============ AI 裁剪 + 拼接（行驶证） ============
 
-AI_LICENSE_CROP_URL = os.environ.get(
-    'AI_LICENSE_CROP_URL', 'http://220.249.109.154:90/detect'
-)
+from config import AI_LICENSE_CROP_URL
 
 
 def _extract_result_b64(payload: dict, key: str) -> bytes | None:
