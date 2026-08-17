@@ -22,6 +22,8 @@ _SINGLE_IMAGE_FIELDS = [
     'body_image_path', 'transparent_image_path',
     'license_image_path', 'license_image_path1', 'license_image_path2',
     'pass_code_image_path', 'passcode_image_path',
+    # 雷达三图：车侧/车顶（车身影像）+ 车头（预约）
+    'radar_side_image_path', 'radar_top_image_path', 'radar_head_image_path',
 ]
 _MULTI_IMAGE_FIELDS = ['goods_image_path', 'evidences_image_path']
 
@@ -39,6 +41,9 @@ _IMAGE_CATEGORY = {
     'passcode_image_path': 'passcode',
     'goods_image_path': 'goods',
     'evidences_image_path': 'evidence',
+    'radar_side_image_path': 'radar_side',
+    'radar_top_image_path': 'radar_top',
+    'radar_head_image_path': 'radar_head',
 }
 
 

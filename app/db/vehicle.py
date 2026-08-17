@@ -26,6 +26,7 @@ class DBVehicle(BaseRepo):
             'head_image_path': '', 'tail_image_path': '', 'top_image_path': '',
             'goods_image_path': '', 'evidences_image_path': '',
             'license_image_path': '', 'passcode_image_path': '',
+            'radar_side_image_path': '', 'radar_top_image_path': '', 'radar_head_image_path': '',
             'operator_name': '', 'inspector_phone': '',
             'reviewer_phone': '', 'group_id': '',
             'btn_prebook_time': None, 'acceptance_time': None,

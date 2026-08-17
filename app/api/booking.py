@@ -144,6 +144,62 @@ def open_booking_session():
     }, '会话初始化成功')
 
 
+def _parse_image_resolution(header: str) -> tuple[int, int]:
+    """解析 Image-Resolution，如 1920x1080 / 1920,1080 / 1920*1080。"""
+    s = (header or '').strip().lower().replace(' ', '')
+    if not s:
+        return 0, 0
+    for sep in ('x', '*', ',', '×'):
+        if sep in s:
+            parts = s.split(sep, 1)
+            try:
+                w = int(float(parts[0]))
+                h = int(float(parts[1])) if len(parts) > 1 else 0
+                if w > 0:
+                    return w, h
+            except (TypeError, ValueError):
+                return 0, 0
+    return 0, 0
+
+
+def _decode_bgr(data: bytes):
+    if not data:
+        return None
+    try:
+        import cv2
+        import numpy as np
+        arr = np.frombuffer(data, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+
+def _image_size_from_bytes(data: bytes) -> tuple[int, int]:
+    """从原图字节读宽高（车头长度按原图像素算，不能用预览缩放后的宽）。"""
+    img = _decode_bgr(data)
+    if img is None:
+        return 0, 0
+    h, w = img.shape[:2]
+    return int(w), int(h)
+
+
+def _leftmost_content_x(data: bytes, white_threshold: int = 245) -> int:
+    """无包络头时：找点云/车辆内容最左列，作为车头起算原点（像素）。"""
+    img = _decode_bgr(data)
+    if img is None:
+        return 0
+    try:
+        import numpy as np
+        # 非近白像素视为内容（点云底白）
+        mask = np.any(img < white_threshold, axis=2)
+        cols = np.where(mask.any(axis=0))[0]
+        if cols.size == 0:
+            return 0
+        return int(cols[0])
+    except Exception:
+        return 0
+
+
 @booking_api.route('/radar-image', methods=['GET'])
 @login_required
 def fetch_radar_image():
@@ -156,10 +212,12 @@ def fetch_radar_image():
     从雷达设备 HTTP 接口获取图像及响应头信息。
 
     响应头关键字段：
-    - Image-Envelope: 图像包络信息
+    - Image-Envelope: 图像包络（车辆在图中的范围，用于初始红线位置）
     - Image-Resolution: 图像分辨率
     - VehicleHeader-Envelope: 车头包络
     - Vehicle-Height: 车辆高度
+
+    注意：当前 :5006/image?type=appt 往往不带头；无包络时用内容最左列作原点。
     """
     radar_head_url = current_app.config.get('RADAR_HEAD_URL', RADAR_HEAD_URL)
     print(f'[BOOKING] 拉取雷达图像: {radar_head_url}')
@@ -171,24 +229,34 @@ def fetch_radar_image():
     vehicle_height = _booking_state['car_height']
     orig_width = 0
     orig_height = 0
+    content_origin_x = 0
 
     try:
-        # 大图偶发 >10s；预览进内存临时缓存，不落 IMAGE_STORAGE_ROOT（预约图本身不提交）
+        # 大图偶发 >10s；预览进内存临时缓存，提交时再落 IMAGE_STORAGE_ROOT
         resp = requests.get(radar_head_url, timeout=20)
         if resp.status_code == 200 and resp.content:
+            # 原图尺寸（对齐 Qt m_originalImageSize；拖线算车头长依赖此宽度）
+            orig_width, orig_height = _image_size_from_bytes(resp.content)
+
             from app.services.image_preview import preview_from_raw
             preview = preview_from_raw(resp.content, source_url=radar_head_url)
             image_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
-            print(
-                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} '
-                f'bytes={len(preview)} (raw={len(resp.content)})',
-                flush=True,
-            )
 
-            # 解析响应头
-            image_envelope = resp.headers.get('Image-Envelope', '')
-            image_resolution = resp.headers.get('Image-Resolution', '')
-            vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '')
+            # 解析响应头（新 appt 接口可能为空）
+            image_envelope = resp.headers.get('Image-Envelope', '') or ''
+            image_resolution = resp.headers.get('Image-Resolution', '') or ''
+            vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '') or ''
+            if orig_width <= 0:
+                rw, rh = _parse_image_resolution(image_resolution)
+                if rw > 0:
+                    orig_width, orig_height = rw, rh
+
+            # 无包络时：内容最左列作车头起算点（否则会从画布左边缘虚高）
+            if not image_envelope and not vehicle_header_envelope and resp.content:
+                content_origin_x = _leftmost_content_x(resp.content)
+                # 只填车头包络；Image-Envelope 留空，避免把红线吸到 x=0
+                vehicle_header_envelope = f'{content_origin_x},0'
+
             vh_str = resp.headers.get('Vehicle-Height', '')
             if vh_str:
                 try:
@@ -196,6 +264,15 @@ def fetch_radar_image():
                     _booking_state['car_height'] = vehicle_height
                 except ValueError:
                     pass
+
+            print(
+                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} '
+                f'bytes={len(preview)} (raw={len(resp.content)}) '
+                f'size={orig_width}x{orig_height} '
+                f'originX={content_origin_x} '
+                f'env={image_envelope!r} hdr={vehicle_header_envelope!r}',
+                flush=True,
+            )
         else:
             print(f'[BOOKING] 雷达图像获取失败: HTTP {resp.status_code}')
     except requests.RequestException as e:
@@ -209,6 +286,7 @@ def fetch_radar_image():
         'vehicleHeight': vehicle_height,
         'originalImageWidth': orig_width,
         'originalImageHeight': orig_height,
+        'contentOriginX': content_origin_x,
     }, '雷达图像获取成功')
 
 
@@ -285,13 +363,8 @@ def accept_booking():
     except Exception as e:
         print(f'[BOOKING] 调度器启动失败: {e}')
 
-    # 5. 临时：六类面板图共用占位链接，受理后异步拉取并推前端
-    try:
-        from app.services.placeholder_images import publish_placeholder_async
-        from config import PLACEHOLDER_IMAGE_ID
-        publish_placeholder_async(PLACEHOLDER_IMAGE_ID)
-    except Exception as e:
-        print(f'[BOOKING] 占位出图调度失败: {e}')
+    # 5. 车身/透视渐进出图：不在受理时一次拉完。
+    #    对齐 Qt startXrayDetect — 雷达 33~35m（xray_capture_trigger）再轮询。
 
     # 通过 WebSocket 推送受理状态
     try:
@@ -373,7 +446,7 @@ def reject_booking():
     # 3. LED step1: "绿通车辆 按键检测"
     execute_device_action('led_001', 'set_step1')
 
-    # 4. 停止调度器
+    # 4. 停止调度器 + 渐进拉图
     try:
         from app.services.scheduler import DistanceScheduler
         scheduler = DistanceScheduler()
@@ -382,6 +455,11 @@ def reject_booking():
         print('[BOOKING] 距离调度器已停止')
     except Exception as e:
         print(f'[BOOKING] 调度器停止失败: {e}')
+    try:
+        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
+        stop_progressive_panel_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 渐进拉图停止失败: {e}')
 
     try:
         from app.websocket.handler import socketio
@@ -516,7 +594,7 @@ def reset_booking():
         'last_acceptance_time': '',
     })
 
-    # 2. 停止距离调度器
+    # 2. 停止距离调度器 + 渐进拉图
     try:
         from app.services.scheduler import DistanceScheduler
         DistanceScheduler().set_detection_state(False)
@@ -524,6 +602,11 @@ def reset_booking():
         print('[BOOKING] 距离调度器已停止')
     except Exception as e:
         print(f'[BOOKING] 调度器停止失败: {e}')
+    try:
+        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
+        stop_progressive_panel_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 渐进拉图停止失败: {e}')
 
     # 3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
     execute_device_action('plc_001', 'setPLC', {

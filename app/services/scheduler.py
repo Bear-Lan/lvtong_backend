@@ -197,6 +197,14 @@ class DistanceScheduler:
             except Exception:
                 pass
 
+        # 对齐 Qt startXrayDetect：33~35m 开始渐进拉车身/透视
+        if threshold.id == 'xray_capture_trigger':
+            try:
+                from app.services.progressive_image_fetch import start_progressive_panel_fetch
+                start_progressive_panel_fetch()
+            except Exception as e:
+                print(f'[SCHEDULER] 渐进拉图启动失败: {e}', flush=True)
+
         # 推送检测步骤更新
         self._push_step_update(threshold)
 
