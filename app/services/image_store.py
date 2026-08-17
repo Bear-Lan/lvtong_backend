@@ -278,6 +278,154 @@ class ImageStore:
         shutil.copy2(src, dst)
         return dst
 
+    # ---------- 行驶证三件套 ----------
+
+    @staticmethod
+    def license_sibling_path(stitched_abs: str, kind: str) -> str:
+        """拼接图路径 → 旁路文件路径。kind: main | hang"""
+        if not stitched_abs or kind not in ('main', 'hang'):
+            return ''
+        root, ext = os.path.splitext(stitched_abs)
+        return f'{root}-{kind}{ext or ".jpg"}'
+
+    @staticmethod
+    def _materialize_image_bytes(reference: str) -> bytes:
+        """把图片引用解成字节（不写盘）。失败返回 b''。"""
+        if not reference or not isinstance(reference, str):
+            return b''
+        s = reference.strip()
+        if not s:
+            return b''
+
+        if s.startswith('data:image/') or s.startswith('data:application/octet-stream;base64,'):
+            import base64
+            import re
+            m = re.match(r'^data:(?P<mime>[^;,]+)(;base64)?,(?P<data>.+)$', s, re.DOTALL)
+            if not m:
+                return b''
+            try:
+                return base64.b64decode(m.group('data').strip(), validate=False)
+            except Exception:
+                return b''
+
+        if s.startswith('/api/temp-images/'):
+            from app.services.temp_image_cache import get as temp_get
+            tid = s[len('/api/temp-images/'):].strip('/').split('?', 1)[0].split('#', 1)[0]
+            entry = temp_get(tid)
+            return entry.data if entry else b''
+
+        # /api/images/<rel> 或绝对路径
+        path = s
+        if s.startswith('/api/images/'):
+            rel = s[len('/api/images/'):]
+            path = os.path.normpath(os.path.join(IMAGE_STORAGE_ROOT, rel))
+        elif s.startswith('/api/image'):
+            qs = urlparse(s).query
+            if qs:
+                from urllib.parse import parse_qs
+                p = parse_qs(qs).get('path', [''])[0]
+                path = unquote(p) if p else ''
+        if path and os.path.isfile(path):
+            try:
+                with open(path, 'rb') as f:
+                    return f.read()
+            except Exception:
+                return b''
+        return b''
+
+    @staticmethod
+    def _write_bytes_at(abs_path: str, blob: bytes) -> str:
+        if not abs_path or not blob:
+            return ''
+        parent = os.path.dirname(abs_path)
+        os.makedirs(parent, exist_ok=True)
+        inst = ImageStore()
+        with inst._write_lock:
+            with open(abs_path, 'wb') as f:
+                f.write(blob)
+        return abs_path
+
+    @classmethod
+    def persist_license_bundle(
+        cls,
+        stitched_ref: str = '',
+        main_ref: str = '',
+        hang_ref: str = '',
+    ) -> str:
+        """行驶证落盘：拼接图 + 旁路 -main / -hang；返回拼接图绝对路径（入库）。
+
+        - 有拼接引用：先落拼接图
+        - 无拼接但有主+挂：内存上下拼后再落
+        - 仅主证：拼接图=主证
+        - 主/挂另存为「拼接文件名-main / -hang」
+        """
+        stitched_ref = (stitched_ref or '').strip()
+        main_ref = (main_ref or '').strip()
+        hang_ref = (hang_ref or '').strip()
+
+        stitched_path = ''
+        if stitched_ref:
+            stitched_path = cls.persist_to_storage(stitched_ref, 'license')
+        elif main_ref and hang_ref:
+            # 后端补拼（未点 AI 时）
+            try:
+                import cv2
+                import numpy as np
+
+                b1 = cls._materialize_image_bytes(main_ref)
+                b2 = cls._materialize_image_bytes(hang_ref)
+                if b1 and b2:
+                    a = cv2.imdecode(np.frombuffer(b1, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    b = cv2.imdecode(np.frombuffer(b2, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if a is not None and b is not None:
+                        h1, w1 = a.shape[:2]
+                        h2, w2 = b.shape[:2]
+                        if w1 != w2:
+                            width = max(w1, w2)
+
+                            def _pad(img, width):
+                                hh, ww = img.shape[:2]
+                                if ww == width:
+                                    return img
+                                if ww > width:
+                                    nh = max(1, int(round(hh * (width / float(ww)))))
+                                    return cv2.resize(img, (width, nh), interpolation=cv2.INTER_AREA)
+                                canvas = np.full((hh, width, 3), 255, dtype=np.uint8)
+                                canvas[:, 0:ww] = img
+                                return canvas
+
+                            a = _pad(a, width)
+                            b = _pad(b, width)
+                        merged = np.vstack([a, b])
+                        ok, buf = cv2.imencode('.jpg', merged, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+                        if ok:
+                            stitched_path = cls._save_bytes(
+                                buf.tobytes(), 'license', prefix='stitch', mime='image/jpeg',
+                            )
+            except Exception:
+                stitched_path = ''
+            if not stitched_path:
+                stitched_path = cls.persist_to_storage(main_ref, 'license')
+        elif main_ref:
+            stitched_path = cls.persist_to_storage(main_ref, 'license')
+        elif hang_ref:
+            stitched_path = cls.persist_to_storage(hang_ref, 'license')
+
+        if not stitched_path:
+            return ''
+
+        # 旁路主/挂（与落库拼接图同目录、同 stem）
+        if main_ref:
+            blob = cls._materialize_image_bytes(main_ref)
+            if blob:
+                cls._write_bytes_at(cls.license_sibling_path(stitched_path, 'main'), blob)
+        if hang_ref:
+            blob = cls._materialize_image_bytes(hang_ref)
+            if blob:
+                cls._write_bytes_at(cls.license_sibling_path(stitched_path, 'hang'), blob)
+
+        return stitched_path
+
 
 # 便捷函数
 def save_image(data: bytes, category: str, prefix: str = '') -> str:
@@ -287,6 +435,15 @@ def save_image(data: bytes, category: str, prefix: str = '') -> str:
 def persist_to_storage(reference: str, category: str = 'misc') -> str:
     """便捷函数：归一图片引用为磁盘绝对路径。"""
     return ImageStore.persist_to_storage(reference, category)
+
+
+def persist_license_bundle(
+    stitched_ref: str = '',
+    main_ref: str = '',
+    hang_ref: str = '',
+) -> str:
+    """行驶证三件套落盘，返回拼接图绝对路径。"""
+    return ImageStore.persist_license_bundle(stitched_ref, main_ref, hang_ref)
 
 
 def storage_path_to_api(abs_path: str) -> str:

@@ -8,7 +8,7 @@ from flask import Blueprint, request, jsonify
 
 from app.db.vehicle import DBVehicle
 from app.db.product import DBProduct
-from app.services.image_store import db_path_to_api, persist_to_storage
+from app.services.image_store import db_path_to_api, persist_to_storage, persist_license_bundle
 from app.db.product import DBProduct
 from app.db.dictionary import DBDictionary
 from app.extensions.auth import login_required
@@ -49,13 +49,32 @@ def _persist_images(body: dict) -> None:
       - 绝对路径 / 相对路径 / /api/images/<rel> / /api/image?path=... / 空 / 外部 URL
 
     落盘规则：
+      - 行驶证：拼接图入库；旁路落盘 -main / -hang；DB 只保留 license_image_path
       - 单图字段：原值或空串 → persist_to_storage(value, category)
       - 多图字段：按 | 切分（统一分隔符；dataUrl 含逗号，禁止用 ,），逐项持久化后用 | 拼回
       - 所有结果为磁盘绝对路径；前端展示时由 db_path_to_api 转 /api/images/<rel>
     """
+    # 行驶证三件套（优先处理，并从 body 去掉旁路字段，避免误入非表列）
+    main_ref = str(body.pop('license_image_main', '') or body.pop('license_image_path_main', '') or '')
+    hang_ref = str(body.pop('license_image_hang', '') or body.pop('license_image_path_hang', '') or '')
+    # 兼容旧字段：path1 曾表示挂车
+    if not hang_ref:
+        hang_ref = str(body.get('license_image_path1') or '')
+    stitched_ref = str(body.get('license_image_path') or '')
+    if stitched_ref or main_ref or hang_ref:
+        body['license_image_path'] = persist_license_bundle(
+            stitched_ref=stitched_ref,
+            main_ref=main_ref or (stitched_ref if not hang_ref else ''),
+            hang_ref=hang_ref,
+        )
+        # 库表仅保留拼接路径；清空旧挂车列字段以免脏写
+        body['license_image_path1'] = ''
+        body.pop('license_image_path2', None)
+
     for field in _SINGLE_IMAGE_FIELDS:
-        if field not in body and field.replace('code', 'code', 0) == field:
-            # 不存在就跳过；存在但为 None 时也跳过（保持原样不入库）
+        if field == 'license_image_path':
+            continue  # 已处理
+        if field == 'license_image_path1' and 'license_image_path1' in body and not body.get('license_image_path1'):
             continue
         val = body.get(field)
         if val:

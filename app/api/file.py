@@ -320,14 +320,16 @@ def _pick_crop_image(payload: dict, orig_bytes: bytes, index: int):
 
 @file_api.route('/license/ai-crop', methods=['POST'])
 def ai_crop_license():
-    """POST /api/license/ai-crop — 调用外部 AI 裁剪行驶证，双图则上下拼接成一张。
+    """POST /api/license/ai-crop — 调用外部 AI 裁剪行驶证，双图则上下拼接。
 
     FormData:
       crop_image1 — 主行驶证（必填）
       crop_image2 — 挂车证（可选）
 
     返回:
-      data.imageDataUrl — 最终一张图（data:image/jpeg;base64,...）
+      data.imageDataUrl — 拼接图（或单张主证）
+      data.mainDataUrl  — 主行驶证裁剪图
+      data.hangDataUrl  — 挂车证裁剪图（无则空）
       data.mode — single | stitch
     """
     from io import BytesIO
@@ -393,6 +395,7 @@ def ai_crop_license():
     mode = 'single'
     final = img1
     src2 = ''
+    img2 = None
 
     if has_second:
         img2, src2 = _pick_crop_image(payload, orig2, 2)
@@ -408,6 +411,8 @@ def ai_crop_license():
 
     try:
         data_url = _img_to_jpeg_data_url(final)
+        main_url = _img_to_jpeg_data_url(img1)
+        hang_url = _img_to_jpeg_data_url(img2) if img2 is not None else ''
     except Exception as e:
         return jsonify({'code': 500, 'message': f'输出编码失败: {e}', 'data': None}), 500
 
@@ -420,7 +425,11 @@ def ai_crop_license():
         'code': 0,
         'message': 'AI 检测拼接成功',
         'data': {
+            # 拼接图（提交确认 / 落库用）
             'imageDataUrl': data_url,
+            # 主/挂分开图（主页分开展示 + 落盘 -main/-hang）
+            'mainDataUrl': main_url,
+            'hangDataUrl': hang_url,
             'mode': mode,
             'elapsedMs': elapsed_ms,
             'cropSource': {'image1': src1, 'image2': src2},
