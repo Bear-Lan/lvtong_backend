@@ -172,6 +172,56 @@ def ai_load_rate():
         return fail(502, f'AI 装载率失败: {e}')
 
 
+@imaging_api.route('/ai-truck-real', methods=['POST'])
+@login_required
+def ai_truck_real():
+    """AI 货车/货箱类型识别（对齐绿通 AI truck_real）
+
+    输入：车身影像「车身图」；可选 plate_color / plate_number（两轮车一/二型判定用）。
+    返回：
+      vehicle_type / vehicle_type_name       — 由 wheel_count(+车牌) 映射一~六型
+      vehicle_container_type / name         — 由 cratetype 映射货箱字典
+    """
+    from app.services.truck_real_detect import detect_truck_and_container
+
+    image_bytes = b''
+    filename = 'body.jpg'
+    plate_color = ''
+    plate_number = ''
+
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        f = request.files.get('image')
+        if f and f.filename:
+            image_bytes = f.read()
+            filename = f.filename
+        plate_color = (request.form.get('plate_color') or '').strip()
+        plate_number = (request.form.get('plate_number') or '').strip()
+    else:
+        body = request.get_json(silent=True) or {}
+        plate_color = str(body.get('plate_color') or '').strip()
+        plate_number = str(body.get('plate_number') or '').strip()
+        img = _load_image_from_body(body)
+        if img is not None:
+            ok_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if ok_enc:
+                image_bytes = buf.tobytes()
+
+    if not image_bytes:
+        return fail(400, '请先提供车身图')
+
+    try:
+        result = detect_truck_and_container(
+            image_bytes, filename,
+            plate_color=plate_color,
+            plate_number=plate_number,
+        )
+        return ok(result, 'AI 货车/货箱识别成功')
+    except ValueError as e:
+        return fail(400, str(e))
+    except Exception as e:
+        return fail(502, f'AI 货车/货箱识别失败: {e}')
+
+
 # ==================== 200+160 拼接 ====================
 
 @imaging_api.route('/stitch', methods=['POST'])
