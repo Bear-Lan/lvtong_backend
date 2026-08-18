@@ -10,6 +10,7 @@
   不在 IMAGE_STORAGE_ROOT 下的图（如 mobile 上传到 MOCK_PHOTO_DIR）会被复制进根目录。
 - 前端展示 / API 返回：/api/images/<relative>，通过 storage_path_to_api() 转换。
 """
+import logging
 import os
 import shutil
 import threading
@@ -18,6 +19,8 @@ from typing import Optional
 from urllib.parse import unquote, urlparse
 
 from config import IMAGE_STORAGE_ROOT
+
+logger = logging.getLogger('image_store')
 
 
 class ImageStore:
@@ -419,10 +422,20 @@ class ImageStore:
             blob = cls._materialize_image_bytes(main_ref)
             if blob:
                 cls._write_bytes_at(cls.license_sibling_path(stitched_path, 'main'), blob)
+            else:
+                logger.warning(
+                    'license -main 未落盘：无法读取引用（blob:/坏链？） prefix=%s',
+                    (main_ref[:48] + '…') if len(main_ref) > 48 else main_ref,
+                )
         if hang_ref:
             blob = cls._materialize_image_bytes(hang_ref)
             if blob:
                 cls._write_bytes_at(cls.license_sibling_path(stitched_path, 'hang'), blob)
+            else:
+                logger.warning(
+                    'license -hang 未落盘：无法读取引用（blob:/坏链？） prefix=%s',
+                    (hang_ref[:48] + '…') if len(hang_ref) > 48 else hang_ref,
+                )
 
         return stitched_path
 
@@ -476,3 +489,51 @@ def db_path_to_api(db_path: str) -> str:
     if db_path.startswith('/api/images/') or db_path.startswith('/api/image?path='):
         return db_path
     return storage_path_to_api(db_path)
+
+
+def _resolve_storage_abs(db_path: str) -> str:
+    """DB/API 路径 → 磁盘绝对路径（文件不存在则空）。"""
+    if not db_path or not isinstance(db_path, str):
+        return ''
+    s = db_path.strip()
+    if not s:
+        return ''
+    if os.path.isfile(s):
+        return os.path.normpath(s)
+    if s.startswith('/api/images/'):
+        rel = s[len('/api/images/'):].split('?', 1)[0].split('#', 1)[0]
+        cand = os.path.normpath(os.path.join(IMAGE_STORAGE_ROOT, rel.replace('/', os.sep)))
+        return cand if os.path.isfile(cand) else ''
+    # 相对 captures 的路径
+    cand = os.path.normpath(os.path.join(IMAGE_STORAGE_ROOT, s.replace('\\', '/').lstrip('/')))
+    return cand if os.path.isfile(cand) else ''
+
+
+def resolve_license_display_urls(stitched_db: str = '', hang_db: str = '') -> dict[str, str]:
+    """历史回填用：只返回磁盘上真实存在的行驶证 URL。
+
+    - 有旁路 -main / -hang → 分别返回
+    - 无旁路（仅拼接图）→ 主证用拼接图，挂车证空（避免 404）
+    """
+    stitched_api = db_path_to_api(stitched_db) if stitched_db else ''
+    hang_api = db_path_to_api(hang_db) if hang_db else ''
+    main_api = ''
+
+    abs_stitched = _resolve_storage_abs(stitched_db)
+    if abs_stitched:
+        main_sib = ImageStore.license_sibling_path(abs_stitched, 'main')
+        hang_sib = ImageStore.license_sibling_path(abs_stitched, 'hang')
+        if main_sib and os.path.isfile(main_sib):
+            main_api = storage_path_to_api(main_sib)
+        if hang_sib and os.path.isfile(hang_sib) and not hang_api:
+            hang_api = storage_path_to_api(hang_sib)
+
+    # 无旁路主证时：用拼接图顶主证槽，保证能显示
+    if not main_api:
+        main_api = stitched_api
+
+    return {
+        'license_image_path': stitched_api,
+        'license_image_main': main_api,
+        'license_image_path1': hang_api,
+    }

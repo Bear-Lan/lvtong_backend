@@ -218,6 +218,7 @@ def fetch_radar_image():
     - Vehicle-Height: 车辆高度
 
     注意：当前 :5006/image?type=appt 往往不带头；无包络时用内容最左列作原点。
+    中间件偶发超时，本接口自动重试若干次。
     """
     radar_head_url = current_app.config.get('RADAR_HEAD_URL', RADAR_HEAD_URL)
     print(f'[BOOKING] 拉取雷达图像: {radar_head_url}')
@@ -230,53 +231,84 @@ def fetch_radar_image():
     orig_width = 0
     orig_height = 0
     content_origin_x = 0
+    last_error = ''
 
-    try:
-        # 大图偶发 >10s；预览进内存临时缓存，提交时再落 IMAGE_STORAGE_ROOT
-        resp = requests.get(radar_head_url, timeout=20)
-        if resp.status_code == 200 and resp.content:
-            # 原图尺寸（对齐 Qt m_originalImageSize；拖线算车头长依赖此宽度）
-            orig_width, orig_height = _image_size_from_bytes(resp.content)
+    # 单次 12s × 最多 3 次，避免中间件偶发超时把预约界面卡死
+    max_attempts = 3
+    per_timeout = 12
 
-            from app.services.image_preview import preview_from_raw
-            preview = preview_from_raw(resp.content, source_url=radar_head_url)
-            image_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.get(radar_head_url, timeout=per_timeout)
+            if resp.status_code == 200 and resp.content:
+                orig_width, orig_height = _image_size_from_bytes(resp.content)
 
-            # 解析响应头（新 appt 接口可能为空）
-            image_envelope = resp.headers.get('Image-Envelope', '') or ''
-            image_resolution = resp.headers.get('Image-Resolution', '') or ''
-            vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '') or ''
-            if orig_width <= 0:
-                rw, rh = _parse_image_resolution(image_resolution)
-                if rw > 0:
-                    orig_width, orig_height = rw, rh
+                from app.services.image_preview import preview_from_raw
+                preview = preview_from_raw(resp.content, source_url=radar_head_url)
+                image_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
 
-            # 无包络时：内容最左列作车头起算点（否则会从画布左边缘虚高）
-            if not image_envelope and not vehicle_header_envelope and resp.content:
-                content_origin_x = _leftmost_content_x(resp.content)
-                # 只填车头包络；Image-Envelope 留空，避免把红线吸到 x=0
-                vehicle_header_envelope = f'{content_origin_x},0'
+                image_envelope = resp.headers.get('Image-Envelope', '') or ''
+                image_resolution = resp.headers.get('Image-Resolution', '') or ''
+                vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '') or ''
+                if orig_width <= 0:
+                    rw, rh = _parse_image_resolution(image_resolution)
+                    if rw > 0:
+                        orig_width, orig_height = rw, rh
 
-            vh_str = resp.headers.get('Vehicle-Height', '')
-            if vh_str:
-                try:
-                    vehicle_height = float(vh_str)
-                    _booking_state['car_height'] = vehicle_height
-                except ValueError:
-                    pass
+                if not image_envelope and not vehicle_header_envelope and resp.content:
+                    content_origin_x = _leftmost_content_x(resp.content)
+                    vehicle_header_envelope = f'{content_origin_x},0'
 
+                vh_str = resp.headers.get('Vehicle-Height', '')
+                if vh_str:
+                    try:
+                        vehicle_height = float(vh_str)
+                        _booking_state['car_height'] = vehicle_height
+                    except ValueError:
+                        pass
+
+                print(
+                    f'[BOOKING] 雷达图像预览(未落盘) attempt={attempt}/{max_attempts} '
+                    f'url={image_url} bytes={len(preview)} (raw={len(resp.content)}) '
+                    f'size={orig_width}x{orig_height} '
+                    f'originX={content_origin_x} '
+                    f'env={image_envelope!r} hdr={vehicle_header_envelope!r}',
+                    flush=True,
+                )
+                last_error = ''
+                break
+
+            last_error = f'HTTP {resp.status_code}'
             print(
-                f'[BOOKING] 雷达图像预览(未落盘) url={image_url} '
-                f'bytes={len(preview)} (raw={len(resp.content)}) '
-                f'size={orig_width}x{orig_height} '
-                f'originX={content_origin_x} '
-                f'env={image_envelope!r} hdr={vehicle_header_envelope!r}',
+                f'[BOOKING] 雷达图像获取失败 attempt={attempt}/{max_attempts}: {last_error}',
                 flush=True,
             )
-        else:
-            print(f'[BOOKING] 雷达图像获取失败: HTTP {resp.status_code}')
-    except requests.RequestException as e:
-        print(f'[BOOKING] 雷达图像获取异常: {e}')
+        except requests.RequestException as e:
+            last_error = str(e)
+            print(
+                f'[BOOKING] 雷达图像获取异常 attempt={attempt}/{max_attempts}: {e}',
+                flush=True,
+            )
+
+        if attempt < max_attempts:
+            time.sleep(1.0)
+
+    if not image_url:
+        return fail(
+            502,
+            f'雷达图像获取失败（已重试{max_attempts}次）: {last_error or "无图像数据"}',
+            {
+                'imageUrl': '',
+                'imageEnvelope': '',
+                'imageResolution': '',
+                'vehicleHeaderEnvelope': '',
+                'vehicleHeight': vehicle_height,
+                'originalImageWidth': 0,
+                'originalImageHeight': 0,
+                'contentOriginX': 0,
+                'attempts': max_attempts,
+            },
+        )
 
     return ok({
         'imageUrl': image_url,

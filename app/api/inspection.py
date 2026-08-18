@@ -8,7 +8,12 @@ from flask import Blueprint, request, jsonify
 
 from app.db.vehicle import DBVehicle
 from app.db.product import DBProduct
-from app.services.image_store import db_path_to_api, persist_to_storage, persist_license_bundle
+from app.services.image_store import (
+    db_path_to_api,
+    persist_to_storage,
+    persist_license_bundle,
+    resolve_license_display_urls,
+)
 from app.db.product import DBProduct
 from app.db.dictionary import DBDictionary
 from app.extensions.auth import login_required
@@ -525,6 +530,7 @@ def by_plate(plate):
         'vehicle_container_type': '',
         'vehicle_size': '',
         'license_image_path': '',
+        'license_image_main': '',
         'license_image_path1': '',
         'earliest_time': earliest_time or '',
         'latest_time': latest_time or '',
@@ -536,10 +542,13 @@ def by_plate(plate):
         payload['vehicle_type'] = latest.get('vehicle_type') or ''
         payload['vehicle_container_type'] = latest.get('vehicle_container_type') or ''
         payload['vehicle_size'] = latest.get('vehicle_size') or ''
-        # 行驶证：转 API URL 供主页缩略图 / 弹窗回显
-        lic = latest.get('license_image_path') or ''
-        lic_gc = latest.get('license_image_path1') or ''
-        payload['license_image_path'] = db_path_to_api(lic) if lic else ''
-        payload['license_image_path1'] = db_path_to_api(lic_gc) if lic_gc else ''
+        # 行驶证：按磁盘真实文件回填（无 -main/-hang 旁路时用拼接图，避免前端硬拼 404）
+        lic_urls = resolve_license_display_urls(
+            latest.get('license_image_path') or '',
+            latest.get('license_image_path1') or '',
+        )
+        payload['license_image_path'] = lic_urls['license_image_path']
+        payload['license_image_main'] = lic_urls['license_image_main']
+        payload['license_image_path1'] = lic_urls['license_image_path1']
 
     return ok(payload)

@@ -222,6 +222,67 @@ def ai_truck_real():
         return fail(502, f'AI 货车/货箱识别失败: {e}')
 
 
+def _read_image_upload(default_name: str) -> tuple[bytes, str]:
+    """multipart image 或 JSON image_* → (bytes, filename)。"""
+    image_bytes = b''
+    filename = default_name
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        f = request.files.get('image')
+        if f and f.filename:
+            image_bytes = f.read()
+            filename = f.filename
+    else:
+        body = request.get_json(silent=True) or {}
+        img = _load_image_from_body(body)
+        if img is not None:
+            ok_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if ok_enc:
+                image_bytes = buf.tobytes()
+    return image_bytes, filename
+
+
+@imaging_api.route('/ai-goods-real', methods=['POST'])
+@login_required
+def ai_goods_real():
+    """AI 货物实物图识别（对齐绿通 product_real）
+
+    输入：货物照片；返回 goods[{code,name,pinyin,score}] 及 goods_type/goods_name（| 拼接）。
+    """
+    from app.services.goods_detect import detect_product_real
+
+    image_bytes, filename = _read_image_upload('goods.jpg')
+    if not image_bytes:
+        return fail(400, '请先提供货物实物图')
+    try:
+        result = detect_product_real(image_bytes, filename)
+        return ok(result, 'AI 货物实物识别成功')
+    except ValueError as e:
+        return fail(400, str(e))
+    except Exception as e:
+        return fail(502, f'AI 货物实物识别失败: {e}')
+
+
+@imaging_api.route('/ai-goods-xray', methods=['POST'])
+@login_required
+def ai_goods_xray():
+    """AI 货物透视图识别（对齐绿通 product_xray）
+
+    输入：透视拼接图（推荐 mosaic）；返回同 ai-goods-real。
+    """
+    from app.services.goods_detect import detect_product_xray
+
+    image_bytes, filename = _read_image_upload('xray.jpg')
+    if not image_bytes:
+        return fail(400, '请先提供透视拼接图')
+    try:
+        result = detect_product_xray(image_bytes, filename)
+        return ok(result, 'AI 货物透视识别成功')
+    except ValueError as e:
+        return fail(400, str(e))
+    except Exception as e:
+        return fail(502, f'AI 货物透视识别失败: {e}')
+
+
 # ==================== 200+160 拼接 ====================
 
 @imaging_api.route('/stitch', methods=['POST'])
