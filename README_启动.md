@@ -13,7 +13,7 @@
 | Python | 3.11+（3.14 也可） | 后端 |
 | Node.js | 18+ | 前端 |
 | PostgreSQL | 已建库 | 默认库名 `gcis`，用户 `postgres`，密码 `123456`，地址 `127.0.0.1:5432` |
-| 摄像头网络 | 可达 | 主页实时视频默认 `camera2`（MediaMTX WHEP）；对讲默认 `camera4` |
+| 摄像头网络 | 可达 | 实时=`cam_lane`(103)；预约对讲=`cam_booking`(101)；球机=`cam_ptz`(104) |
 
 数据库账号可用环境变量覆盖：`DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD`。
 

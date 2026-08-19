@@ -53,7 +53,7 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
 BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', image_fetch_url('cam'))
 BODY_TOP_IMAGE_URL = os.environ.get('BODY_TOP_IMAGE_URL', image_fetch_url('vtop'))
 BODY_SIDE_IMAGE_URL = os.environ.get('BODY_SIDE_IMAGE_URL', image_fetch_url('vside'))
-BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
+BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')
 
 # ---- 透视：200=x200 / 160=x160 / 拼接=merge ----
 TRANSPARENT_IMAGE_URL = os.environ.get(

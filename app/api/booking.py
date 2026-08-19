@@ -335,7 +335,7 @@ def accept_booking():
     2. 启动距离调度器
     3. 进入检测流程（acceptanceTime 后端打点）
 
-    摄像头（camera1/2）由前端 useHikvisionPlayer 直连海康插件，不经此处。
+    摄像头（cam_lane / cam_booking / cam_ptz）由前端 useHikvisionPlayer 直连海康插件，不经此处。
     """
     body = request.get_json(silent=True) or {}
     user = request.gc_user

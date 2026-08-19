@@ -1,7 +1,7 @@
 """图像采集服务
 
-车头/车尾/车顶：从海康摄像头 RTSP 抽帧（默认 camera2）
-  - camera2 为抓拍机：ISAPI /picture 走 4K 抓拍通道常全黑；码流预览正常
+车头/车尾/车顶：从海康摄像头 RTSP 抽帧（默认 cam_lane / 103）
+  - 车道枪机抓拍：ISAPI /picture 走 4K 抓拍通道常全黑；码流预览正常
   - 因此统一用视频流截帧，不取 4K 抓拍静图
   - 自动拍与手动拍一致：WS 推 /api/temp-images/<id>（避免巨型 base64 堵链路），
     提交检测单时再 persist 落盘
@@ -22,8 +22,8 @@ import requests
 
 logger = logging.getLogger('capture_service')
 
-# 与 vue_frontend/src/config/hikvision.ts 一致：车身三类共用枪机 camera2
-BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'camera2')
+# 与 vue_frontend/src/config/hikvision.ts 一致：车身三类共用车道枪机 cam_lane
+BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')
 # RTSP 通道：默认 101（通道1主码流）；抓拍机上 1/101、2/102 均可
 HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL', '101')
 JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '85'))

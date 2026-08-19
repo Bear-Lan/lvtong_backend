@@ -1,7 +1,7 @@
 """从 devices 表按 device_id 同步 RTSP 到 MediaMTX 配置，并拉起进程。
 
-- paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 camera2）→ 主页实时视频
-- paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 camera4）→ 预约 / 可视对讲
+- paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 主页实时视频
+- paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
 """
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from urllib.parse import quote
 _proc: subprocess.Popen | None = None
 
 _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
-_DEFAULT_LIVE_DEVICE_ID = 'camera2'
-_DEFAULT_TALK_DEVICE_ID = 'camera4'
+_DEFAULT_LIVE_DEVICE_ID = 'cam_lane'
+_DEFAULT_TALK_DEVICE_ID = 'cam_booking'
 
 
 def _bin_path() -> Path:
@@ -125,13 +125,13 @@ def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
 
 
 def sync_cam1_source_from_db(device_id: str | None = None) -> str | None:
-    """主页实时：device_id → paths.cam1.source（默认 camera2）。"""
+    """主页实时：device_id → paths.cam1.source（默认 cam_lane）。"""
     did = (device_id or os.environ.get('LIVE_VIDEO_DEVICE_ID') or _DEFAULT_LIVE_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam1', did)
 
 
 def sync_cam4_source_from_db(device_id: str | None = None) -> str | None:
-    """预约/可视对讲：device_id → paths.cam4.source（默认 camera4）。"""
+    """预约/可视对讲：device_id → paths.cam4.source（默认 cam_booking）。"""
     did = (device_id or os.environ.get('TALK_VIDEO_DEVICE_ID') or _DEFAULT_TALK_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam4', did)
 

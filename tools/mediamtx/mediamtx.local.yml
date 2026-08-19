@@ -30,13 +30,13 @@ pathDefaults:
 
 paths:
   # 前端: /mtx/cam1/whep — 主页实时视频
-  # source 由 Flask 从 devices.device_id=camera2（可用 LIVE_VIDEO_DEVICE_ID 覆盖）写入
+  # source 由 Flask 从 devices.device_id=cam_lane（可用 LIVE_VIDEO_DEVICE_ID 覆盖）写入
   cam1:
-    source: rtsp://admin:whds%402025@192.168.88.101:554/Streaming/Channels/101
+    source: rtsp://admin:whds%402025@192.168.88.103:554/Streaming/Channels/101
     rtspTransport: tcp
 
   # 前端: /mtx/cam4/whep — 预约弹窗右侧画面
-  # source 由 Flask 从 devices.device_id=camera4（可用 TALK_VIDEO_DEVICE_ID 覆盖）写入
+  # source 由 Flask 从 devices.device_id=cam_booking（可用 TALK_VIDEO_DEVICE_ID 覆盖）写入
   cam4:
-    source: rtsp://admin:whds%402025@192.168.88.103:554/Streaming/Channels/101
+    source: rtsp://admin:whds%402025@192.168.88.101:554/Streaming/Channels/101
     rtspTransport: tcp
