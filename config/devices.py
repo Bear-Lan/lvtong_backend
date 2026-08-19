@@ -65,18 +65,15 @@ YR_TRANSPARENT_IMAGE_URL = os.environ.get(
 STITCH_IMAGE_URL = os.environ.get('STITCH_IMAGE_URL', image_fetch_url('merge'))
 
 # ---- AI 统一服务 ----
-# 主检测入口：行驶证 AI 裁剪、车厢装载率 mask（truck_xray_box）等均走此 URL。
-# 部署时优先改环境变量 AI_DETECT_URL；一般无需再配下面两个覆盖项。
+# 业务：行驶证 AI 裁剪、装载率 mask、货车/货箱识别等 → AI_DETECT_URL (.../detect)
+# 探活：同主机 /health（由 AI_DETECT_URL 推导，不必再配 AI_MODEL_URL）
 AI_DETECT_URL = os.environ.get(
     'AI_DETECT_URL', 'http://220.249.109.154:90/detect'
 )
 AI_LICENSE_CROP_URL = os.environ.get('AI_LICENSE_CROP_URL') or AI_DETECT_URL
 AI_LOAD_RATE_URL = os.environ.get('AI_LOAD_RATE_URL') or AI_DETECT_URL
 
-# 其它 AI 相关（路径/端口可能不同，单独配置）
-AI_MODEL_URL = os.environ.get(
-    'AI_MODEL_URL', 'http://192.168.88.245:8899'
-)
+# 旧版单独 OCR 文本接口（若前端仍调 /imaging/ocr/driving-license 才用到）
 OCR_SERVICE_URL = os.environ.get(
     'OCR_SERVICE_URL', 'http://192.168.88.245:8890'
 )

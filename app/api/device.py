@@ -165,28 +165,30 @@ def reconnect_devices():
 @device_api.route('/health', methods=['GET'])
 @login_required
 def health_check():
-    """设备健康检查 + AI/OCR 服务状态
+    """设备健康检查 + AI 服务状态
 
     对齐 Qt DeviceManager::HealthCheck()
+    AI 探活：与 AI_DETECT_URL 同主机的 /health（行驶证裁剪等业务走 /detect）
     """
     mgr = DeviceManager()
     healthy = mgr.health_check_all()
     devices = mgr.get_all_status()
     offline = [d for d in devices if not d['connected']]
 
-    # 检测 AI 和 OCR 服务
-    from config import AI_DETECT_URL, AI_MODEL_URL, OCR_SERVICE_URL
-    detect_online = _probe_url(AI_DETECT_URL)
-    ai_online = _probe_url(AI_MODEL_URL)
-    ocr_online = _probe_url(OCR_SERVICE_URL)
+    from config import AI_DETECT_URL
+    ai_health = _ai_health_url(AI_DETECT_URL)
+    ai_online = _probe_url(ai_health)
+    # 行驶证裁剪与货车/货箱识别均在同一 AI 服务；UI 两路灯共用探活结果
+    ocr_online = ai_online
 
     return ok({
         'healthy': healthy,
         'total': len(devices),
         'offlineCount': len(offline),
         'offlineDevices': [d['deviceName'] for d in offline],
-        'aiDetectOnline': detect_online,
+        'aiDetectOnline': ai_online,
         'aiDetectUrl': AI_DETECT_URL,
+        'aiHealthUrl': ai_health,
         'aiOnline': ai_online,
         'ocrOnline': ocr_online,
     })
@@ -226,6 +228,18 @@ def plc_control():
         return fail(500, f'PLC 控制失败: {"; ".join(errors)}')
 
     return ok(message='PLC 控制指令已发送')
+
+
+def _ai_health_url(detect_url: str) -> str:
+    """AI_DETECT_URL (.../detect) → 同主机 /health。"""
+    from urllib.parse import urlsplit, urlunsplit
+    u = (detect_url or '').strip()
+    if not u:
+        return ''
+    parts = urlsplit(u)
+    if not parts.scheme or not parts.netloc:
+        return ''
+    return urlunsplit((parts.scheme, parts.netloc, '/health', '', ''))
 
 
 def _probe_url(url: str) -> bool:
