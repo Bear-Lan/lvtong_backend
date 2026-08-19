@@ -1,7 +1,7 @@
 """货车实物图识别 — 对齐 gongsi_LvTong truck_real（车轴/货箱）
 
 一次调用同时得到：
-  - wheel_count → 货车类型（一~六型，按轴数映射）
+  - wheel_count → 货车类型（≤2 看牌色；3 起几轴几型，对齐 JT/T 489）
   - cratetype   → 货箱类型（与字典 type_code 一致）
 
 输入：车身影像「车身图」。
@@ -57,10 +57,10 @@ def wheel_count_to_truck_type(
 ) -> tuple[str, str]:
     """侧视轮胎/车轴数 → 货车类型 type_code / type_name。
 
-    AI 按车轮数识别车型。两轮（≤2）需结合车牌颜色：
-      蓝牌 / 渐变绿 → 一型(11)；有色且非上述 → 二型(12)；
-      未选色 / 车牌为空无法判断 → 不赋值（空）。
-    3 轴→二型 … 6 轴→五型，≥7→六型。
+    对齐 JT/T 489-2019（侧视一轮≈一轴）：
+      ≤2 轴需结合车牌颜色：蓝牌/渐变绿 → 一型(11)；其余有色 → 二型(12)；
+      未选色 / 车牌为空 → 不赋值。
+      3→三型 … 6→六型；≥7 仍记六型。
     """
     axles = int(wheel_count or 0)
     if axles <= 0:
@@ -72,11 +72,11 @@ def wheel_count_to_truck_type(
         if not color or not plate or plate in ('--', '-', '无'):
             return '', ''
         code = '11' if is_type1_plate_color(color) else '12'
-    elif axles >= 7:
+    elif axles >= 6:
         code = '16'
     else:
-        # 3→12 … 6→15（与原先轴数阶梯一致）
-        code = str(9 + axles)
+        # 3→13 … 5→15（几轴几型）
+        code = str(10 + axles)
     name_map = {
         '11': '一型货车',
         '12': '二型货车',
