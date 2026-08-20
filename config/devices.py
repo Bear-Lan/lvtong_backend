@@ -73,9 +73,9 @@ AI_DETECT_URL = os.environ.get(
 AI_LICENSE_CROP_URL = os.environ.get('AI_LICENSE_CROP_URL') or AI_DETECT_URL
 AI_LOAD_RATE_URL = os.environ.get('AI_LOAD_RATE_URL') or AI_DETECT_URL
 
-# 旧版单独 OCR 文本接口（若前端仍调 /imaging/ocr/driving-license 才用到）
+# 行驶证 OCR 文本（号牌/核定载质量/总质量）；默认与 gongsi 现场 OCR 一致
 OCR_SERVICE_URL = os.environ.get(
-    'OCR_SERVICE_URL', 'http://192.168.88.245:8890'
+    'OCR_SERVICE_URL', 'http://192.168.88.245:8894'
 )
 
 # ---- PLC / 门禁 / LED / TTS ----

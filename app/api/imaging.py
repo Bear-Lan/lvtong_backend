@@ -346,36 +346,48 @@ def ocr_driving_license():
     """行驶证OCR识别
 
     POST /api/imaging/ocr/driving-license
-    Body: { image_base64 | image_url, side: "front"|"back" }
+    - multipart: image=<file>（对齐 gongsi_LvTong / dl_ocr）
+    - JSON: { image_base64 | image_url, side?: "front"|"back" }
 
-    参考 Qt OcrFetcher — POST {ocrUrl}/dl_ocr/front_and_back
-    解析号牌号码、核定载质量、整备质量、总质量、外廓尺寸，
-    并自动计算称重合格区间。
+    解析号牌号码、核定载质量、整备质量、总质量等，并计算称重提示区间：
+      min = 核定载质量 * 0.8 + 整备质量
+      max = 总质量 * 1.05
     """
-    body = request.get_json(silent=True) or {}
-
     from config import OCR_SERVICE_URL
-    ocr_url = f'{OCR_SERVICE_URL}/dl_ocr/front_and_back'
-
-    ocr_body = {}
-    if body.get('image_base64'):
-        ocr_body['image'] = body['image_base64']
-        ocr_body['side'] = body.get('side', 'front')
-    elif body.get('image_url'):
-        ocr_body['image_url'] = body['image_url']
-        ocr_body['side'] = body.get('side', 'front')
-    else:
-        return fail(400, '缺少图像数据 (image_base64 或 image_url)')
+    ocr_url = f'{OCR_SERVICE_URL.rstrip("/")}/dl_ocr/front_and_back'
 
     try:
-        resp = requests.post(ocr_url, json=ocr_body, timeout=30)
+        if request.files.get('image'):
+            f = request.files['image']
+            files = {
+                'image': (
+                    f.filename or 'license.jpg',
+                    f.stream,
+                    f.mimetype or 'application/octet-stream',
+                ),
+            }
+            data = {'return_image': request.form.get('return_image', '0')}
+            resp = requests.post(ocr_url, files=files, data=data, timeout=60)
+        else:
+            body = request.get_json(silent=True) or {}
+            ocr_body = {}
+            if body.get('image_base64'):
+                ocr_body['image'] = body['image_base64']
+                ocr_body['side'] = body.get('side', 'front')
+            elif body.get('image_url'):
+                ocr_body['image_url'] = body['image_url']
+                ocr_body['side'] = body.get('side', 'front')
+            else:
+                return fail(400, '缺少图像数据 (image 文件 / image_base64 / image_url)')
+            resp = requests.post(ocr_url, json=ocr_body, timeout=60)
+
         if resp.status_code != 200:
             return fail(502, f'OCR服务返回错误: {resp.status_code}')
 
-        ocr_result = resp.json()
-        data_list = ocr_result.get('data', [])
+        ocr_result = resp.json() if resp.content else {}
+        data_list = ocr_result.get('data', []) if isinstance(ocr_result, dict) else []
 
-        # 按 key 匹配（对齐 Qt parseMainVehicleFromJson）
+        # 按 key 匹配（对齐 Qt / gongsi parseMainVehicleFromJson）
         parsed = {
             'plate_number': '', 'vehicle_type': '',
             'hdzzl': '', 'zbzl': '', 'zzl': '', 'wkcc': '',
@@ -388,16 +400,16 @@ def ocr_driving_license():
             '总质量': 'zzl', '外廓尺寸': 'wkcc',
         }
         for item in data_list:
-            key = item.get('key', '')
-            value = item.get('value', '')
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get('key', '') or '')
+            value = str(item.get('value', '') or '').strip()
             for qt_key, our_key in key_map.items():
                 if qt_key in key:
                     parsed[our_key] = value
                     break
 
-        # 计算称重区间（对齐 Qt weight range 公式）
         parsed.update(_calc_weight_range(parsed))
-
         return ok(parsed)
 
     except requests.RequestException as e:
@@ -449,24 +461,35 @@ def _load_image_from_body(body: dict, prefix: str = '') -> 'np.ndarray | None':
 
 
 def _calc_weight_range(parsed: dict) -> dict:
-    """计算称重合格区间
+    """计算出口称重提示区间。
 
-    对齐 Qt:
-      min = hdzzl * 0.8 + zbzl
-      max = zzl * 1.05
+    对齐旧 Qt / 原公式：
+      min = 核定载质量 * 0.8 + 整备质量
+      max = 总质量 * 1.05
     """
     try:
-        hdzzl = float(parsed.get('hdzzl', '0').replace('kg', '').strip())
-        zbzl = float(parsed.get('zbzl', '0').replace('kg', '').strip())
-        zzl = float(parsed.get('zzl', '0').replace('kg', '').strip())
+        def _num(raw: object) -> float:
+            s = str(raw or '').lower().replace('kg', '').replace(',', '').strip()
+            import re
+            m = re.search(r'(\d+(?:\.\d+)?)', s)
+            return float(m.group(1)) if m else 0.0
+
+        hdzzl = _num(parsed.get('hdzzl'))
+        zbzl = _num(parsed.get('zbzl'))
+        zzl = _num(parsed.get('zzl'))
+        if hdzzl <= 0 or zzl <= 0:
+            return {
+                'weight_min': 0,
+                'weight_max': 0,
+                'weight_range_text': '',
+            }
 
         weight_min = hdzzl * 0.8 + zbzl
         weight_max = zzl * 1.05
-
         return {
-            'weight_min': round(weight_min, 1),
-            'weight_max': round(weight_max, 1),
-            'weight_range_text': f'称重合格区间: [{weight_min:.1f} kg - {weight_max:.1f} kg]',
+            'weight_min': round(weight_min),
+            'weight_max': round(weight_max),
+            'weight_range_text': f'({round(weight_min)}-{round(weight_max)})',
         }
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError):
         return {'weight_min': 0, 'weight_max': 0, 'weight_range_text': ''}
