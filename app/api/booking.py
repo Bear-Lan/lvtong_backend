@@ -87,7 +87,7 @@ def take_book_button_for_accept() -> str:
 
 
 def clear_book_button() -> None:
-    """驳回/复位：清空待受理预约。"""
+    """驳回时清空待受理预约（提交/重置不调用，保留下一辆已按键）。"""
     _booking_state['btn_prebook_state'] = False
     _booking_state['last_btn_click_time'] = ''
 
@@ -644,7 +644,7 @@ def reset_booking():
 
     POST /api/booking/reset
 
-    1. 重置 _booking_state（is_detection=false, check_step=0, ...）
+    1. 重置检测相关状态（保留 btn_prebook_state / last_btn_click_time，供下一辆等待）
     2. 停止 DistanceScheduler
     3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
     4. WS 推 booking_reset 事件同步前端
@@ -654,8 +654,9 @@ def reset_booking():
 
     from app.services.device_action import execute_device_action
 
-    # 1. 重置 _booking_state 到初始值
-    clear_book_button()
+    # 1. 清本轮检测状态；不 clear_book_button（提交/重置保留待受理预约）
+    pending = bool(_booking_state.get('btn_prebook_state'))
+    pending_time = _booking_state.get('last_btn_click_time', '')
     _booking_state.update({
         'is_detection': False,
         'last_booking_state': False,
@@ -672,6 +673,8 @@ def reset_booking():
         'closelightscreen_time': '',
         'cd_photo_time': '',
     })
+    if pending:
+        print(f'[BOOKING] 重置保留待受理预约 last_btn_click_time={pending_time}')
 
     # 2. 停止距离调度器 + 渐进拉图
     try:
