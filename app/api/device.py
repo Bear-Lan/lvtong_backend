@@ -255,6 +255,18 @@ def health_check():
     })
 
 
+@device_api.route('/plc-status', methods=['GET'])
+@login_required
+def plc_status():
+    """最近一次组播 PLC/DEVICE 状态（面板打开时拉取，避免错过 WS 首推）"""
+    from app.websocket.handler import get_last_plc_status
+
+    data = get_last_plc_status()
+    if data is None:
+        return ok(None, message='尚无 PLC 状态')
+    return ok(data)
+
+
 @device_api.route('/plc-control', methods=['POST'])
 @login_required
 def plc_control():

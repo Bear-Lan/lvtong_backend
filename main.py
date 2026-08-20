@@ -207,13 +207,11 @@ if __name__ == '__main__':
     # 3. 注入 WebSocket 推送（设备状态变化时通知前端）
     mgr.set_ws_push(push_device_status)
 
-    # 3.5 注入 PLC 状态推送（对齐 Qt UDPRadar::actionCompleted("plc_status") → LvTongPro::onPLCStatusUpdate）
-    from app.websocket.handler import push_plc_status
+    # 3.5 注入组播状态推送（PLC/DEV + X光 + DM 温度）
+    from app.websocket.handler import push_dm_temp, push_plc_status, push_xray_status
 
     def _on_plc_status(parsed: dict):
-        """RadarReader 收到 $NTRMC,PLC,<hex> 包时的回调
-        对齐硬件 CMD_*/STATUS_* 位图（见 radar.parse_plc_status）
-        """
+        """$NTRMC,PLC / DEV / DEVICE / DEVICE_STATUS → WS plc_status"""
         push_plc_status(parsed=parsed)
         try:
             from app.services.lane_announce import get_lane_announce
@@ -222,9 +220,18 @@ if __name__ == '__main__':
         except Exception as e:
             print(f'[ANNOUNCE] PLC 处理失败: {e}')
 
+    def _on_xray_status(xray_type: str, current: float, voltage: float, temperature: float):
+        # 协议：电流/电压/温度 → 前端沿用 kv/ma/temperature
+        push_xray_status(xray_type, kv=voltage, ma=current, temperature=temperature)
+
+    def _on_dm_temp(temps: list):
+        push_dm_temp(temps)
+
     for radar in mgr.get_devices_by_type('udpradar'):
         radar.set_plc_status_callback(_on_plc_status)
-        print(f'[设备]   {radar.device_id}: PLC 状态推送已注入')
+        radar.set_xray_status_callback(_on_xray_status)
+        radar.set_dm_temp_callback(_on_dm_temp)
+        print(f'[设备]   {radar.device_id}: 组播状态推送已注入（PLC/DEV/XRAY/DM）')
 
     # 3.6 初始化距离调度器，将雷达距离数据接入调度引擎
     from app.services.scheduler import DistanceScheduler

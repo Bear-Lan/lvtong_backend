@@ -57,6 +57,13 @@ def register_handlers():
             'timestamp': int(time.time() * 1000),
             'data': {'message': '连接成功'},
         })
+        # DEVICE 状态常只推一次：新连接补发最近一次，避免面板全灰
+        if _last_plc_data:
+            emit('message', {
+                'type': 'plc_status',
+                'timestamp': int(time.time() * 1000),
+                'data': dict(_last_plc_data),
+            })
 
     @socketio.on('disconnect')
     def handle_disconnect():
@@ -85,6 +92,14 @@ def register_handlers():
                 'timestamp': int(time.time() * 1000),
                 'data': {'topics': topics},
             })
+            if _last_plc_data and (
+                not topics or 'plc_status' in topics or '*' in topics
+            ):
+                emit('message', {
+                    'type': 'plc_status',
+                    'timestamp': int(time.time() * 1000),
+                    'data': dict(_last_plc_data),
+                })
         else:
             print(f'[WS] 收到未知消息类型: {msg_type}')
 
@@ -100,11 +115,21 @@ def register_handlers():
 
 # ========== 服务端推送工具函数 ==========
 
+# 最近一次 PLC/DEVICE 状态（供晚连客户端 / 面板打开时回放）
+_last_plc_data: dict | None = None
+_last_plc_lock = threading.Lock()
+
 # 雷达距离推送节流：硬件常 ~10Hz；过密会压 gevent + 前端重绘
 _RADAR_MIN_INTERVAL_SEC = 0.08  # ≈12.5 Hz 上限
 _RADAR_MIN_DELTA_M = 0.05
 _radar_push_state = {'t': 0.0, 'd': None, 'mode': None}
 _radar_push_lock = threading.Lock()
+
+
+def get_last_plc_status() -> dict | None:
+    """返回缓存的最近一次 plc_status data（无则 None）"""
+    with _last_plc_lock:
+        return dict(_last_plc_data) if _last_plc_data else None
 
 
 def push_radar_distance(distance: float, mode: int = 1):
@@ -234,6 +259,9 @@ def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False
             'gatemotor200': parsed.get('gateMotor200Status', gatemotor200),
             'gatemotor160': parsed.get('gateMotor160Status', gatemotor160),
         })
+    global _last_plc_data
+    with _last_plc_lock:
+        _last_plc_data = dict(data)
     socketio.emit('message', {
         'type': 'plc_status',
         'timestamp': int(time.time() * 1000),
@@ -245,7 +273,6 @@ def push_xray_status(xray_type: str, kv: float, ma: float, temperature: float):
     """推送 X 光机状态
 
     xray_type: "200" 或 "160"
-    Qt 参考: UDPRadar 中 X 光温度数据解析
     """
     socketio.emit('message', {
         'type': 'xray_status',
@@ -255,6 +282,20 @@ def push_xray_status(xray_type: str, kv: float, ma: float, temperature: float):
             'kv': kv,
             'ma': ma,
             'temperature': temperature,
+        },
+    })
+
+
+def push_dm_temp(temperatures: list[float]):
+    """推送探测器温度（$NTRMC,DM200）"""
+    temps = [float(t) for t in (temperatures or [])]
+    socketio.emit('message', {
+        'type': 'dm_temp',
+        'timestamp': int(time.time() * 1000),
+        'data': {
+            'temperatures': temps,
+            'count': len(temps),
+            'max': max(temps) if temps else None,
         },
     })
 

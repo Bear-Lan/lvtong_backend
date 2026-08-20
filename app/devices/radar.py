@@ -2,8 +2,12 @@
 
 现场组播（默认）:
   - $VMRMC,时间,物体个数,前端位置,前端速度  — 车辆距离
-  - $NTRMC,PLC,<hex>                       — PLC 状态
-  - $NTRMC,XRAY160/XRAY200/DM200,...       — 预留
+  - $NTRMC,DEV,<hex>                       — 新协议开关状态（bit0 起）
+  - $NTRMC,DEVICE,<hex>[,<hex>]            — 现场中间件（可两段：cmd,status）
+  - $NTRMC,DEVICE_STATUS,<hex>             — 状态心跳（同 DEV 位表）
+  - $NTRMC,PLC,<hex>                       — 旧版 PLC（高16 CMD / 低16 STATUS）
+  - $NTRMC,XRAY160/XRAY200,<电流>,<电压>,<温度>
+  - $NTRMC,DM200,<个数>,<温度…>
 
 兼容旧版单播 JSON:
   - { "distance": float, "mode": int }
@@ -15,6 +19,7 @@ import os
 import socket
 import struct
 import threading
+from typing import Any, Callable
 
 from app.devices.base import DeviceBase, DeviceStatus
 
@@ -28,9 +33,7 @@ def _guess_mcast_iface(preferred: str = '') -> str:
     if preferred:
         return preferred
 
-    # (优先级, ip)：同网段优先，再按探测顺序
     ranked: list[tuple[int, str]] = []
-    # 播发源在 192.168.0.188（现场实测）
     for probe in ('192.168.0.188', '192.168.88.201'):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -44,7 +47,6 @@ def _guess_mcast_iface(preferred: str = '') -> str:
         probe_prefix = probe.rsplit('.', 1)[0]
         ip_prefix = ip.rsplit('.', 1)[0]
         same_subnet = 0 if ip_prefix == probe_prefix else 1
-        # 惩罚常见 VPN/隧道网段，避免抢走现场局域网
         vpn_like = 1 if ip.startswith(('10.', '172.16.', '172.17.', '172.18.', '172.19.',
                                        '172.2', '172.3', '100.')) else 0
         ranked.append((same_subnet + vpn_like, ip))
@@ -53,6 +55,10 @@ def _guess_mcast_iface(preferred: str = '') -> str:
         return '0.0.0.0'
     ranked.sort(key=lambda x: (x[0], x[1]))
     return ranked[0][1]
+
+
+def _bit(value: int, n: int) -> bool:
+    return (value & (1 << n)) != 0
 
 
 class RadarReader(DeviceBase):
@@ -68,6 +74,9 @@ class RadarReader(DeviceBase):
         self._sock: socket.socket | None = None
         self._distance_callback = None
         self._plc_status_callback = None
+        self._xray_callback: Callable[[str, float, float, float], Any] | None = None
+        self._dm_callback: Callable[[list[float]], Any] | None = None
+        self._last_plc_sig: tuple | None = None
         self._transport = 'multicast'
         self._iface_ip = '0.0.0.0'
 
@@ -83,8 +92,16 @@ class RadarReader(DeviceBase):
         self._distance_callback = cb
 
     def set_plc_status_callback(self, cb):
-        """注册 PLC 状态回调 cb(parsed: dict)"""
+        """注册 PLC/DEV 状态回调 cb(parsed: dict)"""
         self._plc_status_callback = cb
+
+    def set_xray_status_callback(self, cb):
+        """cb(xray_type: '160'|'200', current_ma, voltage_kv, temperature)"""
+        self._xray_callback = cb
+
+    def set_dm_temp_callback(self, cb):
+        """cb(temps: list[float])"""
+        self._dm_callback = cb
 
     def initialize(self) -> bool:
         cfg = self.config or {}
@@ -114,7 +131,6 @@ class RadarReader(DeviceBase):
                 return True
             ok = self._start_unicast_listen(udp_port)
         else:
-            # 组播端口：只用 mcast_port / 环境默认 9000，不用 DB 残留的旧 unicast port
             group = cfg.get('mcast_group') or MCAST_GROUP
             port = int(
                 cfg.get('mcast_port')
@@ -179,10 +195,82 @@ class RadarReader(DeviceBase):
             return None
 
     @staticmethod
-    def parse_plc_status(text: str) -> dict | None:
-        """解析 $NTRMC,PLC,<hex> 协议包
+    def parse_dev_bits(value: int) -> dict:
+        """新协议 DEV 位表（bit0 起）→ 与前端 plc_status 兼容的字段。"""
+        return {
+            'protocol': 'dev',
+            'raw': int(value) & 0xFFFFFFFF,
+            'redLightCmd': _bit(value, 0),
+            'yellowLightCmd': _bit(value, 1),
+            'greenLightCmd': _bit(value, 2),
+            'createLightCmd': _bit(value, 3),
+            'urgentStopCmd': _bit(value, 4),
+            'urgentStopStatus': _bit(value, 4),
+            'bookingStatus': _bit(value, 5),
+            'stickDownStatus': _bit(value, 6),
+            'groundSensorStatus': _bit(value, 7),
+            'lightScreenStatus': _bit(value, 8),
+            'lightSource200Status': _bit(value, 9),
+            'lightSource160Status': _bit(value, 10),
+            'lightGate200Status': _bit(value, 11),
+            'lightGate160Status': _bit(value, 12),
+            'gateMotor200Status': _bit(value, 13),
+            'gateMotor160Status': _bit(value, 14),
+            'xrayGate200Cmd': _bit(value, 11),
+            'xrayGate160Cmd': _bit(value, 12),
+            'interlock160Cmd': _bit(value, 15),
+            'interlock200Cmd': _bit(value, 16),
+            'soundalarmCmd': _bit(value, 17),
+            'xrayMotorRest200Cmd': False,
+            'xrayMotorRest160Cmd': False,
+        }
 
-        32 位寄存器：高 16 = CMD_*，低 16 = STATUS_*（不含 RESERVE）。
+    @classmethod
+    def parse_ntrmc_dev(cls, text: str) -> dict | None:
+        """解析 $NTRMC,DEV|DEVICE|DEVICE_STATUS,<hex>[,<hex>]
+
+        现场中间件常见：`$NTRMC,DEVICE,00000000,0003f9bf`
+        （前段多为 cmd，后段为 status；UI 默认以最后一段为准）。
+        """
+        try:
+            parts = [p.strip() for p in text.strip().split(',')]
+            if len(parts) < 3:
+                return None
+            kind = parts[1].upper()
+            if kind not in ('DEV', 'DEVICE', 'DEVICE_STATUS'):
+                return None
+            hexes: list[int] = []
+            for raw in parts[2:]:
+                h = raw.split('\r')[0].split('\n')[0].strip()
+                if not h:
+                    continue
+                hexes.append(int(h, 16))
+            if not hexes:
+                return None
+            status_bits = hexes[-1]
+            parsed = cls.parse_dev_bits(status_bits)
+            parsed['ntrmcKind'] = kind
+            # 两段时：前段 cmd、后段 status；cmd=0 也要覆盖，避免把 status 误当成灯控
+            if len(hexes) >= 2:
+                parsed['cmdRaw'] = hexes[0]
+                cmd_parsed = cls.parse_dev_bits(hexes[0])
+                for k in (
+                    'redLightCmd', 'yellowLightCmd', 'greenLightCmd',
+                    'createLightCmd', 'urgentStopCmd', 'soundalarmCmd',
+                    'interlock160Cmd', 'interlock200Cmd',
+                    'xrayGate200Cmd', 'xrayGate160Cmd',
+                ):
+                    parsed[k] = cmd_parsed[k]
+            return parsed
+        except (ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def parse_plc_status(text: str) -> dict | None:
+        """解析 $NTRMC,PLC,<hex> 旧协议包
+
+        32 位寄存器：高 16 = CMD_*，低 16 = STATUS_*。
+        与新协议 DEV 位布局不同，不可混用。
         """
         try:
             parts = text.strip().split(',')
@@ -195,34 +283,89 @@ class RadarReader(DeviceBase):
             st = status_value & 0xFFFF
 
             return {
-                # ---- CMD（高 16）----
-                'urgentStopCmd': (cmd & 0x0100) != 0,       # CMD_URGENT_STOP
-                'redLightCmd': (cmd & 0x0200) != 0,         # CMD_RED_LIGHT
-                'yellowLightCmd': (cmd & 0x0400) != 0,      # CMD_YELLOW_LIGHT
-                'greenLightCmd': (cmd & 0x0800) != 0,       # CMD_GREEN_LIGHT
-                'createLightCmd': (cmd & 0x1000) != 0,      # CMD_CREATE_LIGHT
-                'interlock200Cmd': (cmd & 0x2000) != 0,     # CMD_200_INTERLOCK
-                'interlock160Cmd': (cmd & 0x4000) != 0,     # CMD_160_INTERLOCK
-                'soundalarmCmd': (cmd & 0x8000) != 0,       # CMD_SOUND_ALARM
-                'xrayGate200Cmd': (cmd & 0x0001) != 0,      # CMD_XRAY_200_GATE
-                'xrayGate160Cmd': (cmd & 0x0002) != 0,      # CMD_XRAY_160_GATE
-                'xrayMotorRest200Cmd': (cmd & 0x0004) != 0, # CMD_XRAY_200_MOTORREST
-                'xrayMotorRest160Cmd': (cmd & 0x0008) != 0, # CMD_XRAY_160_MOTORREST
-                # ---- STATUS（低 16）----
-                'urgentStopStatus': (st & 0x0100) != 0,     # STATUS_URGENT_STOP
-                'bookingStatus': (st & 0x0200) != 0,        # STATUS_BOOKING
-                'stickDownStatus': (st & 0x0400) != 0,      # STATUS_STICK_DOWN
-                'groundSensorStatus': (st & 0x0800) != 0,   # STATUS_GROUND_SENSOR
-                'lightScreenStatus': (st & 0x1000) != 0,    # STATUS_LIGHT_SCREEN
-                'lightGate200Status': (st & 0x2000) != 0,   # STATUS_200_LIGHT_GATE
-                'lightGate160Status': (st & 0x4000) != 0,   # STATUS_160_LIGHT_GATE
-                'gateMotor200Status': (st & 0x8000) != 0,   # STATUS_200_GATE_MOTOR
-                'gateMotor160Status': (st & 0x0001) != 0,   # STATUS_160_GATE_MOTOR
-                'lightSource200Status': (st & 0x0002) != 0, # STATUS_200_LIGHT_SOURCE
-                'lightSource160Status': (st & 0x0004) != 0, # STATUS_160_LIGHT_SOURCE
+                'protocol': 'plc',
+                'raw': status_value,
+                'urgentStopCmd': (cmd & 0x0100) != 0,
+                'redLightCmd': (cmd & 0x0200) != 0,
+                'yellowLightCmd': (cmd & 0x0400) != 0,
+                'greenLightCmd': (cmd & 0x0800) != 0,
+                'createLightCmd': (cmd & 0x1000) != 0,
+                'interlock200Cmd': (cmd & 0x2000) != 0,
+                'interlock160Cmd': (cmd & 0x4000) != 0,
+                'soundalarmCmd': (cmd & 0x8000) != 0,
+                'xrayGate200Cmd': (cmd & 0x0001) != 0,
+                'xrayGate160Cmd': (cmd & 0x0002) != 0,
+                'xrayMotorRest200Cmd': (cmd & 0x0004) != 0,
+                'xrayMotorRest160Cmd': (cmd & 0x0008) != 0,
+                'urgentStopStatus': (st & 0x0100) != 0,
+                'bookingStatus': (st & 0x0200) != 0,
+                'stickDownStatus': (st & 0x0400) != 0,
+                'groundSensorStatus': (st & 0x0800) != 0,
+                'lightScreenStatus': (st & 0x1000) != 0,
+                'lightGate200Status': (st & 0x2000) != 0,
+                'lightGate160Status': (st & 0x4000) != 0,
+                'gateMotor200Status': (st & 0x8000) != 0,
+                'gateMotor160Status': (st & 0x0001) != 0,
+                'lightSource200Status': (st & 0x0002) != 0,
+                'lightSource160Status': (st & 0x0004) != 0,
             }
         except (ValueError, IndexError):
             return None
+
+    @staticmethod
+    def parse_xray_status(text: str) -> dict | None:
+        """解析 $NTRMC,XRAY160|XRAY200,<电流>,<电压>,<温度>"""
+        try:
+            parts = [p.strip() for p in text.strip().split(',')]
+            if len(parts) < 5:
+                return None
+            kind = parts[1].upper()
+            if kind == 'XRAY160':
+                xray_type = '160'
+            elif kind == 'XRAY200':
+                xray_type = '200'
+            else:
+                return None
+            return {
+                'type': xray_type,
+                'current': float(parts[2]),
+                'voltage': float(parts[3]),
+                'temperature': float(parts[4]),
+            }
+        except (ValueError, IndexError):
+            return None
+
+    @staticmethod
+    def parse_dm200(text: str) -> dict | None:
+        """解析 $NTRMC,DM200,<个数>,<温度…>"""
+        try:
+            parts = [p.strip() for p in text.strip().split(',')]
+            if len(parts) < 3 or parts[1].upper() != 'DM200':
+                return None
+            count = int(float(parts[2]))
+            temps = [float(x) for x in parts[3:3 + max(0, count)]]
+            if not temps and len(parts) > 3:
+                temps = [float(x) for x in parts[3:]]
+            return {'count': count, 'temperatures': temps}
+        except (ValueError, IndexError):
+            return None
+
+    def _emit_plc(self, parsed: dict) -> None:
+        if not self._plc_status_callback or parsed is None:
+            return
+        # DEVICE 心跳很密：相同寄存器不重复推 WS
+        sig = (parsed.get('protocol'), parsed.get('raw'), parsed.get('cmdRaw'))
+        if sig == self._last_plc_sig:
+            return
+        first = self._last_plc_sig is None
+        self._last_plc_sig = sig
+        if first:
+            print(
+                f"[RADAR] PLC/DEVICE 状态首包 protocol={parsed.get('protocol')} "
+                f"raw=0x{int(parsed.get('raw') or 0):08x} "
+                f"cmdRaw={parsed.get('cmdRaw')}"
+            )
+        self._plc_status_callback(parsed)
 
     def _dispatch(self, text: str) -> None:
         if text.startswith('$VMRMC'):
@@ -232,17 +375,46 @@ class RadarReader(DeviceBase):
             self._distance = parsed['distance']
             self._speed = parsed['speed']
             self._object_count = parsed['object_count']
-            # mode: 有目标=1，无目标=0（兼容旧 JSON mode 语义）
+            # 物体个数>0 即有车 → mode=1（兼容旧 JSON mode）
             self._mode = 1 if self._object_count > 0 else 0
             if self._distance_callback:
                 self._distance_callback(self._distance, self._mode)
             return
 
         if text.startswith('$NTRMC,PLC,'):
-            if self._plc_status_callback:
-                parsed = self.parse_plc_status(text)
-                if parsed is not None:
-                    self._plc_status_callback(parsed)
+            parsed = self.parse_plc_status(text)
+            if parsed is not None:
+                self._emit_plc(parsed)
+            return
+
+        upper = text.upper()
+        if (
+            upper.startswith('$NTRMC,DEV,')
+            or upper.startswith('$NTRMC,DEVICE,')
+            or upper.startswith('$NTRMC,DEVICE_STATUS,')
+        ):
+            # DEVICE 会匹配 DEVICE_STATUS 前缀？DEVICE_STATUS 以 DEVICE_ 开头
+            # 上面三条分别判断；DEVICE, 与 DEVICE_STATUS, 不冲突
+            parsed = self.parse_ntrmc_dev(text)
+            if parsed is not None:
+                self._emit_plc(parsed)
+            return
+
+        if upper.startswith('$NTRMC,XRAY160,') or upper.startswith('$NTRMC,XRAY200,'):
+            parsed = self.parse_xray_status(text)
+            if parsed and self._xray_callback:
+                self._xray_callback(
+                    parsed['type'],
+                    parsed['current'],
+                    parsed['voltage'],
+                    parsed['temperature'],
+                )
+            return
+
+        if upper.startswith('$NTRMC,DM200,'):
+            parsed = self.parse_dm200(text)
+            if parsed and self._dm_callback:
+                self._dm_callback(parsed['temperatures'])
             return
 
         if text.startswith('{'):
@@ -255,8 +427,6 @@ class RadarReader(DeviceBase):
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
             return
-
-        # $NTRMC,XRAY200 / XRAY160 / DM200 预留
 
     # ---- 监听 ----
 

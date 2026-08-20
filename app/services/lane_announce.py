@@ -46,8 +46,8 @@ class LaneAnnounceService:
     # ---------- 对外：雷达 / PLC ----------
 
     def on_radar(self, _distance: float, mode: int) -> None:
-        """有车(mode==1)且空闲 → 维持招揽线程；非空闲立刻停。"""
-        target = int(mode) == 1
+        """有车(mode>0 / 物体个数>0)且空闲 → 维持招揽线程；非空闲立刻停。"""
+        target = int(mode) > 0
         with self._lock:
             self._radar_target = target
             idle = self._is_system_idle_unlocked()
