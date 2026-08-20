@@ -411,15 +411,6 @@ def submit_inspection():
     if inspection_id > 0:
         print(f'[INSPECTION] 提交成功, id={inspection_id}, 字段数={len(body)}')
 
-        # ---- 5.5 推进 last_acceptance_time，让下一辆车取更早的栈元素 ----
-        try:
-            from app.api.booking import _booking_state as _bs
-            if body.get('acceptance_time'):
-                _bs['last_acceptance_time'] = body['acceptance_time']
-                print(f'[INSPECTION] last_acceptance_time 推进 -> {_bs["last_acceptance_time"]}')
-        except Exception as e:
-            print(f'[INSPECTION] 推进 last_acceptance_time 失败（不影响提交）: {e}')
-
         return ok({'id': inspection_id}, '提交成功')
     else:
         return fail(500, '提交失败（addInspection 返回 -1）')

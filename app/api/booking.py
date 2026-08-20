@@ -32,11 +32,12 @@ _open_announce_waiters: list[threading.Event] = []
 
 
 # ---- 全局状态（后续迁移到 Redis 或 scheduler 模块） ----
+# 车道同时最多一辆待检车：预约只用「有无标志 + 最后按键时间」，不再用栈。
 _booking_state = {
     'is_detection': False,       # 是否正在检测中
     'last_booking_state': False,
     'booking_dialog_shown': False,
-    'btn_prebook_state': False,
+    'btn_prebook_state': False,  # 是否有待受理预约（司机已按键）
     'car_height': 3.0,
     'car_length': 2.5,           # 默认车头宽度
     'is_check_xray': True,
@@ -44,16 +45,13 @@ _booking_state = {
     'radar_count': 0,
 
     # ---- 时间字段（对齐 Qt m_VehicleInspection.* 字段命名） ----
-    'btn_prebook_time': '',          # 本轮：受理时从栈中取出的最早按键时间（ISO 秒）
+    'last_btn_click_time': '',       # 司机最后一次按预约键（待受理期间可被覆盖）
+    'btn_prebook_time': '',          # 本轮受理时固化的按键时间（来自 last_btn_click_time）
     'acceptance_time': '',           # 用户点受理的时刻
     'opengate_time': '',             # 开闸时间（PLC green 或 arrived 触发）
     'openlightscreen_time': '',      # 光幕开启
     'closelightscreen_time': '',     # 光幕关闭
     'cd_photo_time': '',             # 车顶拍照时间
-
-    # ---- 栈与上一轮锚点（Qt m_lstPreBookTime + 闭区间对照） ----
-    'btn_prebook_stack': [],         # 司机按键时间戳栈（按到达顺序追加；受理时 pop）
-    'last_acceptance_time': '',       # 上一辆车的 acceptance_time，用于"取 > last 的最早"判定
 }
 
 
@@ -71,47 +69,27 @@ def _now_iso() -> str:
     return datetime.now().isoformat(timespec='seconds')
 
 
-def _book_button_stack_push() -> str:
-    """司机按键入栈 — 升沿（Qt 注释：booking && !m_lastBookingState 才打）。
-
-    调用方应保证调用频率受控（去重由调用方做，例如仅在 /api/internal/emit
-    收到 msg_type=='booking' action=='book_button' 时调用）。
-    """
+def mark_book_button() -> str:
+    """司机按键：置「有预约」并记录最后点击时间（覆盖写，车道只等一辆车）。"""
     now = _now_iso()
-    _booking_state['btn_prebook_stack'].append(now)
+    _booking_state['btn_prebook_state'] = True
+    _booking_state['last_btn_click_time'] = now
     return now
 
 
-def _book_button_stack_pop_for_acceptance(acceptance_time: str) -> str:
-    """Qt 风格：取最早一个 > last_acceptance_time 的；如果没有 > last 的，取栈底最老。
+def take_book_button_for_accept() -> str:
+    """受理：读出最后按键时间，并清空预约标志与待受理时间。"""
+    clicked = bool(_booking_state.get('btn_prebook_state'))
+    btn_time = (_booking_state.get('last_btn_click_time') or '') if clicked else ''
+    _booking_state['btn_prebook_state'] = False
+    _booking_state['last_btn_click_time'] = ''
+    return btn_time
 
-    取出后从栈里删除该元素，同时把 < last_acceptance_time 的老尾巴清理掉。
-    """
-    stack = list(_booking_state['btn_prebook_stack'])
-    last = _booking_state.get('last_acceptance_time', '')
 
-    # 1. 优先：栈里 > last_acceptance_time 的最早一个
-    candidates = [t for t in stack if (not last or t > last)]
-    if candidates:
-        picked = min(candidates)  # ISO 时间字符串字典序与时间顺序一致
-    elif stack:
-        # 2. 退化：栈里全是老车时间，取最老的一个作为本轮（视为"上一轮的尾巴"）
-        picked = min(stack)
-    else:
-        picked = ''
-
-    # 3. 清理：只保留 picked 之后的元素
-    if picked and picked in stack:
-        remaining = [t for t in stack if t != picked]
-    else:
-        remaining = stack
-
-    # 4. 再清：< last_acceptance_time 的老尾巴
-    if last:
-        remaining = [t for t in remaining if t > last]
-
-    _booking_state['btn_prebook_stack'] = remaining
-    return picked
+def clear_book_button() -> None:
+    """驳回/复位：清空待受理预约。"""
+    _booking_state['btn_prebook_state'] = False
+    _booking_state['last_btn_click_time'] = ''
 
 
 @booking_api.route('/open', methods=['POST'])
@@ -408,13 +386,12 @@ def accept_booking():
     # 后端打点 acceptanceTime（对齐 Qt QDateTime::currentDateTime()）
     acceptance_time = _now_iso()
 
-    # 从 btn_prebook_stack 取出本轮司机的最早按键时间（Qt m_lstPreBookTime 语义）
-    btn_prebook_time = _book_button_stack_pop_for_acceptance(acceptance_time)
+    # 读最后按键时间并清空「有预约」标志（车道同时只等一辆车）
+    btn_prebook_time = take_book_button_for_accept()
     if btn_prebook_time:
-        print(f'[BOOKING] 从栈中取出 btn_prebook_time={btn_prebook_time} '
-              f'(栈剩余 {len(_booking_state["btn_prebook_stack"])} 项)')
+        print(f'[BOOKING] 受理读取 last_btn_click_time={btn_prebook_time}，预约已清空')
     else:
-        print(f'[BOOKING] 栈为空，btn_prebook_time 留空（司机未按键直接受理）')
+        print('[BOOKING] 无待受理预约时间，btn_prebook_time 留空（未按键直接受理）')
 
     # 更新全局状态
     _booking_state.update({
@@ -424,7 +401,6 @@ def accept_booking():
         'is_detection': True,
         'check_step': 1,
         'radar_count': 0,
-        'btn_prebook_state': False,
         'acceptance_time': acceptance_time,
         'btn_prebook_time': btn_prebook_time,
         # opengate/openlight/closelight/cd_photo 在 scheduler 触发时按需打
@@ -490,22 +466,21 @@ def btn_press():
 
     POST /api/booking/btn-press
 
-    行为：入栈 + 预约相机播报「申请已接收…」+ WS book_button。
+    行为：置有预约 + 记最后点击时间 + 播报「申请已接收…」+ WS book_button。
     """
     try:
         from app.services.lane_announce import get_lane_announce
 
         get_lane_announce().on_booking_button()
     except Exception as e:
-        print(f'[BOOKING] btn-press 播报失败，仅入栈: {e}')
-        _book_button_stack_push()
-    stack = _booking_state['btn_prebook_stack']
-    btn_time = stack[-1] if stack else ''
-    print(f'[BOOKING] btn-press 入栈: {btn_time}, 栈长度={len(stack)}')
+        print(f'[BOOKING] btn-press 播报失败，仅记时间: {e}')
+        mark_book_button()
+    btn_time = _booking_state.get('last_btn_click_time', '')
+    print(f'[BOOKING] btn-press: time={btn_time}, pending={_booking_state.get("btn_prebook_state")}')
     return ok({
         'btnPressTime': btn_time,
-        'stackLen': len(stack),
-        'stack': stack,
+        'btnPrebookState': bool(_booking_state.get('btn_prebook_state')),
+        'lastBtnClickTime': btn_time,
     })
 
 
@@ -526,9 +501,9 @@ def reject_booking():
     from app.services.device_action import execute_device_action
 
     # 恢复状态（先清播报放行标记，避免随后开闸误播 step4）
+    clear_book_button()
     _booking_state.update({
         'is_detection': False,
-        'btn_prebook_state': False,
         'check_step': 0,
         'booking_dialog_shown': False,
     })
@@ -680,25 +655,22 @@ def reset_booking():
     from app.services.device_action import execute_device_action
 
     # 1. 重置 _booking_state 到初始值
+    clear_book_button()
     _booking_state.update({
         'is_detection': False,
         'last_booking_state': False,
         'booking_dialog_shown': False,
-        'btn_prebook_state': False,
         'car_height': 3.0,
         'car_length': 2.5,
         'is_check_xray': True,
         'check_step': 0,
         'radar_count': 0,
-        # 时间字段 + 栈 + 锚点全清
         'btn_prebook_time': '',
         'acceptance_time': '',
         'opengate_time': '',
         'openlightscreen_time': '',
         'closelightscreen_time': '',
         'cd_photo_time': '',
-        'btn_prebook_stack': [],
-        'last_acceptance_time': '',
     })
 
     # 2. 停止距离调度器 + 渐进拉图

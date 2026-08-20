@@ -75,17 +75,16 @@ class LaneAnnounceService:
 
     # ---------- 对外：业务事件 ----------
 
-    def on_booking_button(self, *, push_ws: bool = True, push_stack: bool = True) -> None:
+    def on_booking_button(self, *, push_ws: bool = True, record: bool = True) -> None:
         self.stop_idle_loop()
-        if push_stack:
+        if record:
             try:
-                from app.api.booking import _book_button_stack_push, set_booking_state
+                from app.api.booking import mark_book_button
 
-                btn_time = _book_button_stack_push()
-                set_booking_state(btn_prebook_state=True)
-                print(f'[{_ts()}] [ANNOUNCE] 预约键 → step2, 入栈 {btn_time}', flush=True)
+                btn_time = mark_book_button()
+                print(f'[{_ts()}] [ANNOUNCE] 预约键 → step2, 记时 {btn_time}', flush=True)
             except Exception as e:
-                print(f'[{_ts()}] [ANNOUNCE] 预约键入栈失败: {e}', flush=True)
+                print(f'[{_ts()}] [ANNOUNCE] 预约键记时失败: {e}', flush=True)
 
         self._play(2, interrupt=True)
 
@@ -161,6 +160,9 @@ class LaneAnnounceService:
             if int(st.get('check_step') or 0) >= 1:
                 return False
             if st.get('booking_dialog_shown'):
+                return False
+            # 已按键待受理：不再招揽，等人工受理
+            if st.get('btn_prebook_state'):
                 return False
             return True
         except Exception:

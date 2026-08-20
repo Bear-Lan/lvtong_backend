@@ -1,4 +1,4 @@
-"""调试端点：随时查 WS 在线客户端数 + booking 栈状态。"""
+"""调试端点：随时查 WS 在线客户端数 + booking 预约标志。"""
 from flask import Blueprint, jsonify, request
 from app.websocket.handler import get_socketio_clients_count
 
@@ -23,9 +23,8 @@ def ws_stats():
             'message': 'ok',
             'data': {
                 'ws_clients': get_socketio_clients_count(),
-                'btn_prebook_stack': list(_booking_state.get('btn_prebook_stack', [])),
-                'btn_prebook_stack_len': len(_booking_state.get('btn_prebook_stack', [])),
-                'last_acceptance_time': _booking_state.get('last_acceptance_time', ''),
+                'btn_prebook_state': bool(_booking_state.get('btn_prebook_state')),
+                'last_btn_click_time': _booking_state.get('last_btn_click_time', ''),
                 'btn_prebook_time': _booking_state.get('btn_prebook_time', ''),
                 'acceptance_time': _booking_state.get('acceptance_time', ''),
                 'opengate_time': _booking_state.get('opengate_time', ''),
