@@ -61,14 +61,21 @@ def emit_event():
         summary = repr(data)[:80] if data else ''
     logger.info(f'[INTERNAL.EMIT] type={msg_type!r} {summary}')
 
-    # 司机按键预约 — 直接入栈（避免 round-trip 到 /api/booking/btn-press）
+    # 司机按键预约 — 入栈 + 预约相机播报（emit 本身会再推 WS，此处不再重复 push_ws）
     if msg_type == 'booking' and isinstance(data, dict) and data.get('action') == 'book_button':
         try:
-            from app.api.booking import _book_button_stack_push
-            btn_time = _book_button_stack_push()
-            logger.info(f'  └ book_button 入栈: {btn_time}')
+            from app.services.lane_announce import get_lane_announce
+
+            get_lane_announce().on_booking_button(push_ws=False, push_stack=True)
+            logger.info('  └ book_button 已入栈并触发预约相机播报')
         except Exception as e:
-            logger.warning(f'  └ book_button 入栈失败: {e}')
+            logger.warning(f'  └ book_button 处理失败: {e}')
+            try:
+                from app.api.booking import _book_button_stack_push
+                btn_time = _book_button_stack_push()
+                logger.info(f'  └ book_button 仅入栈: {btn_time}')
+            except Exception as e2:
+                logger.warning(f'  └ book_button 入栈失败: {e2}')
 
     # 调试日志：socketio emit 之后打一下确认成功 + 在线客户端数
     try:

@@ -19,6 +19,67 @@ def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
 
 
+# ---- 双工语音通道锁（TTS / 对讲互斥）----
+
+@device_api.route('/voice/status', methods=['GET'])
+@login_required
+def voice_channel_status():
+    """查询预约机 TwoWayAudio 占用状态。"""
+    from app.services.voice_channel import get_voice_channel
+
+    return ok(get_voice_channel().status())
+
+
+@device_api.route('/voice/acquire', methods=['POST'])
+@login_required
+def voice_channel_acquire():
+    """申请独占双工通道。
+
+    Body: { owner: 'talk'|'announce', wait?: bool, timeout?: number, steal?: bool }
+    """
+    from app.services.voice_channel import get_voice_channel
+
+    body = request.get_json(silent=True) or {}
+    owner = str(body.get('owner') or '').strip()
+    wait = bool(body.get('wait', False))
+    steal = bool(body.get('steal', False))
+    try:
+        timeout = float(body.get('timeout', 30))
+    except (TypeError, ValueError):
+        timeout = 30.0
+
+    # 前端对讲禁止 steal，避免误抢后台播报
+    if owner == 'talk':
+        steal = False
+
+    result = get_voice_channel().acquire(
+        owner, wait=wait, timeout=timeout, steal=steal
+    )
+    if not result.get('ok'):
+        return fail(409, result.get('error') or 'voice channel busy', result)
+    return ok(result, 'acquired')
+
+
+@device_api.route('/voice/release', methods=['POST'])
+@login_required
+def voice_channel_release():
+    """释放双工通道。
+
+    Body: { owner?: 'talk'|'announce', token?: string, force?: bool }
+    """
+    from app.services.voice_channel import get_voice_channel
+
+    body = request.get_json(silent=True) or {}
+    owner = str(body.get('owner') or '').strip() or None
+    token = str(body.get('token') or '').strip() or None
+    force = bool(body.get('force', False))
+
+    result = get_voice_channel().release(owner=owner, token=token, force=force)
+    if not result.get('ok'):
+        return fail(409, result.get('error') or 'release denied', result)
+    return ok(result, 'released')
+
+
 # ---- 状态查询 ----
 
 @device_api.route('/status', methods=['GET'])

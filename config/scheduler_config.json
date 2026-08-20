@@ -12,10 +12,9 @@
       "id": "led_step5_plc_yellow",
       "minDistance": 7.0,
       "maxDistance": 9.0,
-      "description": "LED步骤5 + PLC黄灯",
+      "description": "PLC黄灯（step5 改由光幕触发播报）",
       "isActive": true,
       "deviceActions": {
-        "led_001": {"action": "set_step5", "params": {}},
         "plc_001": {"action": "setPLC", "params": {"redlight": false, "yellowlight": true, "greenlight": false}}
       }
     },

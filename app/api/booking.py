@@ -3,6 +3,7 @@
 处理车辆预约、雷达影像拉取、受理/驳回、急停等。
 参考 Qt OrderDialog / LvTongPro::onOrderAccept() / onBookingDebounceTimeout()
 """
+import threading
 import time
 import requests
 from flask import Blueprint, request, jsonify, current_app
@@ -22,6 +23,12 @@ def ok(data=None, message='success'):
 
 def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
+
+
+# 并发 /open 只播一次 step2，其余请求等待同一轮结束
+_open_announce_lock = threading.Lock()
+_open_announce_inflight = False
+_open_announce_waiters: list[threading.Event] = []
 
 
 # ---- 全局状态（后续迁移到 Redis 或 scheduler 模块） ----
@@ -118,15 +125,14 @@ def open_booking_session():
     1. 设备健康检查
     2. PLC 红灯 + 关光闸（防人闯入）— 对齐 Qt onBookingDebounceTimeout
     3. 关闸
-    4. LED step2 "绿通车辆 按键检测"
-    5. 返回视频流 URL 和当前状态
+    4. LED step2
+    5. 独占播报 step2，释放 TwoWayAudio 后再返回（前端才可开对讲）
     """
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
 
     from app.services.device_action import execute_device_action
 
-    # 设备联动（对齐 Qt onBookingDebounceTimeout 防抖后动作）
     execute_device_action('plc_001', 'setPLC', {
         'redlight': True, 'yellowlight': False, 'greenlight': False,
         'lightgate200': False, 'lightgate160': False,
@@ -134,14 +140,64 @@ def open_booking_session():
     execute_device_action('gate_001', 'close')
     execute_device_action('led_001', 'set_step2')
 
-    # 标记预约弹窗已显示（对齐 Qt m_bookingDialogShown）
     _booking_state['booking_dialog_shown'] = True
+    _ensure_step2_announce_once()
 
     return ok({
         'devicesReady': devices_ready,
-        'videoStreamUrl': None,  # 后续对接视频流
+        'videoStreamUrl': None,
         'state': _booking_state,
+        'announceStep': 2,
+        'announceDone': True,
     }, '会话初始化成功')
+
+
+def _ensure_step2_announce_once() -> None:
+    """多请求并发 open 时：只播一轮 step2，其它请求阻塞等待同一轮结束。"""
+    global _open_announce_inflight
+
+    waiter: threading.Event | None = None
+    with _open_announce_lock:
+        if _open_announce_inflight:
+            waiter = threading.Event()
+            _open_announce_waiters.append(waiter)
+        else:
+            _open_announce_inflight = True
+
+    if waiter is not None:
+        print('[BOOKING] open：已有 step2 播报进行中，等待同轮结束', flush=True)
+        waiter.wait(timeout=60)
+        return
+
+    try:
+        from app.services.lane_announce import get_lane_announce
+        from app.services.booking_camera_tts import (
+            release_voice_channel,
+            speak_step,
+            stop_speak,
+        )
+
+        get_lane_announce().stop_idle_loop()
+        stop_speak()
+        print('[BOOKING] open：开始播报 step2（对讲须关闭，独占通道）', flush=True)
+        speak_step(2, interrupt=True, blocking=True)
+        release_voice_channel()
+        print('[BOOKING] open：step2 结束且 TwoWayAudio 已释放，前端可开对讲', flush=True)
+    except Exception as e:
+        print(f'[BOOKING] open 播报失败: {e}', flush=True)
+        try:
+            from app.services.booking_camera_tts import release_voice_channel
+
+            release_voice_channel()
+        except Exception:
+            pass
+    finally:
+        with _open_announce_lock:
+            _open_announce_inflight = False
+            waiters = list(_open_announce_waiters)
+            _open_announce_waiters.clear()
+        for ev in waiters:
+            ev.set()
 
 
 def _parse_image_resolution(header: str) -> tuple[int, int]:
@@ -379,10 +435,16 @@ def accept_booking():
         'redlight': True, 'yellowlight': False, 'greenlight': False
     })
 
-    # 2. LED 步骤4: "待检车辆 请通行 勿停车倒车"
-    execute_device_action('led_001', 'set_step4')
+    # 2. LED 步骤3: 「申请已受理，请等待放行」
+    try:
+        from app.services.lane_announce import get_lane_announce
 
-    # 3. 关闭栏杆
+        get_lane_announce().on_accepted()
+    except Exception as e:
+        print(f'[BOOKING] 受理播报失败: {e}')
+        execute_device_action('led_001', 'set_step3')
+
+    # 3. 关闭栏杆（抬杆放行时再开闸并播 step4）
     execute_device_action('gate_001', 'close')
 
     # 4. 启动距离调度器
@@ -428,14 +490,17 @@ def btn_press():
 
     POST /api/booking/btn-press
 
-    行为：把当前时间压入 _booking_state.btn_prebook_stack。
-    注意：不要求登录（PLC 触发），但要求来源为 mock_back/同机
-    （main.py 会通过 /api/internal/emit 调用，或者直接调此 endpoint）。
-
-    返回：当前栈长度 + 栈内容。
+    行为：入栈 + 预约相机播报「申请已接收…」+ WS book_button。
     """
-    btn_time = _book_button_stack_push()
+    try:
+        from app.services.lane_announce import get_lane_announce
+
+        get_lane_announce().on_booking_button()
+    except Exception as e:
+        print(f'[BOOKING] btn-press 播报失败，仅入栈: {e}')
+        _book_button_stack_push()
     stack = _booking_state['btn_prebook_stack']
+    btn_time = stack[-1] if stack else ''
     print(f'[BOOKING] btn-press 入栈: {btn_time}, 栈长度={len(stack)}')
     return ok({
         'btnPressTime': btn_time,
@@ -460,12 +525,22 @@ def reject_booking():
 
     from app.services.device_action import execute_device_action
 
-    # 恢复状态
+    # 恢复状态（先清播报放行标记，避免随后开闸误播 step4）
     _booking_state.update({
         'is_detection': False,
         'btn_prebook_state': False,
         'check_step': 0,
+        'booking_dialog_shown': False,
     })
+    try:
+        from app.services.booking_camera_tts import release_voice_channel, stop_speak
+        from app.services.lane_announce import get_lane_announce
+
+        stop_speak()
+        get_lane_announce().on_reset_to_idle()
+        release_voice_channel()
+    except Exception as e:
+        print(f'[BOOKING] 复位播报状态失败: {e}')
 
     # 1. PLC 黄灯
     execute_device_action('plc_001', 'setPLC', {
@@ -640,7 +715,17 @@ def reset_booking():
     except Exception as e:
         print(f'[BOOKING] 渐进拉图停止失败: {e}')
 
-    # 3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
+    # 3. 设备复位（先停语音+清播报，再开闸，避免误播/抢通道）
+    try:
+        from app.services.booking_camera_tts import release_voice_channel, stop_speak
+        from app.services.lane_announce import get_lane_announce
+
+        stop_speak()
+        get_lane_announce().on_reset_to_idle()
+        release_voice_channel()
+    except Exception as e:
+        print(f'[BOOKING] 复位播报状态失败: {e}')
+
     execute_device_action('plc_001', 'setPLC', {
         'redlight': False, 'yellowlight': True, 'greenlight': False
     })

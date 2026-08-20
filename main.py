@@ -176,7 +176,7 @@ if __name__ == '__main__':
     print(f'  booking    GET|POST /api/booking/...')
     print(f'  dict       GET /api/dict/products|truck-types|...')
     print(f'  inspection POST /api/inspection/submit, GET /api/inspection/...')
-    print(f'  device     GET /api/device/status|health, POST /api/device/...')
+    print(f'  device     GET /api/device/status|health|voice/*, POST /api/device/...')
     print(f'  imaging    GET|POST /api/imaging/...')
     print(f'  history    GET /api/history/list|export|logs')
     print(f'  mobile     GET /api/mobile/health, POST /api/mobile/upload/{{image,json}}')
@@ -215,6 +215,12 @@ if __name__ == '__main__':
         对齐硬件 CMD_*/STATUS_* 位图（见 radar.parse_plc_status）
         """
         push_plc_status(parsed=parsed)
+        try:
+            from app.services.lane_announce import get_lane_announce
+
+            get_lane_announce().on_plc_status(parsed)
+        except Exception as e:
+            print(f'[ANNOUNCE] PLC 处理失败: {e}')
 
     for radar in mgr.get_devices_by_type('udpradar'):
         radar.set_plc_status_callback(_on_plc_status)
@@ -229,16 +235,22 @@ if __name__ == '__main__':
     scheduler.load_configuration_from_file(config_path)
     print(f'[调度器] 配置加载完成: {config_path}')
 
-    # 注册雷达距离回调 → 调度器（组播 $VMRMC；仅受理后 scheduler.start() 才处理）
+    # 注册雷达距离回调 → 空闲播报 + 受理后调度器
     for radar in mgr.get_devices_by_type('udpradar'):
         def _make_distance_cb(sched=scheduler):
             def _on_distance(distance: float, mode: int):
+                try:
+                    from app.services.lane_announce import get_lane_announce
+
+                    get_lane_announce().on_radar(distance, mode)
+                except Exception as e:
+                    print(f'[ANNOUNCE] 雷达处理失败: {e}')
                 if not sched.is_running:
                     return
                 sched.on_radar_data(distance, mode)
             return _on_distance
         radar.set_distance_callback(_make_distance_cb())
-        print(f'[设备]   {radar.device_id}: 距离调度器已注入 ($VMRMC，受理后生效)')
+        print(f'[设备]   {radar.device_id}: 距离回调已注入（空闲播报 + 受理后调度）')
 
     # 4. 启动 20 秒定时健康检查 + 自动重连
     mgr.start_health_check()
@@ -256,6 +268,8 @@ if __name__ == '__main__':
     # - HTTPS 8082：Android 移动 app 上传（自签证书）
     # 共享同一个 Flask app + SocketIO
 
+    import os
+    import ssl as _ssl
     from gevent import pywsgi
     import gevent
 
@@ -278,6 +292,17 @@ if __name__ == '__main__':
     # HTTPS 端口（避开 mock_back 的 8081）：默认 8082
     https_port = int(os.environ.get('HTTPS_PORT', '8082'))
 
+    class QuietHttpsServer(pywsgi.WSGIServer):
+        """握手阶段 SSL 失败不刷 Traceback（自签被拒 / 明文探测 / 扫描器）。"""
+
+        def wrap_socket_and_handle(self, client_socket, address):
+            try:
+                return super().wrap_socket_and_handle(client_socket, address)
+            except _ssl.SSLError:
+                return
+            except OSError:
+                return
+
     # gevent.pywsgi 默认 log=sys.stderr（不走 logging），要让 filter 生效必须显式传 logger
     gevent_logger = logging.getLogger('gevent.pywsgi')
     http_server = pywsgi.WSGIServer(
@@ -286,7 +311,7 @@ if __name__ == '__main__':
     )
     https_server = None
     if cert_path and key_path:
-        https_server = pywsgi.WSGIServer(
+        https_server = QuietHttpsServer(
             (HOST, https_port), wsgi_app,
             certfile=cert_path,
             keyfile=key_path,

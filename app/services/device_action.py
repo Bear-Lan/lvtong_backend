@@ -65,9 +65,21 @@ def execute_device_action(device_id: str, action: str, params: dict[str, Any] | 
 
     if _is_mock_enabled():
         print(f'[DEVICE-ACTION] → mock agent ({MOCK_DEVICE_AGENT_URL})', flush=True)
-        return _execute_via_mock_agent(device_id, action, params)
-    print('[DEVICE-ACTION] → 真实硬件', flush=True)
-    return _execute_via_hardware(device_id, action, params)
+        ok = _execute_via_mock_agent(device_id, action, params)
+    else:
+        print('[DEVICE-ACTION] → 真实硬件', flush=True)
+        ok = _execute_via_hardware(device_id, action, params)
+
+    # 受理后抬杆放行 → 播报 step4（驳回/复位会先清 release_pending）
+    if ok and device_id == 'gate_001' and action == 'open':
+        try:
+            from app.services.lane_announce import get_lane_announce
+
+            get_lane_announce().on_gate_open()
+        except Exception as e:
+            logger.warning(f'[ANNOUNCE] 抬杆播报失败: {e}')
+
+    return ok
 
 
 def _execute_capture(params: dict) -> bool:
