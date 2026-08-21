@@ -49,6 +49,9 @@ class DistanceScheduler:
 
         # 设备激活状态跟踪
         self._device_activation_status: dict[str, bool] = {}
+        # 对齐 Qt：受理后 check_step=1，车道正常累计 >4 次再抬杆
+        self._release_clear_count = 0
+        self._gate_released = False
 
     # ---- 控制 ----
 
@@ -56,6 +59,8 @@ class DistanceScheduler:
         """启动调度；新一轮检测前清掉阈值已执行标记。"""
         self._reset_threshold_status()
         self._radar_push_count = 0
+        self._release_clear_count = 0
+        self._gate_released = False
         self._is_running = True
 
     def stop(self):
@@ -70,6 +75,9 @@ class DistanceScheduler:
 
     def set_detection_state(self, is_detection: bool):
         self._is_detection = is_detection
+        if is_detection:
+            self._release_clear_count = 0
+            self._gate_released = False
 
     @property
     def is_running(self) -> bool:
@@ -81,15 +89,24 @@ class DistanceScheduler:
 
     # ---- 雷达数据处理 ----
 
-    def on_radar_data(self, distance: float, mode: int = 1):
+    def on_radar_data(
+        self,
+        distance: float,
+        mode: int = 1,
+        object_count: int | None = None,
+        *,
+        intrusion: bool | None = None,
+    ):
         """接收雷达距离数据。
 
         仅在受理预约后 scheduler.start() 时处理；未受理则忽略，不做阈值动作。
+        intrusion：可选；未传时按物体个数==1 判正常。
         """
         if not self._is_running:
             return
 
         self._current_distance = distance
+        count = int(object_count) if object_count is not None else (1 if int(mode) > 0 else 0)
 
         # 推送 WebSocket（仅受理后）— 驱动前端底部小车
         push_radar_distance(distance, mode)
@@ -98,12 +115,94 @@ class DistanceScheduler:
         self._radar_push_count = n
         if n == 1 or n % 20 == 0:
             print(
-                f'[SCHEDULER] radar_distance → WS #{n} distance={distance:.2f} mode={mode}',
+                f'[SCHEDULER] radar_distance → WS #{n} distance={distance:.2f} '
+                f'mode={mode} objects={count} intrusion={intrusion}',
                 flush=True,
             )
 
+        # 对齐 Qt onRadarMonitor check_step==1：车道正常累计后抬杆
+        # VMRMC：物体个数==1 为正常；否则占用/无车，不累计
+        if intrusion is None:
+            intrusion = count != 1
+        self._try_release_after_accept(count, intrusion=intrusion)
+
         # 距离阈值 → 设备动作（仅受理后）
         self._process_distance_update(distance)
+
+    def _try_release_after_accept(
+        self, object_count: int, *, intrusion: bool | None = None,
+    ) -> None:
+        """受理后未放行：车道正常累计 >4 次 → 绿灯 + 开闸（Qt m_radarCount > 4）。
+
+        现场约定：$VMRMC 物体个数 == 1 → 正常；其它 → 占用/异常。
+        """
+        if self._gate_released or not self._is_detection:
+            return
+        try:
+            from app.api.booking import get_booking_state, set_booking_state, _now_iso
+
+            st = get_booking_state()
+            if int(st.get('check_step') or 0) != 1:
+                return
+
+            occupied = bool(intrusion) if intrusion is not None else (object_count != 1)
+            if occupied:
+                if self._release_clear_count:
+                    print(
+                        f'[SCHEDULER] 放行等待中断：objects={object_count}，清零累计',
+                        flush=True,
+                    )
+                self._release_clear_count = 0
+                set_booking_state(radar_count=0)
+                try:
+                    push_lane_occupied(True)
+                except Exception:
+                    pass
+                return
+
+            self._release_clear_count += 1
+            set_booking_state(radar_count=self._release_clear_count)
+            if self._release_clear_count <= 4:
+                if self._release_clear_count == 1 or self._release_clear_count == 4:
+                    print(
+                        f'[SCHEDULER] 放行确认中 {self._release_clear_count}/5 '
+                        f'(objects={object_count} 正常)',
+                        flush=True,
+                    )
+                return
+
+            self._gate_released = True
+            set_booking_state(
+                check_step=2,
+                radar_count=0,
+                opengate_time=_now_iso(),
+            )
+            print('[SCHEDULER] 车道正常累计达标 → 绿灯抬杆放行', flush=True)
+
+            def _do_release() -> None:
+                from app.services.device_action import execute_device_action
+
+                try:
+                    execute_device_action('plc_001', 'setPLC', {
+                        'redlight': False, 'yellowlight': False, 'greenlight': True,
+                    })
+                except Exception as e:
+                    print(f'[SCHEDULER] 放行绿灯失败: {e}', flush=True)
+                try:
+                    execute_device_action('gate_001', 'open')
+                except Exception as e:
+                    print(f'[SCHEDULER] 放行开闸失败: {e}', flush=True)
+                try:
+                    push_detection_step(2, '放行中')
+                    push_lane_occupied(False)
+                except Exception:
+                    pass
+
+            threading.Thread(
+                target=_do_release, daemon=True, name='gate-release',
+            ).start()
+        except Exception as e:
+            print(f'[SCHEDULER] 放行判定异常: {e}', flush=True)
 
     def _process_distance_update(self, distance: float):
         """处理距离更新

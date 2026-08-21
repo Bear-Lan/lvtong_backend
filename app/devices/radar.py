@@ -378,7 +378,7 @@ class RadarReader(DeviceBase):
             # 物体个数>0 即有车 → mode=1（兼容旧 JSON mode）
             self._mode = 1 if self._object_count > 0 else 0
             if self._distance_callback:
-                self._distance_callback(self._distance, self._mode)
+                self._distance_callback(self._distance, self._mode, self._object_count)
             return
 
         if text.startswith('$NTRMC,PLC,'):
@@ -422,8 +422,30 @@ class RadarReader(DeviceBase):
                 payload = json.loads(text)
                 self._distance = float(payload.get('distance', 0))
                 self._mode = int(payload.get('mode', 1))
+                intrusion = None
+                if 'monitorFlag' in payload:
+                    mf = int(payload.get('monitorFlag', 0))
+                    intrusion = mf >= 1
+                    self._object_count = 2 if intrusion else (1 if self._mode > 0 else 0)
+                elif 'object_count' in payload or 'objectCount' in payload:
+                    self._object_count = int(
+                        payload.get('object_count', payload.get('objectCount', 0))
+                    )
+                else:
+                    self._object_count = 1 if self._mode > 0 else 0
                 if self._distance_callback:
-                    self._distance_callback(self._distance, self._mode)
+                    # 兼容 (d, mode) / (d, mode, count) / 关键字 intrusion
+                    try:
+                        self._distance_callback(
+                            self._distance,
+                            self._mode,
+                            self._object_count,
+                            intrusion=intrusion,
+                        )
+                    except TypeError:
+                        self._distance_callback(
+                            self._distance, self._mode, self._object_count,
+                        )
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
             return

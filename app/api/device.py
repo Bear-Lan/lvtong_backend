@@ -316,12 +316,13 @@ def _ai_health_url(detect_url: str) -> str:
 
 
 def _probe_url(url: str) -> bool:
-    """探活外部服务 URL（直接用配置值，不依赖 Flask app.config）"""
+    """探活外部服务 URL（不走系统代理，避免 Clash 等把内网/专线打到 127.0.0.1）"""
     import requests as req
     if not url:
         return False
     try:
-        resp = req.get(url, timeout=3)
+        # trust_env=False：忽略 HTTP(S)_PROXY，否则探活常被代理劫持失败
+        resp = req.get(url, timeout=3, proxies={'http': None, 'https': None})
         return resp.status_code < 500
     except Exception:
         return False

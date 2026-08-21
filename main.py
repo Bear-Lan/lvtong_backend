@@ -245,7 +245,13 @@ if __name__ == '__main__':
     # 注册雷达距离回调 → 空闲播报 + 受理后调度器
     for radar in mgr.get_devices_by_type('udpradar'):
         def _make_distance_cb(sched=scheduler):
-            def _on_distance(distance: float, mode: int):
+            def _on_distance(
+                distance: float,
+                mode: int,
+                object_count: int = 0,
+                *,
+                intrusion: bool | None = None,
+            ):
                 try:
                     from app.services.lane_announce import get_lane_announce
 
@@ -254,7 +260,9 @@ if __name__ == '__main__':
                     print(f'[ANNOUNCE] 雷达处理失败: {e}')
                 if not sched.is_running:
                     return
-                sched.on_radar_data(distance, mode)
+                sched.on_radar_data(
+                    distance, mode, object_count, intrusion=intrusion,
+                )
             return _on_distance
         radar.set_distance_callback(_make_distance_cb())
         print(f'[设备]   {radar.device_id}: 距离回调已注入（空闲播报 + 受理后调度）')
