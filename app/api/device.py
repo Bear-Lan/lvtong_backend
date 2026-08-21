@@ -183,9 +183,10 @@ def device_control(device_id):
     """设备控制
 
     POST /api/device/<device_id>/control
-    Body: { action: "setPLC"|"open"|"close"|"set_step1", params: {...} }
+    Body: { action: "setPLC"|"open"|"close"|"toggle"|"set_step1", params: {...} }
 
     对齐 Qt DeviceManager::executeDeviceAction()
+    闸机 gate_001：open/close/toggle → HTTP 栏杆 boombarrier
     """
     body = request.get_json(silent=True) or {}
     action = body.get('action', '')
@@ -201,9 +202,31 @@ def device_control(device_id):
 
     success = ctrl.execute_action(action, params)
     if success:
-        return ok(message=f'设备 {device_id} 执行 {action} 成功')
+        data = None
+        if device_id == 'gate_001' or getattr(ctrl, 'device_type', '') == 'gate':
+            data = {'gateOpen': bool(getattr(ctrl, 'is_opened', False))}
+        return ok(data, message=f'设备 {device_id} 执行 {action} 成功')
     else:
         return fail(500, f'执行失败: {ctrl.last_error}')
+
+
+@device_api.route('/gate-status', methods=['GET'])
+@login_required
+def gate_status():
+    """主闸栏杆状态 — 供主页闸机图标同步"""
+    mgr = DeviceManager()
+    ctrl = mgr.get_device('gate_001')
+    if not ctrl:
+        return ok({
+            'connected': False,
+            'gateOpen': False,
+            'lastError': '闸机设备未配置',
+        })
+    return ok({
+        'connected': ctrl.is_online,
+        'gateOpen': bool(getattr(ctrl, 'is_opened', False)),
+        'lastError': ctrl.last_error or '',
+    })
 
 
 # ---- 重连 ----

@@ -61,7 +61,14 @@ class GateController(DeviceBase):
         self._control_url = self._resolve_control_url()
         return self.initialize()
 
+    @property
+    def is_opened(self) -> bool:
+        return bool(self._is_open_state)
+
     def execute_action(self, action: str, params: dict | None = None) -> bool:
+        if action == 'toggle':
+            # 对齐 Qt GateUIController::onIconClicked：开↔关切换
+            return self.execute_action('close' if self._is_open_state else 'open', params)
         if action == 'open':
             ok = self._set_boom(True)
             if ok:

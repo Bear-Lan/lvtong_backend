@@ -250,7 +250,7 @@ class DeviceManager:
             device_id = d['device_id']
             ctrl = self._devices.get(device_id)
             if ctrl:
-                result.append({
+                item = {
                     'deviceId': device_id,
                     'deviceName': ctrl.device_name,
                     'deviceType': ctrl.device_type,
@@ -258,7 +258,10 @@ class DeviceManager:
                     'statusCode': int(ctrl.status),
                     'connected': ctrl.is_online,
                     'lastError': ctrl.last_error,
-                })
+                }
+                if device_id == 'gate_001' or ctrl.device_type == 'gate':
+                    item['gateOpen'] = bool(getattr(ctrl, 'is_opened', False))
+                result.append(item)
             else:
                 dt = d['device_type']
                 result.append({
