@@ -213,6 +213,18 @@ if __name__ == '__main__':
     def _on_plc_status(parsed: dict):
         """$NTRMC,PLC / DEV / DEVICE / DEVICE_STATUS → WS plc_status"""
         push_plc_status(parsed=parsed)
+        # 用组播栏杆位同步 GateController，保证 toggle / 图标初始态一致
+        try:
+            if 'stickDownStatus' in parsed:
+                gate = mgr.get_device('gate_001')
+                if gate is not None:
+                    # cmd bit6：1=抬起，0=落下
+                    if hasattr(gate, 'sync_open_state'):
+                        gate.sync_open_state(bool(parsed.get('stickDownStatus')))
+                    else:
+                        gate._is_open_state = bool(parsed.get('stickDownStatus'))
+        except Exception as e:
+            print(f'[Gate] 同步组播状态失败: {e}')
         try:
             from app.services.lane_announce import get_lane_announce
 

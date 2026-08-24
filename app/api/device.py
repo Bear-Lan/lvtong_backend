@@ -186,7 +186,7 @@ def device_control(device_id):
     Body: { action: "setPLC"|"open"|"close"|"toggle"|"set_step1", params: {...} }
 
     对齐 Qt DeviceManager::executeDeviceAction()
-    闸机 gate_001：open/close/toggle → HTTP 栏杆 boombarrier
+    闸机 gate_001：open/close/toggle → 组播 $MDRMC,1,boombarrier=…
     """
     body = request.get_json(silent=True) or {}
     action = body.get('action', '')
@@ -204,7 +204,31 @@ def device_control(device_id):
     if success:
         data = None
         if device_id == 'gate_001' or getattr(ctrl, 'device_type', '') == 'gate':
-            data = {'gateOpen': bool(getattr(ctrl, 'is_opened', False))}
+            boom = getattr(ctrl, 'last_boom_result', {}) or {}
+            # 有组播确认则用反馈；否则用本机记忆
+            if boom.get('confirmed') and isinstance(boom.get('stickdown'), bool):
+                gate_open = bool(boom['stickdown'])
+            else:
+                gate_open = bool(getattr(ctrl, 'is_opened', False))
+            data = {
+                'gateOpen': gate_open,
+                'sent': boom.get('sent', True),
+                'confirmed': bool(boom.get('confirmed')),
+                'stickdown': boom.get('stickdown'),
+                'packet': boom.get('packet'),
+                'cmdRaw': boom.get('cmdRaw'),
+                'note': boom.get('note') or '',
+            }
+            if boom.get('confirmed'):
+                msg = f'栏杆组播已发送且 DEVICE 已确认（{"抬起" if gate_open else "落下"}）'
+            elif boom.get('sent'):
+                msg = (
+                    '栏杆组播已发送，但 2.5s 内未看到 DEVICE bit6 变化'
+                    '（组播无返回值；请查中间件是否收包）'
+                )
+            else:
+                msg = f'设备 {device_id} 执行 {action} 成功'
+            return ok(data, message=msg)
         return ok(data, message=f'设备 {device_id} 执行 {action} 成功')
     else:
         return fail(500, f'执行失败: {ctrl.last_error}')
@@ -213,19 +237,41 @@ def device_control(device_id):
 @device_api.route('/gate-status', methods=['GET'])
 @login_required
 def gate_status():
-    """主闸栏杆状态 — 供主页闸机图标同步"""
+    """主闸栏杆状态 — 供主页闸机图标同步
+
+    gateOpen 优先取组播 DEVICE cmd bit6（stickdown / 栏杆位）：
+      stickdown=true(1) → 抬起 → gateOpen=true
+      stickdown=false(0) → 落下 → gateOpen=false
+    尚无组播时回退到本进程最近一次 open/close 记忆值。
+    """
     mgr = DeviceManager()
     ctrl = mgr.get_device('gate_001')
-    if not ctrl:
-        return ok({
-            'connected': False,
-            'gateOpen': False,
-            'lastError': '闸机设备未配置',
-        })
+    connected = bool(ctrl and ctrl.is_online)
+    last_error = (ctrl.last_error if ctrl else '') or ''
+
+    gate_open = None
+    stickdown = None
+    try:
+        from app.websocket.handler import get_last_plc_status
+
+        plc = get_last_plc_status()
+        if plc is not None and 'stickdown' in plc:
+            stickdown = bool(plc.get('stickdown'))
+            gate_open = stickdown
+            # 有组播反馈则认为栏杆链路可用（中间件在推 DEVICE）
+            if not connected and plc.get('raw') is not None:
+                connected = True
+    except Exception:
+        pass
+
+    if gate_open is None:
+        gate_open = bool(getattr(ctrl, 'is_opened', False)) if ctrl else False
+
     return ok({
-        'connected': ctrl.is_online,
-        'gateOpen': bool(getattr(ctrl, 'is_opened', False)),
-        'lastError': ctrl.last_error or '',
+        'connected': connected,
+        'gateOpen': bool(gate_open),
+        'stickdown': stickdown,
+        'lastError': last_error,
     })
 
 

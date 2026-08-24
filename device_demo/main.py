@@ -1,34 +1,31 @@
-import time
-from msgtransceiver import IMsgCallback, MsgTransceiver
+"""栏杆组播联调 demo（与中间件 MsgTransceiver.pubMsg 一致）。
 
-# 组播源在 192.168.0.188，Windows 用 WLAN 入组才能收到
-# 若改在 Ubuntu 上听，可改为 192.168.88.201 或 192.168.0.188
-IFACE_IP = "192.168.0.138"
+用法:
+  cd device_demo
+  python main.py              # 默认抬杆一次后退出
+  python main.py --down       # 落杆
+  python main.py --iface 192.168.0.138
+"""
+from __future__ import annotations
 
+import argparse
 
-class MyCallback(IMsgCallback):
-    def onMsgHandle(self, strMsg):
-        print(f"收到消息: {strMsg}", flush=True)
+from msgtransceiver import MsgTransceiver
+
+IFACE_DEFAULT = "192.168.0.138"
 
 
 if __name__ == "__main__":
-    cb = MyCallback()
-    # log_all=True：不过滤也打印，方便确认链路上有没有包
-    transceiver = MsgTransceiver(
-        pMsgCallback=cb,
-        iface_ip=IFACE_IP,
-        log_all=True,
-    )
-    transceiver.addMsgFilter("$VMRMC")  # 车辆运动
-    transceiver.addMsgFilter("$NTRMC")  # PLC / X光 / 探测器
-    print(f"监听组播 224.0.0.100:9000，入组网卡 {IFACE_IP}", flush=True)
-    print("过滤前缀: $VMRMC / $NTRMC （log_all 开启，其它包也会 [RAW] 打印）", flush=True)
-    print("等待数据包中…（无输出=链路上还没收到组播，不是程序卡死）", flush=True)
-    try:
-        waited = 0
-        while True:
-            time.sleep(5)
-            waited += 5
-            print(f"...仍在听，已等待 {waited}s", flush=True)
-    except KeyboardInterrupt:
-        print("exit")
+    parser = argparse.ArgumentParser(description="发一次 $MDRMC 栏杆命令")
+    parser.add_argument("--iface", default=IFACE_DEFAULT, help="组播出口网卡 IP")
+    g = parser.add_mutually_exclusive_group()
+    g.add_argument("--up", action="store_true", help="抬杆（默认）")
+    g.add_argument("--down", action="store_true", help="落杆")
+    args = parser.parse_args()
+
+    raised = not args.down
+    msg = f"$MDRMC,1,boombarrier={'true' if raised else 'false'}"
+
+    trx = MsgTransceiver(iface_ip=args.iface)
+    trx.pubMsg(msg)
+    print("已发送，退出", flush=True)

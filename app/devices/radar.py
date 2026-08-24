@@ -7,6 +7,7 @@
   - $NTRMC,DEVICE_STATUS,<hex>             — 状态心跳（同 DEV 位表）
   - $NTRMC,PLC,<hex>                       — 旧版 PLC（高16 CMD / 低16 STATUS）
   - $NTRMC,XRAY160/XRAY200,<电流>,<电压>,<温度>
+  - $NTRMC,XRSUP/XRSDOWN,<电流>,<电压>,<温度>  — 现场新代号（上/下光机，等同 200/160）
   - $NTRMC,DM200,<个数>,<温度…>
 
 兼容旧版单播 JSON:
@@ -259,6 +260,8 @@ class RadarReader(DeviceBase):
                     'createLightCmd', 'urgentStopCmd', 'soundalarmCmd',
                     'interlock160Cmd', 'interlock200Cmd',
                     'xrayGate200Cmd', 'xrayGate160Cmd',
+                    # 现场栏杆变化在 cmd bit6（如 6040↔6000）；status 常为 0xFFFF 不可靠
+                    'stickDownStatus',
                 ):
                     parsed[k] = cmd_parsed[k]
             return parsed
@@ -314,20 +317,27 @@ class RadarReader(DeviceBase):
 
     @staticmethod
     def parse_xray_status(text: str) -> dict | None:
-        """解析 $NTRMC,XRAY160|XRAY200,<电流>,<电压>,<温度>"""
+        """解析 X 光遥测。
+
+        兼容：
+          $NTRMC,XRAY160|XRAY200,<电流>,<电压>,<温度>
+          $NTRMC,XRSUP|XRSDOWN,<电流>,<电压>,<温度>   # 现场中间件新代号
+        映射：XRSUP→200（上光机），XRSDOWN→160（下光机）
+        """
         try:
             parts = [p.strip() for p in text.strip().split(',')]
             if len(parts) < 5:
                 return None
             kind = parts[1].upper()
-            if kind == 'XRAY160':
+            if kind in ('XRAY160', 'XRSDOWN'):
                 xray_type = '160'
-            elif kind == 'XRAY200':
+            elif kind in ('XRAY200', 'XRSUP'):
                 xray_type = '200'
             else:
                 return None
             return {
                 'type': xray_type,
+                'kind': kind,
                 'current': float(parts[2]),
                 'voltage': float(parts[3]),
                 'temperature': float(parts[4]),
@@ -400,7 +410,12 @@ class RadarReader(DeviceBase):
                 self._emit_plc(parsed)
             return
 
-        if upper.startswith('$NTRMC,XRAY160,') or upper.startswith('$NTRMC,XRAY200,'):
+        if (
+            upper.startswith('$NTRMC,XRAY160,')
+            or upper.startswith('$NTRMC,XRAY200,')
+            or upper.startswith('$NTRMC,XRSUP,')
+            or upper.startswith('$NTRMC,XRSDOWN,')
+        ):
             parsed = self.parse_xray_status(text)
             if parsed and self._xray_callback:
                 self._xray_callback(

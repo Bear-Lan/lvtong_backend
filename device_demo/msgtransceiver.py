@@ -1,3 +1,6 @@
+"""UDP 组播收发（中间件联调用）。默认 224.0.0.100:9000。"""
+from __future__ import annotations
+
 import socket
 import struct
 import threading
@@ -16,19 +19,16 @@ class MsgTransceiver(threading.Thread):
         mcast_port=9000,
         pMsgCallback=None,
         iface_ip="0.0.0.0",
-        log_all=False,
     ):
         super().__init__(daemon=True)
         self.mcast_group = mcast_group
         self.mcast_port = mcast_port
         self.iface_ip = iface_ip
-        self.log_all = log_all
         self.m_pMsgCallback: IMsgCallback | None = pMsgCallback
-        self.m_MsgFilterList = []
+        self.m_MsgFilterList: list[str] = []
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # Windows 多网卡时指定入组网卡，避免加到 Wi-Fi 上收不到现场组播
         try:
             self.sock.setsockopt(
                 socket.IPPROTO_IP,
@@ -38,7 +38,6 @@ class MsgTransceiver(threading.Thread):
         except OSError:
             pass
         self.sock.bind(("", mcast_port))
-
         mreq = struct.pack(
             "4s4s",
             socket.inet_aton(mcast_group),
@@ -48,16 +47,16 @@ class MsgTransceiver(threading.Thread):
         self.sock.settimeout(0.005)
         self.start()
 
-    def addMsgFilter(self, strMsgFilter) -> None:
+    def addMsgFilter(self, strMsgFilter: str) -> None:
         self.m_MsgFilterList.append(strMsgFilter)
 
     def pubMsg(self, strMsg: str) -> bool:
         try:
             self.sock.sendto(strMsg.encode("utf-8"), (self.mcast_group, self.mcast_port))
-            print(f"{strMsg}")
+            print(strMsg, flush=True)
             return True
         except Exception as e:
-            print(f"pub msg error: {e}")
+            print(f"pub msg error: {e}", flush=True)
             return False
 
     def parse(self, strMsg: str) -> None:
@@ -66,15 +65,17 @@ class MsgTransceiver(threading.Thread):
         ):
             self.m_pMsgCallback.onMsgHandle(strMsg)
 
-    def run(self):
+    def run(self) -> None:
         while True:
             try:
-                buf, addr = self.sock.recvfrom(1024)
-                raw = buf.decode("utf-8", errors="replace").strip()
-                if self.log_all:
-                    print(f"[RAW {addr[0]}:{addr[1]}] {raw}")
-                self.parse(raw)
+                buf, _ = self.sock.recvfrom(1024)
+                self.parse(buf.decode("utf-8", errors="replace"))
             except socket.timeout:
                 time.sleep(0.001)
+            except OSError as e:
+                if getattr(e, "winerror", None) == 10038 or e.errno in (9, 10038):
+                    break
+                time.sleep(0.05)
             except Exception as e:
-                print("MsgTransceiver error. " + str(e))
+                print("MsgTransceiver error. " + str(e), flush=True)
+                time.sleep(0.05)
