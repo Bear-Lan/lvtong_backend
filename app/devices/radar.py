@@ -251,19 +251,30 @@ class RadarReader(DeviceBase):
             status_bits = hexes[-1]
             parsed = cls.parse_dev_bits(status_bits)
             parsed['ntrmcKind'] = kind
-            # 两段时：前段 cmd、后段 status；cmd=0 也要覆盖，避免把 status 误当成灯控
+            # 两段时：前段 cmd、后段 status
             if len(hexes) >= 2:
-                parsed['cmdRaw'] = hexes[0]
-                cmd_parsed = cls.parse_dev_bits(hexes[0])
-                for k in (
-                    'redLightCmd', 'yellowLightCmd', 'greenLightCmd',
-                    'createLightCmd', 'urgentStopCmd', 'soundalarmCmd',
-                    'interlock160Cmd', 'interlock200Cmd',
-                    'xrayGate200Cmd', 'xrayGate160Cmd',
-                    # 现场栏杆变化在 cmd bit6（如 6040↔6000）；status 常为 0xFFFF 不可靠
-                    'stickDownStatus',
-                ):
-                    parsed[k] = cmd_parsed[k]
+                cmd_val = hexes[0]
+                parsed['cmdRaw'] = cmd_val
+                cmd_parsed = cls.parse_dev_bits(cmd_val)
+                # 现场中间件常把 status 打成 0xFFFF（无效），若仍按 status 解：
+                # bit4/bit5 全 1 → 误触发急停弹窗、预约播报「申请已接收…」
+                if (status_bits & 0xFFFF) == 0xFFFF:
+                    parsed = cls.parse_dev_bits(cmd_val)
+                    parsed['ntrmcKind'] = kind
+                    parsed['cmdRaw'] = cmd_val
+                    parsed['raw'] = status_bits
+                    parsed['statusUnreliable'] = True
+                else:
+                    for k in (
+                        'redLightCmd', 'yellowLightCmd', 'greenLightCmd',
+                        'createLightCmd', 'urgentStopCmd', 'urgentStopStatus',
+                        'bookingStatus', 'soundalarmCmd',
+                        'interlock160Cmd', 'interlock200Cmd',
+                        'xrayGate200Cmd', 'xrayGate160Cmd',
+                        # 栏杆在 cmd bit6（如 6040↔6000）
+                        'stickDownStatus',
+                    ):
+                        parsed[k] = cmd_parsed[k]
             return parsed
         except (ValueError, IndexError):
             return None

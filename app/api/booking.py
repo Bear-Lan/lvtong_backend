@@ -104,7 +104,7 @@ def open_booking_session():
     2. PLC 红灯 + 关光闸（防人闯入）— 对齐 Qt onBookingDebounceTimeout
     3. 关闸
     4. LED step2
-    5. 独占播报 step2，释放 TwoWayAudio 后再返回（前端才可开对讲）
+    5. 同一条 TwoWayAudio 接播 step2，播完再 close 供前端对讲
     """
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
@@ -152,12 +152,10 @@ def _ensure_step2_announce_once() -> None:
         from app.services.booking_camera_tts import (
             release_voice_channel,
             speak_step,
-            stop_speak,
         )
 
         get_lane_announce().stop_idle_loop()
-        stop_speak()
-        print('[BOOKING] open：开始播报 step2（对讲须关闭，独占通道）', flush=True)
+        print('[BOOKING] open：长连接接播 step2（对讲仍未开）', flush=True)
         speak_step(2, interrupt=True, blocking=True)
         release_voice_channel()
         print('[BOOKING] open：step2 结束且 TwoWayAudio 已释放，前端可开对讲', flush=True)
@@ -512,8 +510,8 @@ def reject_booking():
         from app.services.lane_announce import get_lane_announce
 
         stop_speak()
-        get_lane_announce().on_reset_to_idle()
         release_voice_channel()
+        get_lane_announce().on_reset_to_idle()
     except Exception as e:
         print(f'[BOOKING] 复位播报状态失败: {e}')
 
@@ -696,8 +694,8 @@ def reset_booking():
         from app.services.lane_announce import get_lane_announce
 
         stop_speak()
-        get_lane_announce().on_reset_to_idle()
         release_voice_channel()
+        get_lane_announce().on_reset_to_idle()
     except Exception as e:
         print(f'[BOOKING] 复位播报状态失败: {e}')
 
