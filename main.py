@@ -211,7 +211,7 @@ if __name__ == '__main__':
     from app.websocket.handler import push_dm_temp, push_plc_status, push_xray_status
 
     def _on_plc_status(parsed: dict):
-        """$NTRMC,PLC / DEV / DEVICE / DEVICE_STATUS → WS plc_status"""
+        """$NTRMC,DEVICE → WS plc_status"""
         push_plc_status(parsed=parsed)
         # 用组播栏杆位同步 GateController，保证 toggle / 图标初始态一致
         try:

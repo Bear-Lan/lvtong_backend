@@ -202,7 +202,7 @@ def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False
                     stickdown: bool = False,
                     gatemotor200: bool = False,
                     gatemotor160: bool = False,
-                    # 完整 camelCase（与 parse_plc_status 一致，供前端优先读取）
+                    # 完整 camelCase（与 parse_dev_bits / ST_* 一致，供前端优先读取）
                     parsed: dict | None = None):
     """推送 PLC 状态变化
 

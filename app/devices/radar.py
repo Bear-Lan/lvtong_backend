@@ -2,10 +2,7 @@
 
 现场组播（默认）:
   - $VMRMC,时间,物体个数,前端位置,前端速度  — 车辆距离
-  - $NTRMC,DEV,<hex>                       — 新协议开关状态（bit0 起）
-  - $NTRMC,DEVICE,<hex>[,<hex>]            — 现场中间件（可两段：cmd,status）
-  - $NTRMC,DEVICE_STATUS,<hex>             — 状态心跳（同 DEV 位表）
-  - $NTRMC,PLC,<hex>                       — 旧版 PLC（高16 CMD / 低16 STATUS）
+  - $NTRMC,DEVICE,<cmdHex>,<statusHex>     — 开关状态（ST_* bit0 起；两段 cmd,status）
   - $NTRMC,XRAY160/XRAY200,<电流>,<电压>,<温度>
   - $NTRMC,XRSUP/XRSDOWN,<电流>,<电压>,<温度>  — 现场新代号（上/下光机，等同 200/160）
   - $NTRMC,DM200,<个数>,<温度…>
@@ -197,48 +194,56 @@ class RadarReader(DeviceBase):
 
     @staticmethod
     def parse_dev_bits(value: int) -> dict:
-        """新协议 DEV 位表（bit0 起）→ 与前端 plc_status 兼容的字段。"""
+        """新协议 DEVICE 位表（bit0 起，与中间件 ST_* 一致）→ plc_status。
+
+        ST_RED_LIGHT=0 … ST_SOUND_ALARM=17；不做写死占位。
+        """
         return {
             'protocol': 'dev',
             'raw': int(value) & 0xFFFFFFFF,
+            # 0–3 灯
             'redLightCmd': _bit(value, 0),
             'yellowLightCmd': _bit(value, 1),
             'greenLightCmd': _bit(value, 2),
-            'createLightCmd': _bit(value, 3),
+            'createLightCmd': _bit(value, 3),  # ST_FILL_LIGHT
+            # 4–8
             'urgentStopCmd': _bit(value, 4),
-            'urgentStopStatus': _bit(value, 4),
-            'bookingStatus': _bit(value, 5),
-            'stickDownStatus': _bit(value, 6),
-            'groundSensorStatus': _bit(value, 7),
-            'lightScreenStatus': _bit(value, 8),
+            'urgentStopStatus': _bit(value, 4),  # ST_URGENT_STOP
+            'bookingStatus': _bit(value, 5),  # ST_APPOINTMENT
+            'stickDownStatus': _bit(value, 6),  # ST_BOOM_BARRIER
+            'groundSensorStatus': _bit(value, 7),  # ST_LOOP_DETECTOR
+            'lightScreenStatus': _bit(value, 8),  # ST_LIGHT_CURTAIN
+            # 9–12 光源 / 光闸
             'lightSource200Status': _bit(value, 9),
             'lightSource160Status': _bit(value, 10),
             'lightGate200Status': _bit(value, 11),
             'lightGate160Status': _bit(value, 12),
-            'gateMotor200Status': _bit(value, 13),
-            'gateMotor160Status': _bit(value, 14),
-            'xrayGate200Cmd': _bit(value, 11),
-            'xrayGate160Cmd': _bit(value, 12),
+            'xrayGate200Cmd': _bit(value, 11),  # ST_XRAY_GATE_200
+            'xrayGate160Cmd': _bit(value, 12),  # ST_XRAY_GATE_160
+            # 13–14 伺服（面板「伺服复位」与只读「伺服状态」同源）
+            'gateMotor200Status': _bit(value, 13),  # ST_XRAY_MOTOR_200
+            'gateMotor160Status': _bit(value, 14),  # ST_XRAY_MOTOR_160
+            'xrayMotorRest200Cmd': _bit(value, 13),
+            'xrayMotorRest160Cmd': _bit(value, 14),
+            # 15–17
             'interlock160Cmd': _bit(value, 15),
             'interlock200Cmd': _bit(value, 16),
             'soundalarmCmd': _bit(value, 17),
-            'xrayMotorRest200Cmd': False,
-            'xrayMotorRest160Cmd': False,
         }
 
     @classmethod
     def parse_ntrmc_dev(cls, text: str) -> dict | None:
-        """解析 $NTRMC,DEV|DEVICE|DEVICE_STATUS,<hex>[,<hex>]
+        """解析 $NTRMC,DEVICE,<cmdHex>,<statusHex>
 
-        现场中间件常见：`$NTRMC,DEVICE,00000000,0003f9bf`
-        （前段多为 cmd，后段为 status；UI 默认以最后一段为准）。
+        例：`$NTRMC,DEVICE,00000110,0000ffff`
+        （前段 cmd，后段 status；status 低 16 位为 0xFFFF 时只信 cmd）。
         """
         try:
             parts = [p.strip() for p in text.strip().split(',')]
             if len(parts) < 3:
                 return None
             kind = parts[1].upper()
-            if kind not in ('DEV', 'DEVICE', 'DEVICE_STATUS'):
+            if kind != 'DEVICE':
                 return None
             hexes: list[int] = []
             for raw in parts[2:]:
@@ -271,58 +276,13 @@ class RadarReader(DeviceBase):
                         'bookingStatus', 'soundalarmCmd',
                         'interlock160Cmd', 'interlock200Cmd',
                         'xrayGate200Cmd', 'xrayGate160Cmd',
+                        'xrayMotorRest200Cmd', 'xrayMotorRest160Cmd',
+                        'gateMotor200Status', 'gateMotor160Status',
                         # 栏杆在 cmd bit6（如 6040↔6000）
                         'stickDownStatus',
                     ):
                         parsed[k] = cmd_parsed[k]
             return parsed
-        except (ValueError, IndexError):
-            return None
-
-    @staticmethod
-    def parse_plc_status(text: str) -> dict | None:
-        """解析 $NTRMC,PLC,<hex> 旧协议包
-
-        32 位寄存器：高 16 = CMD_*，低 16 = STATUS_*。
-        与新协议 DEV 位布局不同，不可混用。
-        """
-        try:
-            parts = text.strip().split(',')
-            if len(parts) < 3:
-                return None
-
-            hex_str = parts[2].split('\r')[0].split('\n')[0].strip()
-            status_value = int(hex_str, 16)
-            cmd = status_value >> 16
-            st = status_value & 0xFFFF
-
-            return {
-                'protocol': 'plc',
-                'raw': status_value,
-                'urgentStopCmd': (cmd & 0x0100) != 0,
-                'redLightCmd': (cmd & 0x0200) != 0,
-                'yellowLightCmd': (cmd & 0x0400) != 0,
-                'greenLightCmd': (cmd & 0x0800) != 0,
-                'createLightCmd': (cmd & 0x1000) != 0,
-                'interlock200Cmd': (cmd & 0x2000) != 0,
-                'interlock160Cmd': (cmd & 0x4000) != 0,
-                'soundalarmCmd': (cmd & 0x8000) != 0,
-                'xrayGate200Cmd': (cmd & 0x0001) != 0,
-                'xrayGate160Cmd': (cmd & 0x0002) != 0,
-                'xrayMotorRest200Cmd': (cmd & 0x0004) != 0,
-                'xrayMotorRest160Cmd': (cmd & 0x0008) != 0,
-                'urgentStopStatus': (st & 0x0100) != 0,
-                'bookingStatus': (st & 0x0200) != 0,
-                'stickDownStatus': (st & 0x0400) != 0,
-                'groundSensorStatus': (st & 0x0800) != 0,
-                'lightScreenStatus': (st & 0x1000) != 0,
-                'lightGate200Status': (st & 0x2000) != 0,
-                'lightGate160Status': (st & 0x4000) != 0,
-                'gateMotor200Status': (st & 0x8000) != 0,
-                'gateMotor160Status': (st & 0x0001) != 0,
-                'lightSource200Status': (st & 0x0002) != 0,
-                'lightSource160Status': (st & 0x0004) != 0,
-            }
         except (ValueError, IndexError):
             return None
 
@@ -402,20 +362,8 @@ class RadarReader(DeviceBase):
                 self._distance_callback(self._distance, self._mode, self._object_count)
             return
 
-        if text.startswith('$NTRMC,PLC,'):
-            parsed = self.parse_plc_status(text)
-            if parsed is not None:
-                self._emit_plc(parsed)
-            return
-
         upper = text.upper()
-        if (
-            upper.startswith('$NTRMC,DEV,')
-            or upper.startswith('$NTRMC,DEVICE,')
-            or upper.startswith('$NTRMC,DEVICE_STATUS,')
-        ):
-            # DEVICE 会匹配 DEVICE_STATUS 前缀？DEVICE_STATUS 以 DEVICE_ 开头
-            # 上面三条分别判断；DEVICE, 与 DEVICE_STATUS, 不冲突
+        if upper.startswith('$NTRMC,DEVICE,'):
             parsed = self.parse_ntrmc_dev(text)
             if parsed is not None:
                 self._emit_plc(parsed)
