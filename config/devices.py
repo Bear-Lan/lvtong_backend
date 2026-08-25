@@ -22,7 +22,7 @@ PLACEHOLDER_IMAGE_URL = os.environ.get(
     'PLACEHOLDER_IMAGE_URL',
     image_fetch_url('cam'),
 )
-# True：33~35m 触发后按 type 单帧拉图（GET 成功即结束）
+# True：距离 <33m 触发后按 type 单帧拉图（GET 成功即结束）
 USE_PLACEHOLDER_IMAGES = os.environ.get('USE_PLACEHOLDER_IMAGES', 'true').lower() == 'true'
 
 # ---- 预约雷达图（appt）----

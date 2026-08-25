@@ -40,9 +40,9 @@
     },
     {
       "id": "xray_capture_trigger",
-      "minDistance": 33.0,
-      "maxDistance": 35.0,
-      "description": "X光200kV+160kV采集触发",
+      "minDistance": 0.0,
+      "maxDistance": 32.999,
+      "description": "雷达距离<33m：拉车身/透视 + X光启扫",
       "isActive": true,
       "deviceActions": {
         "xray_200": {"action": "start_scan", "params": {"channel": "200", "car_length": 5.0, "scan_id": ""}},

@@ -1,10 +1,11 @@
 """面板拉图（当前中间层为单帧）
 
-触发：雷达约 33~35m（调度器 xray_capture_trigger）。
+触发：雷达距离 <33m（调度器 xray_capture_trigger）。
 策略：各 type GET 成功拿到图即结束（不再轮询等 Capture_Finish）。
 失败时短暂重试有限次。
 
-  cam / vtop / vside / x160 /（高车）x200 并行
+  串行拉 cam / vtop / vside / x160 /（高车）x200
+  （中间件单机并发弱，并行易整波 Read timeout；浏览器单开正常）
   merge：等高车且 x160、x200 都成功后再 GET 一次
 
 预约雷达 appt 仍走 booking /radar-image，不在本模块。
@@ -13,19 +14,21 @@ from __future__ import annotations
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import requests
+import time
 
 from app.services import temp_image_cache
 from app.services.image_preview import jpeg_preview_bytes
+from app.services.middleware_http import middleware_get
 
 logger = logging.getLogger('progressive_image_fetch')
 
-REQUEST_TIMEOUT_SEC = 15.0
+# (connect, read)；中间件串行后一般很快，读超时缩短避免干等
+REQUEST_TIMEOUT = (2.0, 8.0)
 # 失败重试（成功即停）
 FAIL_RETRY_COUNT = 3
-FAIL_RETRY_INTERVAL_SEC = 0.5
+FAIL_RETRY_INTERVAL_SEC = 0.3
+# 两路之间略歇
+BETWEEN_FETCH_SEC = 0.1
 TALL_CAR_HEIGHT_M = 2.8
 
 
@@ -41,21 +44,22 @@ def _fetch_one(name: str, url: str, stop: threading.Event) -> str | None:
             return None
         try:
             print(f'[PROG-IMG] {name} GET #{attempt} {url}', flush=True)
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT_SEC)
+            t0 = time.monotonic()
+            resp = middleware_get(url, timeout=REQUEST_TIMEOUT)
+            elapsed = time.monotonic() - t0
             if resp.status_code == 200 and resp.content:
                 preview = jpeg_preview_bytes(resp.content)
                 temp_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
                 print(
-                    f'[PROG-IMG] {name} ok bytes={len(preview)} → {temp_url}',
+                    f'[PROG-IMG] {name} ok {elapsed:.2f}s bytes={len(preview)} → {temp_url}',
                     flush=True,
                 )
                 return temp_url
             print(
-                f'[PROG-IMG] {name} #{attempt} HTTP {resp.status_code}',
+                f'[PROG-IMG] {name} #{attempt} HTTP {resp.status_code} ({elapsed:.2f}s)',
                 flush=True,
             )
         except Exception as e:
-            logger.warning('[PROG-IMG] %s #%s 失败: %s', name, attempt, e)
             print(f'[PROG-IMG] {name} #{attempt} 失败: {e}', flush=True)
         if attempt < FAIL_RETRY_COUNT and not stop.wait(FAIL_RETRY_INTERVAL_SEC):
             continue
@@ -151,30 +155,28 @@ class ProgressivePanelFetcher:
                 )
 
         print(
-            f'[PROG-IMG] 单帧拉取 {len(slots)} 路 '
+            f'[PROG-IMG] 串行拉取 {len(slots)} 路 '
             f'height={car_height} xray={xray_enabled} tall={tall}',
             flush=True,
         )
 
         results: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=max(1, len(slots))) as pool:
-            futs = {
-                pool.submit(_fetch_one, name, url, self._stop_flag): name
-                for name, url in slots
-                if (url or '').strip()
-            }
-            for fut in as_completed(futs):
-                if self._stop_flag.is_set():
+        for i, (name, url) in enumerate(slots):
+            if self._stop_flag.is_set():
+                break
+            if not (url or '').strip():
+                continue
+            if i > 0 and BETWEEN_FETCH_SEC > 0:
+                if self._stop_flag.wait(BETWEEN_FETCH_SEC):
                     break
-                name = futs[fut]
-                try:
-                    temp_url = fut.result()
-                except Exception as e:
-                    print(f'[PROG-IMG] {name} 异常: {e}', flush=True)
-                    continue
-                if temp_url:
-                    results[name] = temp_url
-                    self._push_slot(name, temp_url)
+            try:
+                temp_url = _fetch_one(name, url, self._stop_flag)
+            except Exception as e:
+                print(f'[PROG-IMG] {name} 异常: {e}', flush=True)
+                continue
+            if temp_url:
+                results[name] = temp_url
+                self._push_slot(name, temp_url)
 
         # merge：高车且双路透视都成功后再拉一次
         stitch = (STITCH_IMAGE_URL or '').strip()
@@ -187,8 +189,11 @@ class ProgressivePanelFetcher:
             and not self._stop_flag.is_set()
         ):
             print('[PROG-IMG] x160+x200 已成功，拉取 merge', flush=True)
+            if BETWEEN_FETCH_SEC > 0:
+                self._stop_flag.wait(BETWEEN_FETCH_SEC)
             merge_url = _fetch_one('merge', stitch, self._stop_flag)
             if merge_url:
+                results['merge'] = merge_url
                 self._push_slot('merge', merge_url)
         elif xray_enabled and tall and stitch:
             print(
@@ -198,23 +203,57 @@ class ProgressivePanelFetcher:
                 flush=True,
             )
 
+        # 整包再推一次：分片推送时前端若漏接，仍能一次填满六格
+        self._push_batch(results)
         print(f'[PROG-IMG] 本轮结束 got={list(results.keys())}', flush=True)
 
     def _push_slot(self, name: str, temp_url: str) -> None:
         from app.websocket.handler import push_image_ready_group
 
-        if name.startswith('body'):
-            push_image_ready_group('body', {name[-1]: temp_url}, group=1)
-        elif name == 'x200':
-            push_image_ready_group('transparent', {'1': temp_url}, group=1)
-        elif name == 'x160':
-            push_image_ready_group('transparent', {'2': temp_url}, group=1)
-        elif name == 'merge':
-            push_image_ready_group('transparent', {'3': temp_url}, group=1)
+        try:
+            if name.startswith('body'):
+                push_image_ready_group('body', {name[-1]: temp_url}, group=1)
+            elif name == 'x200':
+                push_image_ready_group('transparent', {'1': temp_url}, group=1)
+            elif name == 'x160':
+                push_image_ready_group('transparent', {'2': temp_url}, group=1)
+            elif name == 'merge':
+                push_image_ready_group('transparent', {'3': temp_url}, group=1)
+            else:
+                return
+            print(f'[PROG-IMG] WS image_ready 已推 {name} → {temp_url}', flush=True)
+        except Exception as e:
+            print(f'[PROG-IMG] WS 推送失败 {name}: {e}', flush=True)
+
+    def _push_batch(self, results: dict[str, str]) -> None:
+        from app.websocket.handler import push_image_ready_group
+
+        body = {
+            k: results[src]
+            for k, src in (('1', 'body1'), ('2', 'body2'), ('3', 'body3'))
+            if results.get(src)
+        }
+        transparent = {
+            k: results[src]
+            for k, src in (('1', 'x200'), ('2', 'x160'), ('3', 'merge'))
+            if results.get(src)
+        }
+        try:
+            if body:
+                push_image_ready_group('body', body, group=1)
+                print(f'[PROG-IMG] WS 整包 body keys={list(body.keys())}', flush=True)
+            if transparent:
+                push_image_ready_group('transparent', transparent, group=1)
+                print(
+                    f'[PROG-IMG] WS 整包 transparent keys={list(transparent.keys())}',
+                    flush=True,
+                )
+        except Exception as e:
+            print(f'[PROG-IMG] WS 整包推送失败: {e}', flush=True)
 
 
 def start_progressive_panel_fetch() -> None:
-    """供调度器在 33~35m 调用。"""
+    """供调度器在距离 <33m 时调用。"""
     try:
         from app.api.booking import _booking_state
         car_height = float(_booking_state.get('car_height') or 3.0)

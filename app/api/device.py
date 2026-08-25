@@ -219,13 +219,8 @@ def device_control(device_id):
                 'cmdRaw': boom.get('cmdRaw'),
                 'note': boom.get('note') or '',
             }
-            if boom.get('confirmed'):
-                msg = f'栏杆组播已发送且 DEVICE 已确认（{"抬起" if gate_open else "落下"}）'
-            elif boom.get('sent'):
-                msg = (
-                    '栏杆组播已发送，但 2.5s 内未看到 DEVICE bit6 变化'
-                    '（组播无返回值；请查中间件是否收包）'
-                )
+            if boom.get('sent'):
+                msg = f'栏杆组播已发送（{"抬起" if gate_open else "落下"}，不等待 DEVICE 确认）'
             else:
                 msg = f'设备 {device_id} 执行 {action} 成功'
             return ok(data, message=msg)

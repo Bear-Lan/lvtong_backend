@@ -254,6 +254,46 @@ class DistanceScheduler:
         for device_id, _, _ in actions:
             self._device_activation_status[device_id] = True
 
+        # 雷达距离 <33m：先拉面板图，再启扫（中间件单口，并行会互抢超时）
+        if threshold.id == 'xray_capture_trigger':
+            xray_actions = [
+                (d, a, p) for d, a, p in actions if str(d).startswith('xray_')
+            ]
+            actions = [
+                (d, a, p) for d, a, p in actions if not str(d).startswith('xray_')
+            ]
+
+            def _panel_then_scan() -> None:
+                try:
+                    from app.services.progressive_image_fetch import (
+                        ProgressivePanelFetcher,
+                        start_progressive_panel_fetch,
+                    )
+                    start_progressive_panel_fetch()
+                    worker = ProgressivePanelFetcher()._worker
+                    if worker is not None and worker.is_alive():
+                        worker.join(timeout=120.0)
+                except Exception as e:
+                    print(f'[SCHEDULER] 渐进拉图启动失败: {e}', flush=True)
+                if not xray_actions:
+                    return
+                from app.services.device_action import execute_device_action
+                for device_id, action, params in xray_actions:
+                    try:
+                        execute_device_action(device_id, action, params)
+                    except Exception as e:
+                        print(
+                            f'[SCHEDULER] async action failed '
+                            f'{threshold.id}/{device_id}.{action}: {e}',
+                            flush=True,
+                        )
+
+            threading.Thread(
+                target=_panel_then_scan,
+                daemon=True,
+                name='panel-then-xray',
+            ).start()
+
         if actions:
             threshold_id = threshold.id
 
@@ -295,14 +335,6 @@ class DistanceScheduler:
                 _bs[field] = datetime.now().isoformat(timespec='seconds')
             except Exception:
                 pass
-
-        # 对齐 Qt startXrayDetect：33~35m 开始渐进拉车身/透视
-        if threshold.id == 'xray_capture_trigger':
-            try:
-                from app.services.progressive_image_fetch import start_progressive_panel_fetch
-                start_progressive_panel_fetch()
-            except Exception as e:
-                print(f'[SCHEDULER] 渐进拉图启动失败: {e}', flush=True)
 
         # 推送检测步骤更新
         self._push_step_update(threshold)

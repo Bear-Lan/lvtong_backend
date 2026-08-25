@@ -46,9 +46,11 @@ class XRayController(DeviceBase):
         if scan_id:
             full_url += f'&id={scan_id}'
         try:
-            resp = requests.get(full_url, timeout=10)
+            from app.services.middleware_http import middleware_get
+
+            resp = middleware_get(full_url, timeout=10)
             return resp.status_code == 200
-        except requests.RequestException as e:
+        except Exception as e:
             self._last_error = str(e)
             return False
 

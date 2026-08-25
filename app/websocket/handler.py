@@ -336,15 +336,22 @@ def push_image_ready_group(image_type: str, urls: dict, group: int = 1):
 
     image_type: body | transparent
     """
+    # 键统一成字符串，避免部分客户端把 1 当成数字键读不到
+    norm = {str(k): v for k, v in (urls or {}).items() if v}
+    n = get_socketio_clients_count()
     socketio.emit('message', {
         'type': 'image_ready',
         'timestamp': int(time.time() * 1000),
         'data': {
             'imageType': image_type,
             'group': group,
-            'urls': urls,
+            'urls': norm,
         },
     })
+    print(
+        f'[WS] image_ready type={image_type} keys={list(norm.keys())} clients={n}',
+        flush=True,
+    )
 
 
 def push_lane_occupied(occupied: bool):

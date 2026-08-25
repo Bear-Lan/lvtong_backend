@@ -3,12 +3,11 @@
   $MDRMC,1,boombarrier=true   # 抬杆
   $MDRMC,1,boombarrier=false  # 落杆
 
-状态确认：短等 $NTRMC,DEVICE cmd bit6（1=抬起，0=落下）。
+发送即返回；栏杆实态靠后续 $NTRMC,DEVICE bit6 推前端同步，不在此阻塞等待。
 """
 from __future__ import annotations
 
 import socket
-import time
 
 from app.devices.base import DeviceBase, DeviceStatus
 
@@ -91,16 +90,19 @@ class GateController(DeviceBase):
         cmd = f'boombarrier={"true" if raised else "false"}'
         packet = f'$MDRMC,1,{cmd}'
         ok = send_mdrmc(cmd)
+        plc = get_last_plc_status() or {}
+        stick = plc.get('stickdown') if 'stickdown' in plc else None
         result: dict = {
             'transport': 'mdrmc',
             'sent': bool(ok),
             'packet': packet,
             'wantedOpen': bool(raised),
+            # 发送即成功；实态由后续 DEVICE 组播同步，不在此阻塞
             'confirmed': False,
-            'stickdown': None,
-            'cmdRaw': None,
-            'waitMs': 2500,
-            'note': 'UDP 组播无 ACK；confirmed=2.5s 内 DEVICE cmd bit6 达目标',
+            'stickdown': stick if isinstance(stick, bool) else None,
+            'cmdRaw': plc.get('cmdRaw'),
+            'waitMs': 0,
+            'note': 'UDP 组播无 ACK；发完即返回，图标靠后续 DEVICE bit6',
         }
         if not ok:
             self._last_error = 'MDRMC boombarrier 发送失败'
@@ -110,29 +112,10 @@ class GateController(DeviceBase):
 
         self.status = DeviceStatus.Online
         self._last_error = ''
-        deadline = time.monotonic() + 2.5
-        while time.monotonic() < deadline:
-            plc = get_last_plc_status() or {}
-            if 'stickdown' in plc:
-                sd = bool(plc.get('stickdown'))
-                result['stickdown'] = sd
-                result['cmdRaw'] = plc.get('cmdRaw')
-                if sd == bool(raised):
-                    result['confirmed'] = True
-                    break
-            time.sleep(0.1)
-
         self._last_boom_result = result
-        if result['confirmed']:
-            print(
-                f'[Gate:{self.device_id}] MDRMC 已确认 bit6={int(bool(raised))} '
-                f'({"抬起" if raised else "落下"})',
-                flush=True,
-            )
-        else:
-            print(
-                f'[Gate:{self.device_id}] MDRMC 已发送但 2.5s 内未确认 DEVICE bit6 '
-                f'(want={"1抬起" if raised else "0落下"} stickdown={result.get("stickdown")})',
-                flush=True,
-            )
+        print(
+            f'[Gate:{self.device_id}] MDRMC 已发送 '
+            f'({"抬起" if raised else "落下"})，不等待 DEVICE 确认',
+            flush=True,
+        )
         return True

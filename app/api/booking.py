@@ -5,7 +5,6 @@
 """
 import threading
 import time
-import requests
 from flask import Blueprint, request, jsonify, current_app
 
 from config import RADAR_HEAD_URL
@@ -265,13 +264,17 @@ def fetch_radar_image():
     content_origin_x = 0
     last_error = ''
 
-    # 单次 12s × 最多 3 次，避免中间件偶发超时把预约界面卡死
+    # gevent 下 greenlet 直连 requests 偶发卡读超时；改真实线程池拉取
     max_attempts = 3
-    per_timeout = 12
+    per_timeout = (3.0, 10.0)
 
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = requests.get(radar_head_url, timeout=per_timeout)
+            from app.services.middleware_http import middleware_get
+
+            t0 = time.monotonic()
+            resp = middleware_get(radar_head_url, timeout=per_timeout)
+            elapsed = time.monotonic() - t0
             if resp.status_code == 200 and resp.content:
                 orig_width, orig_height = _image_size_from_bytes(resp.content)
 
@@ -301,6 +304,7 @@ def fetch_radar_image():
 
                 print(
                     f'[BOOKING] 雷达图像预览(未落盘) attempt={attempt}/{max_attempts} '
+                    f'elapsed={elapsed:.2f}s '
                     f'url={image_url} bytes={len(preview)} (raw={len(resp.content)}) '
                     f'size={orig_width}x{orig_height} '
                     f'originX={content_origin_x} '
@@ -312,10 +316,11 @@ def fetch_radar_image():
 
             last_error = f'HTTP {resp.status_code}'
             print(
-                f'[BOOKING] 雷达图像获取失败 attempt={attempt}/{max_attempts}: {last_error}',
+                f'[BOOKING] 雷达图像获取失败 attempt={attempt}/{max_attempts} '
+                f'elapsed={elapsed:.2f}s: {last_error}',
                 flush=True,
             )
-        except requests.RequestException as e:
+        except Exception as e:
             last_error = str(e)
             print(
                 f'[BOOKING] 雷达图像获取异常 attempt={attempt}/{max_attempts}: {e}',
@@ -323,7 +328,7 @@ def fetch_radar_image():
             )
 
         if attempt < max_attempts:
-            time.sleep(1.0)
+            time.sleep(0.2)
 
     if not image_url:
         return fail(
@@ -431,8 +436,8 @@ def accept_booking():
     except Exception as e:
         print(f'[BOOKING] 调度器启动失败: {e}')
 
-    # 5. 车身/透视渐进出图：不在受理时一次拉完。
-    #    对齐 Qt startXrayDetect — 雷达 33~35m（xray_capture_trigger）再轮询。
+    # 5. 车身/透视拉图：不在受理时一次拉完。
+    #    调度器 xray_capture_trigger：雷达距离 <33m 再启动。
 
     # 通过 WebSocket 推送受理状态
     try:
@@ -460,21 +465,33 @@ def accept_booking():
 
 @booking_api.route('/btn-press', methods=['POST'])
 def btn_press():
-    """司机按键预约（Qt LvTongPro::onPLCBookingChanged 上升沿）
+    """预约按键（现场司机键 / 操作台底部「预约」图标，同一套记时）
 
     POST /api/booking/btn-press
+    Body 可选: { "source": "ui"|"plc", "pushWs": true|false }
+      - source=ui：操作台点击，默认不推 WS（避免弹窗二次打开）
+      - 其它：现场按键，默认推 WS book_button
 
-    行为：置有预约 + 记最后点击时间 + 播报「申请已接收…」+ WS book_button。
+    行为：置有预约 + 记 last_btn_click_time（受理时固化为 btn_prebook_time）。
     """
+    body = request.get_json(silent=True) or {}
+    source = str(body.get('source') or '').lower()
+    if 'pushWs' in body:
+        push_ws = bool(body.get('pushWs'))
+    else:
+        push_ws = source != 'ui'
     try:
         from app.services.lane_announce import get_lane_announce
 
-        get_lane_announce().on_booking_button()
+        get_lane_announce().on_booking_button(push_ws=push_ws)
     except Exception as e:
-        print(f'[BOOKING] btn-press 播报失败，仅记时间: {e}')
+        print(f'[BOOKING] btn-press 失败，仅记时间: {e}')
         mark_book_button()
     btn_time = _booking_state.get('last_btn_click_time', '')
-    print(f'[BOOKING] btn-press: time={btn_time}, pending={_booking_state.get("btn_prebook_state")}')
+    print(
+        f'[BOOKING] btn-press source={source or "plc"} pushWs={push_ws} '
+        f'time={btn_time} pending={_booking_state.get("btn_prebook_state")}'
+    )
     return ok({
         'btnPressTime': btn_time,
         'btnPrebookState': bool(_booking_state.get('btn_prebook_state')),
