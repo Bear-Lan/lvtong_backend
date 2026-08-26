@@ -94,31 +94,20 @@ def clear_book_button() -> None:
 @booking_api.route('/open', methods=['POST'])
 @login_required
 def open_booking_session():
-    """初始化预约会话
+    """初始化预约会话（仅空闲弹窗时调用）
 
     POST /api/booking/open
 
-    对齐 Qt OrderDialog 打开时的初始化：
+    红灯/落杆/step2 已在预约按键时下发；此处只：
     1. 设备健康检查
-    2. PLC 红灯 + 关光闸（防人闯入）— 对齐 Qt onBookingDebounceTimeout
-    3. 关闸
-    4. LED step2
-    5. 同一条 TwoWayAudio 接播 step2，播完再 close 供前端对讲
+    2. 标记弹窗已开
+    3. 等待同一轮 step2 播完并释放 TwoWayAudio，供前端对讲
     """
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
 
-    from app.services.device_action import execute_device_action
-
-    execute_device_action('plc_001', 'setPLC', {
-        'redlight': True, 'yellowlight': False, 'greenlight': False,
-        'xraygate200': False, 'xraygate160': False,
-    })
-    execute_device_action('gate_001', 'close')
-    execute_device_action('led_001', 'set_step2')
-
     _booking_state['booking_dialog_shown'] = True
-    _ensure_step2_announce_once()
+    ensure_step2_announce_once()
 
     return ok({
         'devicesReady': devices_ready,
@@ -129,8 +118,8 @@ def open_booking_session():
     }, '会话初始化成功')
 
 
-def _ensure_step2_announce_once() -> None:
-    """多请求并发 open 时：只播一轮 step2，其它请求阻塞等待同一轮结束。"""
+def ensure_step2_announce_once() -> None:
+    """预约键与 /open 共用：只播一轮 step2（LED+语音），其它调用方等待同轮结束。"""
     global _open_announce_inflight
 
     waiter: threading.Event | None = None
@@ -142,11 +131,12 @@ def _ensure_step2_announce_once() -> None:
             _open_announce_inflight = True
 
     if waiter is not None:
-        print('[BOOKING] open：已有 step2 播报进行中，等待同轮结束', flush=True)
+        print('[BOOKING] step2：已有播报进行中，等待同轮结束', flush=True)
         waiter.wait(timeout=60)
         return
 
     try:
+        from app.services.device_action import execute_device_action
         from app.services.lane_announce import get_lane_announce
         from app.services.booking_camera_tts import (
             release_voice_channel,
@@ -154,12 +144,16 @@ def _ensure_step2_announce_once() -> None:
         )
 
         get_lane_announce().stop_idle_loop()
-        print('[BOOKING] open：长连接接播 step2（对讲仍未开）', flush=True)
+        try:
+            execute_device_action('led_001', 'set_step2')
+        except Exception as e:
+            print(f'[BOOKING] LED step2 失败: {e}', flush=True)
+        print('[BOOKING] step2：长连接接播（对讲仍未开）', flush=True)
         speak_step(2, interrupt=True, blocking=True)
         release_voice_channel()
-        print('[BOOKING] open：step2 结束且 TwoWayAudio 已释放，前端可开对讲', flush=True)
+        print('[BOOKING] step2：结束且 TwoWayAudio 已释放，前端可开对讲', flush=True)
     except Exception as e:
-        print(f'[BOOKING] open 播报失败: {e}', flush=True)
+        print(f'[BOOKING] step2 播报失败: {e}', flush=True)
         try:
             from app.services.booking_camera_tts import release_voice_channel
 
@@ -464,7 +458,8 @@ def btn_press():
       - source=ui：操作台点击，默认不推 WS（避免弹窗二次打开）
       - 其它：现场按键，默认推 WS book_button
 
-    行为：置有预约 + 记 last_btn_click_time（受理时固化为 btn_prebook_time）。
+    任意时刻：记时 + 红灯 + 落杆 + step2。
+    空闲时 data.openDialog=true，供前端弹窗拉图/对讲。
     """
     body = request.get_json(silent=True) or {}
     source = str(body.get('source') or '').lower()
@@ -472,6 +467,9 @@ def btn_press():
         push_ws = bool(body.get('pushWs'))
     else:
         push_ws = source != 'ui'
+    detecting = bool(_booking_state.get('is_detection')) or int(
+        _booking_state.get('check_step') or 0
+    ) >= 1
     try:
         from app.services.lane_announce import get_lane_announce
 
@@ -480,14 +478,17 @@ def btn_press():
         print(f'[BOOKING] btn-press 失败，仅记时间: {e}')
         mark_book_button()
     btn_time = _booking_state.get('last_btn_click_time', '')
+    open_dialog = not detecting
     print(
         f'[BOOKING] btn-press source={source or "plc"} pushWs={push_ws} '
-        f'time={btn_time} pending={_booking_state.get("btn_prebook_state")}'
+        f'time={btn_time} pending={_booking_state.get("btn_prebook_state")} '
+        f'openDialog={open_dialog}'
     )
     return ok({
         'btnPressTime': btn_time,
         'btnPrebookState': bool(_booking_state.get('btn_prebook_state')),
         'lastBtnClickTime': btn_time,
+        'openDialog': open_dialog,
     })
 
 

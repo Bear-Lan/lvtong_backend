@@ -1,17 +1,16 @@
-"""车道语音/LED 播报编排（对齐现场 5 条规则）
+"""车道语音/LED 播报编排（对齐现场规则）
 
 语音：预置 wav→μ-law → 预约机 TwoWayAudio；LED 同步 set_step → $MDRMC leddisplay=。
 
-1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；一条 TwoWayAudio 长连接循环推流，句间写 3s μ-law 静音
-2. 预约键上升沿 → 立刻「申请已接收，请原地等待」
-3. 受理成功 → 立刻「申请已受理，请等待放行」
+1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；长连接循环推流
+2. 预约键（任意时刻）→ 红灯+落杆 + step2 语音/LED；空闲才通知前端弹窗
+3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
 5. 检测中光幕上升沿 → 「检测中，请勿跟车」
 """
 from __future__ import annotations
 
 import threading
-import time
 from datetime import datetime
 from typing import Optional
 
@@ -53,10 +52,11 @@ class LaneAnnounceService:
             idle = self._is_system_idle_unlocked()
         if target and idle:
             self._ensure_idle_loop()
-        elif not idle:
+        else:
             self._stop_idle_loop()
 
     def on_plc_status(self, parsed: dict) -> None:
+        """DEVICE 位：预约键 / 光幕上升沿。"""
         booking = bool(parsed.get('bookingStatus'))
         light = bool(parsed.get('lightScreenStatus'))
 
@@ -76,23 +76,58 @@ class LaneAnnounceService:
     # ---------- 对外：业务事件 ----------
 
     def on_booking_button(self, *, push_ws: bool = True, record: bool = True) -> None:
+        """预约按键（现场 / 操作台）：任意时刻都红灯+落杆+step2；空闲才让前端弹窗。"""
         self.stop_idle_loop()
+        btn_time = ''
         if record:
             try:
                 from app.api.booking import mark_book_button
 
                 btn_time = mark_book_button()
-                print(f'[{_ts()}] [ANNOUNCE] 预约键 → step2, 记时 {btn_time}', flush=True)
+                print(f'[{_ts()}] [ANNOUNCE] 预约键 → 记时 {btn_time}', flush=True)
             except Exception as e:
                 print(f'[{_ts()}] [ANNOUNCE] 预约键记时失败: {e}', flush=True)
 
-        # 语音由 /open 接到招揽长连接上播 step2，此处不断开会话
+        # 红灯 + 落杆（与是否空闲无关）
+        def _hold() -> None:
+            try:
+                from app.services.device_action import execute_device_action
+
+                execute_device_action('plc_001', 'setPLC', {
+                    'redlight': True, 'yellowlight': False, 'greenlight': False,
+                })
+                execute_device_action('gate_001', 'close')
+                print(f'[{_ts()}] [ANNOUNCE] 预约键 → 红灯+落杆', flush=True)
+            except Exception as e:
+                print(f'[{_ts()}] [ANNOUNCE] 预约键红灯/落杆失败: {e}', flush=True)
+
+        threading.Thread(target=_hold, daemon=True, name='book-hold').start()
+
+        # step2 语音+LED：与 /open 共用同一轮，避免弹窗再播一遍
+        def _step2() -> None:
+            try:
+                from app.api.booking import ensure_step2_announce_once
+
+                ensure_step2_announce_once()
+            except Exception as e:
+                print(f'[{_ts()}] [ANNOUNCE] 预约键 step2 失败: {e}', flush=True)
+                self._play(2, interrupt=True)
+
+        threading.Thread(target=_step2, daemon=True, name='book-step2').start()
+
+        with self._lock:
+            open_dialog = not self._is_detecting_unlocked()
 
         if push_ws:
             try:
                 from app.websocket.handler import push_booking_event
 
-                push_booking_event('book_button')
+                push_booking_event(
+                    'book_button',
+                    openDialog=open_dialog,
+                    btnPrebookState=True,
+                    btnPressTime=btn_time or None,
+                )
             except Exception as e:
                 print(f'[{_ts()}] [ANNOUNCE] 推送 book_button 失败: {e}', flush=True)
 
