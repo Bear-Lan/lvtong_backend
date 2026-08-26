@@ -1,12 +1,14 @@
 """面板拉图（当前中间层为单帧）
 
 触发：雷达距离 <33m（调度器 xray_capture_trigger）。
-策略：各 type GET 成功拿到图即结束（不再轮询等 Capture_Finish）。
-失败时短暂重试有限次。
+
+成功率策略（中间件偶发 hang-or-fast，Keep-Alive 实测无效）：
+  1. 始终串行（并发更易超时）
+  2. 单路超时递增重试
+  3. 首轮拉完后对缺图做 1～2 轮补漏（中间件恢复后再拉，成功率显著高于死磕同一路）
 
   串行拉 cam / vtop / vside / x160 /（高车）x200
-  （中间件单机并发弱，并行易整波 Read timeout；浏览器单开正常）
-  merge：等高车且 x160、x200 都成功后再 GET 一次
+  merge：等高车且 x160、x200 都成功后再 GET
 
 预约雷达 appt 仍走 booking /radar-image，不在本模块。
 """
@@ -22,46 +24,71 @@ from app.services.middleware_http import middleware_get
 
 logger = logging.getLogger('progressive_image_fetch')
 
-# (connect, read)；中间件串行后一般很快，读超时缩短避免干等
-REQUEST_TIMEOUT = (2.0, 8.0)
-# 失败重试（成功即停）
-FAIL_RETRY_COUNT = 3
-FAIL_RETRY_INTERVAL_SEC = 0.3
-# 两路之间略歇
-BETWEEN_FETCH_SEC = 0.1
+# 单次尝试读超时递增：先短后长，避免一路卡死拖死整轮
+_ATTEMPT_TIMEOUTS: tuple[tuple[float, float], ...] = (
+    (3.0, 12.0),
+    (3.0, 20.0),
+    (3.0, 30.0),
+)
+# 补漏轮使用更长读超时
+_REPAIR_TIMEOUTS: tuple[tuple[float, float], ...] = (
+    (3.0, 25.0),
+    (3.0, 35.0),
+)
+FAIL_RETRY_INTERVAL_SEC = 0.6
+BETWEEN_FETCH_SEC = 0.25
+# 首轮结束后、补漏前稍等，给中间件喘口气
+REPAIR_PAUSE_SEC = 1.0
+REPAIR_PASSES = 2
 TALL_CAR_HEIGHT_M = 2.8
 
 
-def _fetch_one(name: str, url: str, stop: threading.Event) -> str | None:
-    """GET 成功返回 temp URL；失败重试后仍不成返回 None。"""
+def _fetch_one(
+    name: str,
+    url: str,
+    stop: threading.Event,
+    *,
+    timeouts: tuple[tuple[float, float], ...] = _ATTEMPT_TIMEOUTS,
+    tag: str = '',
+) -> str | None:
+    """GET 成功返回 temp URL；按 timeouts 递增重试，仍不成返回 None。"""
     url = (url or '').strip()
     if not url:
         print(f'[PROG-IMG] {name} URL 空，跳过', flush=True)
         return None
 
-    for attempt in range(1, FAIL_RETRY_COUNT + 1):
+    prefix = f'{tag} ' if tag else ''
+    for attempt, timeout in enumerate(timeouts, start=1):
         if stop.is_set():
             return None
         try:
-            print(f'[PROG-IMG] {name} GET #{attempt} {url}', flush=True)
+            print(
+                f'[PROG-IMG] {prefix}{name} GET #{attempt}/{len(timeouts)} '
+                f'read={timeout[1]:.0f}s {url}',
+                flush=True,
+            )
             t0 = time.monotonic()
-            resp = middleware_get(url, timeout=REQUEST_TIMEOUT)
+            resp = middleware_get(url, timeout=timeout)
             elapsed = time.monotonic() - t0
             if resp.status_code == 200 and resp.content:
                 preview = jpeg_preview_bytes(resp.content)
-                temp_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
+                temp_url = temp_image_cache.put_preview_with_original(
+                    resp.content, preview,
+                )
                 print(
-                    f'[PROG-IMG] {name} ok {elapsed:.2f}s bytes={len(preview)} → {temp_url}',
+                    f'[PROG-IMG] {prefix}{name} ok {elapsed:.2f}s '
+                    f'preview={len(preview)} raw={len(resp.content)} → {temp_url}',
                     flush=True,
                 )
                 return temp_url
             print(
-                f'[PROG-IMG] {name} #{attempt} HTTP {resp.status_code} ({elapsed:.2f}s)',
+                f'[PROG-IMG] {prefix}{name} #{attempt} HTTP {resp.status_code} '
+                f'({elapsed:.2f}s)',
                 flush=True,
             )
         except Exception as e:
-            print(f'[PROG-IMG] {name} #{attempt} 失败: {e}', flush=True)
-        if attempt < FAIL_RETRY_COUNT and not stop.wait(FAIL_RETRY_INTERVAL_SEC):
+            print(f'[PROG-IMG] {prefix}{name} #{attempt} 失败: {e}', flush=True)
+        if attempt < len(timeouts) and not stop.wait(FAIL_RETRY_INTERVAL_SEC):
             continue
         break
     return None
@@ -124,6 +151,75 @@ class ProgressivePanelFetcher:
         )
         self._worker.start()
 
+    def _fetch_slots(
+        self,
+        slots: list[tuple[str, str]],
+        results: dict[str, str],
+        *,
+        timeouts: tuple[tuple[float, float], ...],
+        tag: str,
+        only_missing: bool,
+    ) -> None:
+        pending = [
+            (n, u) for n, u in slots
+            if (u or '').strip() and (not only_missing or n not in results)
+        ]
+        if not pending:
+            return
+        if only_missing:
+            print(
+                f'[PROG-IMG] {tag} 补漏 {len(pending)} 路: '
+                f'{[n for n, _ in pending]}',
+                flush=True,
+            )
+        for i, (name, url) in enumerate(pending):
+            if self._stop_flag.is_set():
+                return
+            if i > 0 and BETWEEN_FETCH_SEC > 0:
+                if self._stop_flag.wait(BETWEEN_FETCH_SEC):
+                    return
+            try:
+                temp_url = _fetch_one(
+                    name, url, self._stop_flag, timeouts=timeouts, tag=tag,
+                )
+            except Exception as e:
+                print(f'[PROG-IMG] {tag} {name} 异常: {e}', flush=True)
+                continue
+            if temp_url:
+                results[name] = temp_url
+                self._push_slot(name, temp_url)
+
+    def _try_merge(
+        self,
+        *,
+        xray_enabled: bool,
+        tall: bool,
+        stitch: str,
+        results: dict[str, str],
+    ) -> None:
+        if not (xray_enabled and tall and stitch):
+            return
+        if results.get('merge'):
+            return
+        if not (results.get('x160') and results.get('x200')):
+            print(
+                '[PROG-IMG] 跳过 merge：'
+                f'x160={"ok" if results.get("x160") else "缺"} '
+                f'x200={"ok" if results.get("x200") else "缺"}',
+                flush=True,
+            )
+            return
+        print('[PROG-IMG] x160+x200 已成功，拉取 merge', flush=True)
+        if BETWEEN_FETCH_SEC > 0:
+            self._stop_flag.wait(BETWEEN_FETCH_SEC)
+        merge_url = _fetch_one(
+            'merge', stitch, self._stop_flag,
+            timeouts=_ATTEMPT_TIMEOUTS, tag='merge',
+        )
+        if merge_url:
+            results['merge'] = merge_url
+            self._push_slot('merge', merge_url)
+
     def _fetch_all(self, *, car_height: float, xray_enabled: bool) -> None:
         from config import (
             BODY_IMAGE_URL,
@@ -161,51 +257,44 @@ class ProgressivePanelFetcher:
         )
 
         results: dict[str, str] = {}
-        for i, (name, url) in enumerate(slots):
-            if self._stop_flag.is_set():
-                break
-            if not (url or '').strip():
-                continue
-            if i > 0 and BETWEEN_FETCH_SEC > 0:
-                if self._stop_flag.wait(BETWEEN_FETCH_SEC):
-                    break
-            try:
-                temp_url = _fetch_one(name, url, self._stop_flag)
-            except Exception as e:
-                print(f'[PROG-IMG] {name} 异常: {e}', flush=True)
-                continue
-            if temp_url:
-                results[name] = temp_url
-                self._push_slot(name, temp_url)
+        # 首轮：超时递增，尽快扫完各路
+        self._fetch_slots(
+            slots, results,
+            timeouts=_ATTEMPT_TIMEOUTS, tag='pass1', only_missing=False,
+        )
 
-        # merge：高车且双路透视都成功后再拉一次
-        stitch = (STITCH_IMAGE_URL or '').strip()
-        if (
-            xray_enabled
-            and tall
-            and stitch
-            and results.get('x160')
-            and results.get('x200')
-            and not self._stop_flag.is_set()
-        ):
-            print('[PROG-IMG] x160+x200 已成功，拉取 merge', flush=True)
-            if BETWEEN_FETCH_SEC > 0:
-                self._stop_flag.wait(BETWEEN_FETCH_SEC)
-            merge_url = _fetch_one('merge', stitch, self._stop_flag)
-            if merge_url:
-                results['merge'] = merge_url
-                self._push_slot('merge', merge_url)
-        elif xray_enabled and tall and stitch:
-            print(
-                '[PROG-IMG] 跳过 merge：'
-                f'x160={"ok" if results.get("x160") else "缺"} '
-                f'x200={"ok" if results.get("x200") else "缺"}',
-                flush=True,
+        # 补漏：缺哪补哪（实测中间件挂起后重试常立刻成功）
+        for p in range(1, REPAIR_PASSES + 1):
+            missing = [n for n, u in slots if (u or '').strip() and n not in results]
+            if not missing or self._stop_flag.is_set():
+                break
+            if self._stop_flag.wait(REPAIR_PAUSE_SEC):
+                break
+            self._fetch_slots(
+                slots, results,
+                timeouts=_REPAIR_TIMEOUTS,
+                tag=f'repair{p}',
+                only_missing=True,
             )
 
-        # 整包再推一次：分片推送时前端若漏接，仍能一次填满六格
+        stitch = (STITCH_IMAGE_URL or '').strip()
+        self._try_merge(
+            xray_enabled=xray_enabled, tall=tall, stitch=stitch, results=results,
+        )
+        # 补漏后可能刚齐 x160+x200，再试一次 merge
+        if 'merge' not in results:
+            self._try_merge(
+                xray_enabled=xray_enabled, tall=tall, stitch=stitch, results=results,
+            )
+
+        expected = [n for n, u in slots if (u or '').strip()]
+        missing_final = [n for n in expected if n not in results]
         self._push_batch(results)
-        print(f'[PROG-IMG] 本轮结束 got={list(results.keys())}', flush=True)
+        print(
+            f'[PROG-IMG] 本轮结束 got={list(results.keys())} '
+            f'missing={missing_final or "无"}',
+            flush=True,
+        )
 
     def _push_slot(self, name: str, temp_url: str) -> None:
         from app.websocket.handler import push_image_ready_group

@@ -1,4 +1,7 @@
-"""预览图缩小：超宽 X 光/雷达原图可达万级像素，前端逐像素处理会卡死主线程。"""
+"""预览图缩小：超宽 X 光/雷达原图可达万级像素，前端逐像素处理会卡死主线程。
+
+原图仍需保留供裁切与落库；本模块只负责缩略 + 按 source_url 复用。
+"""
 from __future__ import annotations
 
 import logging
@@ -6,12 +9,12 @@ import threading
 
 logger = logging.getLogger('image_preview')
 
-# 预览最长边；提交仍用缓存内这份（占位图本身非正式硬件成片）
+# 预览最长边；提交仍用成对缓存的原图
 DEFAULT_MAX_EDGE = 1600
 DEFAULT_JPEG_QUALITY = 75
 
-# 同源 URL 预览复用：预约雷达图与受理后六面板共用同一远程图，避免抓拍窗口再解 13MB
-_preview_by_source: dict[str, bytes] = {}
+# 同源 URL：(original, preview) 复用，避免预约雷达与面板重复解大图
+_pair_by_source: dict[str, tuple[bytes, bytes]] = {}
 _preview_lock = threading.Lock()
 
 
@@ -55,21 +58,30 @@ def jpeg_preview_bytes(
     return out
 
 
-def remember_source_preview(source_url: str, preview: bytes) -> None:
-    """记住某远程源对应的预览 JPEG，供后续占位推送复用。"""
+def remember_source_pair(source_url: str, original: bytes, preview: bytes) -> None:
     key = (source_url or '').strip()
-    if not key or not preview:
+    if not key or not original or not preview:
         return
     with _preview_lock:
-        _preview_by_source[key] = preview
+        _pair_by_source[key] = (original, preview)
 
 
-def get_remembered_preview(source_url: str) -> bytes | None:
+def get_remembered_pair(source_url: str) -> tuple[bytes, bytes] | None:
     key = (source_url or '').strip()
     if not key:
         return None
     with _preview_lock:
-        return _preview_by_source.get(key)
+        return _pair_by_source.get(key)
+
+
+def remember_source_preview(source_url: str, preview: bytes) -> None:
+    """兼容旧调用：仅记预览时无法成对复用原图，不写入 pair。"""
+    _ = (source_url, preview)
+
+
+def get_remembered_preview(source_url: str) -> bytes | None:
+    pair = get_remembered_pair(source_url)
+    return pair[1] if pair else None
 
 
 def preview_from_raw(
@@ -78,8 +90,22 @@ def preview_from_raw(
     max_edge: int = DEFAULT_MAX_EDGE,
     quality: int = DEFAULT_JPEG_QUALITY,
 ) -> bytes:
-    """缩小并可选按 source_url 记住，避免同图重复 imdecode。"""
+    """缩小并可选按 source_url 记住 (原图, 预览)。"""
     preview = jpeg_preview_bytes(data, max_edge=max_edge, quality=quality)
-    if source_url:
-        remember_source_preview(source_url, preview)
+    if source_url and data and preview:
+        remember_source_pair(source_url, data, preview)
     return preview
+
+
+def put_temp_preview_url(original: bytes, source_url: str = '') -> str:
+    """原图 → 预览 → 成对进 temp 缓存，返回预览 URL。"""
+    from app.services import temp_image_cache
+
+    pair = get_remembered_pair(source_url) if source_url else None
+    if pair:
+        original, preview = pair
+    else:
+        preview = jpeg_preview_bytes(original)
+        if source_url:
+            remember_source_pair(source_url, original, preview)
+    return temp_image_cache.put_preview_with_original(original, preview)

@@ -15,8 +15,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from app.services import temp_image_cache
-
 logger = logging.getLogger('placeholder_images')
 
 
@@ -42,23 +40,25 @@ def fetch_placeholder_bytes(url: str | None = None) -> bytes:
 
 
 def _preview_url_for(source_url: str) -> str:
-    """拉图 → 预览压缩 → 临时缓存 URL；同 source_url 可复用预约已拉预览。"""
-    from app.services.image_preview import get_remembered_preview, preview_from_raw
+    """拉图 → 原图+预览成对缓存 → 返回预览 URL。"""
+    from app.services.image_preview import get_remembered_pair, put_temp_preview_url
 
-    preview = get_remembered_preview(source_url)
-    if preview:
+    pair = get_remembered_pair(source_url)
+    if pair:
         print(
-            f'[IMAGE] 复用预览 cache bytes={len(preview)} url={source_url}',
+            f'[IMAGE] 复用原图+预览 cache raw={len(pair[0])} preview={len(pair[1])} '
+            f'url={source_url}',
             flush=True,
         )
-    else:
-        data = _fetch_url_bytes(source_url)
-        preview = preview_from_raw(data, source_url=source_url)
-        print(
-            f'[IMAGE] 预览 bytes={len(preview)} (raw={len(data)}) url={source_url}',
-            flush=True,
-        )
-    return temp_image_cache.put_and_url(preview, 'image/jpeg')
+        return put_temp_preview_url(pair[0], source_url)
+
+    data = _fetch_url_bytes(source_url)
+    url = put_temp_preview_url(data, source_url)
+    print(
+        f'[IMAGE] 预览已缓存 raw={len(data)} url={source_url} → {url}',
+        flush=True,
+    )
+    return url
 
 
 def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:

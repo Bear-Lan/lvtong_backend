@@ -10,7 +10,6 @@ from flask import Blueprint, request, jsonify, current_app
 from config import RADAR_HEAD_URL
 from app.extensions.auth import login_required
 from app.devices.manager import DeviceManager
-from app.services import temp_image_cache
 from app.websocket.handler import socketio
 
 booking_api = Blueprint('booking', __name__, url_prefix='/api/booking')
@@ -272,9 +271,12 @@ def fetch_radar_image():
             if resp.status_code == 200 and resp.content:
                 orig_width, orig_height = _image_size_from_bytes(resp.content)
 
-                from app.services.image_preview import preview_from_raw
-                preview = preview_from_raw(resp.content, source_url=radar_head_url)
-                image_url = temp_image_cache.put_and_url(preview, 'image/jpeg')
+                from app.services.image_preview import put_temp_preview_url
+                image_url = put_temp_preview_url(resp.content, radar_head_url)
+                # preview 字节数仅用于日志
+                from app.services.temp_image_cache import get as temp_get, parse_temp_id
+                prev_entry = temp_get(parse_temp_id(image_url))
+                preview_len = len(prev_entry.data) if prev_entry else 0
 
                 image_envelope = resp.headers.get('Image-Envelope', '') or ''
                 image_resolution = resp.headers.get('Image-Resolution', '') or ''
@@ -299,7 +301,7 @@ def fetch_radar_image():
                 print(
                     f'[BOOKING] 雷达图像预览(未落盘) attempt={attempt}/{max_attempts} '
                     f'elapsed={elapsed:.2f}s '
-                    f'url={image_url} bytes={len(preview)} (raw={len(resp.content)}) '
+                    f'url={image_url} bytes={preview_len} (raw={len(resp.content)}) '
                     f'size={orig_width}x{orig_height} '
                     f'originX={content_origin_x} '
                     f'env={image_envelope!r} hdr={vehicle_header_envelope!r}',

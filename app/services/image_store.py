@@ -226,9 +226,9 @@ class ImageStore:
 
     @staticmethod
     def _save_temp_image(temp_id: str, category: str) -> str:
-        """从内存临时缓存取图并写入正式库。"""
-        from app.services.temp_image_cache import get as temp_get
-        entry = temp_get(temp_id)
+        """从内存临时缓存取图并写入正式库（优先成对原图）。"""
+        from app.services.temp_image_cache import get_for_persist
+        entry = get_for_persist(temp_id)
         if entry is None:
             return ''
         return ImageStore._save_bytes(
@@ -312,9 +312,9 @@ class ImageStore:
                 return b''
 
         if s.startswith('/api/temp-images/'):
-            from app.services.temp_image_cache import get as temp_get
+            from app.services.temp_image_cache import get_for_persist
             tid = s[len('/api/temp-images/'):].strip('/').split('?', 1)[0].split('#', 1)[0]
-            entry = temp_get(tid)
+            entry = get_for_persist(tid)
             return entry.data if entry else b''
 
         # /api/images/<rel> 或绝对路径

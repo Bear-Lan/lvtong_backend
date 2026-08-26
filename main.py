@@ -102,9 +102,42 @@ def create_app() -> Flask:
         return send_file(target)
 
     # 检测中预览图：内存临时缓存，不落 IMAGE_STORAGE_ROOT；提交时再 persist
+    # 注意：/crop 必须在 /<temp_id> 之前注册，否则会被当成 id
+    @app.route('/api/temp-images/crop', methods=['POST'])
+    def crop_temp_image():
+        """按预览图框坐标从成对原图裁切，返回原图分辨率裁块 URL。
+
+        Body JSON: { previewUrl|/tempId, x1, y1, x2, y2 }
+        """
+        from flask import request as flask_request
+        from app.services.temp_image_cache import crop_from_preview_box
+
+        body = flask_request.get_json(silent=True) or {}
+        preview_ref = (
+            body.get('previewUrl')
+            or body.get('preview_url')
+            or body.get('tempId')
+            or body.get('temp_id')
+            or ''
+        )
+        try:
+            x1 = float(body.get('x1'))
+            y1 = float(body.get('y1'))
+            x2 = float(body.get('x2'))
+            y2 = float(body.get('y2'))
+        except (TypeError, ValueError):
+            return jsonify({'code': 400, 'message': '缺少有效框坐标', 'data': None}), 400
+        try:
+            url = crop_from_preview_box(str(preview_ref), x1, y1, x2, y2)
+        except ValueError as e:
+            return jsonify({'code': 400, 'message': str(e), 'data': None}), 400
+        except Exception as e:
+            return jsonify({'code': 500, 'message': f'裁切失败: {e}', 'data': None}), 500
+        return jsonify({'code': 0, 'message': 'ok', 'data': {'url': url}})
+
     @app.route('/api/temp-images/<temp_id>')
     def serve_temp_image(temp_id: str):
-        """GET /api/temp-images/<id> — 返回预览期内存图。"""
+        """GET /api/temp-images/<id> — 返回预览期内存图（左侧缩略）。"""
         from io import BytesIO
         from app.services.temp_image_cache import get as temp_get
         entry = temp_get(temp_id)
