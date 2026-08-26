@@ -34,6 +34,9 @@ class LaneAnnounceService:
         self._prev_light = False
         self._said_session: set[int] = set()
         self._release_pending = False
+        # 受理 step3 播完前，抬杆 step4 必须等待（避免听不见 step3）
+        self._step3_done = threading.Event()
+        self._step3_done.set()
 
     @classmethod
     def instance(cls) -> 'LaneAnnounceService':
@@ -131,24 +134,86 @@ class LaneAnnounceService:
             except Exception as e:
                 print(f'[{_ts()}] [ANNOUNCE] 推送 book_button 失败: {e}', flush=True)
 
-    def on_accepted(self) -> None:
+    def on_accepted(self, *, blocking: bool = False) -> None:
+        """受理播报 step3。
+
+        blocking=True：当前线程播完再返回（/accept 用，保证关弹窗前听完）。
+        blocking=False：后台线程播（兼容其它调用）。
+        """
         self.stop_idle_loop()
         with self._lock:
             self._release_pending = True
             self._said_session.discard(4)
             self._said_session.discard(5)
-        if self._announce_session_once(3):
-            print(f'[{_ts()}] [ANNOUNCE] 受理 → step3', flush=True)
+            if 3 in self._said_session:
+                print(f'[{_ts()}] [ANNOUNCE] 受理 step3 本轮已播过，跳过', flush=True)
+                self._step3_done.set()
+                return
+            self._said_session.add(3)
+            self._step3_done.clear()
+
+        def _run() -> None:
+            try:
+                from app.services.booking_camera_tts import (
+                    release_voice_channel,
+                    speak_step,
+                )
+                from app.services.device_action import execute_device_action
+
+                # 前端刚停对讲时相机 TwoWayAudio 常仍 403，先 close+短暂冷却
+                release_voice_channel(settle_sec=0.45)
+                try:
+                    execute_device_action('led_001', 'set_step3')
+                except Exception as e:
+                    print(f'[{_ts()}] [ANNOUNCE] LED step3 失败: {e}', flush=True)
+                print(f'[{_ts()}] [ANNOUNCE] 受理 → step3 开始', flush=True)
+                speak_step(3, interrupt=True, blocking=True)
+                print(f'[{_ts()}] [ANNOUNCE] 受理 → step3 结束', flush=True)
+            except Exception as e:
+                print(f'[{_ts()}] [ANNOUNCE] 受理 step3 失败: {e}', flush=True)
+            finally:
+                self._step3_done.set()
+
+        if blocking:
+            _run()
+        else:
+            threading.Thread(target=_run, daemon=True, name='announce-step3').start()
 
     def on_gate_open(self) -> None:
+        """抬杆放行：等 step3 播完再播 step4，避免打断「申请已受理」。"""
         with self._lock:
             pending = self._release_pending
             if pending:
                 self._release_pending = False
         if not pending:
             return
-        if self._announce_session_once(4):
-            print(f'[{_ts()}] [ANNOUNCE] 抬杆放行 → step4', flush=True)
+
+        with self._lock:
+            if 4 in self._said_session:
+                return
+            self._said_session.add(4)
+
+        def _run() -> None:
+            try:
+                if not self._step3_done.wait(timeout=45.0):
+                    print(
+                        f'[{_ts()}] [ANNOUNCE] 等待 step3 超时，仍播 step4',
+                        flush=True,
+                    )
+                from app.services.booking_camera_tts import speak_step
+                from app.services.device_action import execute_device_action
+
+                print(f'[{_ts()}] [ANNOUNCE] 抬杆放行 → step4 开始', flush=True)
+                try:
+                    execute_device_action('led_001', 'set_step4')
+                except Exception as e:
+                    print(f'[{_ts()}] [ANNOUNCE] LED step4 失败: {e}', flush=True)
+                speak_step(4, interrupt=True, blocking=True)
+                print(f'[{_ts()}] [ANNOUNCE] 抬杆放行 → step4 结束', flush=True)
+            except Exception as e:
+                print(f'[{_ts()}] [ANNOUNCE] 抬杆 step4 失败: {e}', flush=True)
+
+        threading.Thread(target=_run, daemon=True, name='announce-step4').start()
 
     def on_light_curtain(self) -> None:
         if self._announce_session_once(5):
@@ -168,6 +233,7 @@ class LaneAnnounceService:
             self._said_session.clear()
             target = self._radar_target
             idle = self._is_system_idle_unlocked()
+        self._step3_done.set()
         abort_keepalive(timeout=3.0)
         self._stop_idle_loop()
         if target and idle:
