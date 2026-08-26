@@ -367,10 +367,10 @@ def accept_booking():
     POST /api/booking/accept
     Body: { vehicleHeight, carHeadLength, xrayEnabled, linePosition }
 
-    参考 Qt LvTongPro::onOrderAccept()
-    1. PLC 红灯 / 关闸等待放行 / LED step3（对齐 Qt onOrderAccept）
+    1. LED/语音 step3「申请已受理，请等待放行」
     2. 启动距离调度器；车道正常累计后抬杆（对齐 Qt onRadarMonitor）
     3. 进入检测流程（acceptanceTime 后端打点）
+    受理时不下发红灯/关闸（落杆）；保持现场灯闸现状，待调度器放行再绿灯开闸。
 
     摄像头（cam_lane / cam_booking / cam_ptz）由前端 useHikvisionPlayer 直连海康插件，不经此处。
     """
@@ -409,12 +409,7 @@ def accept_booking():
         # opengate/openlight/closelight/cd_photo 在 scheduler 触发时按需打
     })
 
-    # 1. PLC 红灯（受理未放行，对齐 Qt onOrderAccept）
-    execute_device_action('plc_001', 'setPLC', {
-        'redlight': True, 'yellowlight': False, 'greenlight': False
-    })
-
-    # 2. LED/语音 step3: 「申请已受理，请等待放行」
+    # 1. LED/语音 step3: 「申请已受理，请等待放行」（不下发红灯/关闸）
     try:
         from app.services.lane_announce import get_lane_announce
 
@@ -423,10 +418,7 @@ def accept_booking():
         print(f'[BOOKING] 受理播报失败: {e}')
         execute_device_action('led_001', 'set_step3')
 
-    # 3. 保持关闸；Qt 在雷达确认车道正常累计 >4 次后再 openGate
-    execute_device_action('gate_001', 'close')
-
-    # 4. 启动距离调度器（含放行判定）
+    # 2. 启动距离调度器（含放行判定：累计达标后绿灯+抬杆）
     try:
         from app.services.scheduler import DistanceScheduler
         scheduler = DistanceScheduler()
@@ -436,7 +428,7 @@ def accept_booking():
     except Exception as e:
         print(f'[BOOKING] 调度器启动失败: {e}')
 
-    # 5. 车身/透视拉图：不在受理时一次拉完。
+    # 3. 车身/透视拉图：不在受理时一次拉完。
     #    调度器 xray_capture_trigger：雷达距离 <33m 再启动。
 
     # 通过 WebSocket 推送受理状态
