@@ -361,11 +361,9 @@ def accept_booking():
     POST /api/booking/accept
     Body: { vehicleHeight, carHeadLength, xrayEnabled, linePosition }
 
-    顺序（对讲已由前端 stop-video 关掉）：
     1. 记状态 / acceptanceTime
-    2. 阻塞播完 step3「申请已受理，请等待放行」
-    3. 回包；前端关弹窗后再调 /booking/start-scheduler 开雷达调度
-    抬杆等仍由调度器在车道正常累计后执行。
+    2. 异步播 step3（对讲已由前端 stop-video 关掉）
+    3. 启动距离调度器；车道正常累计后抬杆（step4 可打断 step3）
     """
     body = request.get_json(silent=True) or {}
     user = request.gc_user
@@ -377,6 +375,8 @@ def accept_booking():
     print(f'[BOOKING] 用户 {user["username"]} 受理预约: '
           f'车高={vehicle_height}, 车头长={car_head_length}, X光={xray_enabled}')
 
+    from app.services.device_action import execute_device_action
+
     # 后端打点 acceptanceTime（对齐 Qt QDateTime::currentDateTime()）
     acceptance_time = _now_iso()
 
@@ -387,7 +387,6 @@ def accept_booking():
     else:
         print('[BOOKING] 无待受理预约时间，btn_prebook_time 留空（未按键直接受理）')
 
-    # 更新全局状态（调度器尚未 start，不会立刻抬杆）
     _booking_state.update({
         'car_height': vehicle_height,
         'car_length': car_head_length,
@@ -399,19 +398,24 @@ def accept_booking():
         'btn_prebook_time': btn_prebook_time,
     })
 
-    # 阻塞播完 step3，再回包（前端据此关弹窗）
+    # 1. 异步 step3（抬杆 step4 可打断）
     try:
         from app.services.lane_announce import get_lane_announce
 
-        get_lane_announce().on_accepted(blocking=True)
+        get_lane_announce().on_accepted()
     except Exception as e:
         print(f'[BOOKING] 受理播报失败: {e}')
-        try:
-            from app.services.device_action import execute_device_action
+        execute_device_action('led_001', 'set_step3')
 
-            execute_device_action('led_001', 'set_step3')
-        except Exception:
-            pass
+    # 2. 启动距离调度器（含放行判定：累计达标后绿灯+抬杆）
+    try:
+        from app.services.scheduler import DistanceScheduler
+        scheduler = DistanceScheduler()
+        scheduler.set_detection_state(True)
+        scheduler.start()
+        print('[BOOKING] 距离调度器已启动（受理后待雷达确认再抬杆）')
+    except Exception as e:
+        print(f'[BOOKING] 调度器启动失败: {e}')
 
     # 通过 WebSocket 推送受理状态
     try:
@@ -434,33 +438,7 @@ def accept_booking():
     return ok({
         'acceptanceTime': acceptance_time,
         'btnPrebookTime': btn_prebook_time,
-        'schedulerStarted': False,
-    }, '受理成功，请启动调度器')
-
-
-@booking_api.route('/start-scheduler', methods=['POST'])
-@login_required
-def start_scheduler_after_accept():
-    """受理且关弹窗后：启动距离调度器（雷达驱动占道检测 / 抬杆 / 阈值）。
-
-    POST /api/booking/start-scheduler
-    """
-    st = get_booking_state()
-    if not st.get('is_detection') and int(st.get('check_step') or 0) < 1:
-        return fail(400, '当前不在检测流程，无法启动调度器')
-
-    try:
-        from app.services.scheduler import DistanceScheduler
-
-        scheduler = DistanceScheduler()
-        scheduler.set_detection_state(True)
-        scheduler.start()
-        print('[BOOKING] 距离调度器已启动（关弹窗后，待雷达确认再抬杆）', flush=True)
-    except Exception as e:
-        print(f'[BOOKING] 调度器启动失败: {e}', flush=True)
-        return fail(500, f'调度器启动失败: {e}')
-
-    return ok({'running': True}, '调度器已启动')
+    }, '受理成功')
 
 
 @booking_api.route('/btn-press', methods=['POST'])
