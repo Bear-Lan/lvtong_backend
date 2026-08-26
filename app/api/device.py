@@ -187,6 +187,8 @@ def device_control(device_id):
 
     对齐 Qt DeviceManager::executeDeviceAction()
     闸机 gate_001：open/close/toggle → 组播 $MDRMC,1,boombarrier=…
+    PLC plc_001：setPLC → 组播 $MDRMC,…,redlight=true|…（见 mcast_cmd）
+    LED led_001：set_stepN → 组播 $MDRMC,1,leddisplay=…
     """
     body = request.get_json(silent=True) or {}
     action = body.get('action', '')
@@ -339,7 +341,7 @@ def plc_control():
     POST /api/device/plc-control
     Body: { redlight: true, yellowlight: false, greenlight: false, ... }
 
-    对齐 Qt 开关控制面板
+    下发：$MDRMC,<n>,key=true|false（组播，键名与协议一致）。
     """
     body = request.get_json(silent=True) or {}
     if not body:

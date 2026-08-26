@@ -79,10 +79,7 @@ OCR_SERVICE_URL = os.environ.get(
 )
 
 # ---- PLC / 门禁 / LED / TTS ----
-PLC_CONTROL_URL = os.environ.get('PLC_CONTROL_URL', '')
-# 栏杆：UDP 组播 $MDRMC,1,boombarrier=true|false → 224.0.0.100:9000
-# 出口网卡见 MCAST_IFACE_IP
-LED_CONTROL_URL = os.environ.get('LED_CONTROL_URL', '')
+# PLC / LED / 栏杆：UDP 组播 $MDRMC → 224.0.0.100:9000（出口网卡见 MCAST_IFACE_IP）
 TTS_CONTROL_URL = os.environ.get('TTS_CONTROL_URL', '')
 
 # ---- 图像存储 ----

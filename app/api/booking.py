@@ -112,7 +112,7 @@ def open_booking_session():
 
     execute_device_action('plc_001', 'setPLC', {
         'redlight': True, 'yellowlight': False, 'greenlight': False,
-        'lightgate200': False, 'lightgate160': False,
+        'xraygate200': False, 'xraygate160': False,
     })
     execute_device_action('gate_001', 'close')
     execute_device_action('led_001', 'set_step2')
@@ -540,8 +540,8 @@ def reject_booking():
     # 2. 开闸
     execute_device_action('gate_001', 'open')
 
-    # 3. LED step1: "绿通车辆 按键检测"
-    execute_device_action('led_001', 'set_step1')
+    # 3. LED：申请已取消，请通行
+    execute_device_action('led_001', 'set_display', {'code': 'SQYQX_QTX'})
 
     # 4. 停止调度器 + 渐进拉图
     try:

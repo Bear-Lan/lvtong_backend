@@ -196,39 +196,39 @@ class RadarReader(DeviceBase):
     def parse_dev_bits(value: int) -> dict:
         """新协议 DEVICE 位表（bit0 起，与中间件 ST_* 一致）→ plc_status。
 
-        ST_RED_LIGHT=0 … ST_SOUND_ALARM=17；不做写死占位。
+        ST_RED_LIGHT=0 … ST_SOUND_ALARM=15。
+        本表无伺服状态位；xraymotorreset 仅作控制键，反馈字段置 False。
         """
         return {
             'protocol': 'dev',
             'raw': int(value) & 0xFFFFFFFF,
             # 0–3 灯
-            'redLightCmd': _bit(value, 0),
-            'yellowLightCmd': _bit(value, 1),
-            'greenLightCmd': _bit(value, 2),
-            'createLightCmd': _bit(value, 3),  # ST_FILL_LIGHT
+            'redLightCmd': _bit(value, 0),       # ST_RED_LIGHT
+            'yellowLightCmd': _bit(value, 1),    # ST_YELLOW_LIGHT
+            'greenLightCmd': _bit(value, 2),     # ST_GREEN_LIGHT
+            'createLightCmd': _bit(value, 3),    # ST_FILL_LIGHT
             # 4–8
             'urgentStopCmd': _bit(value, 4),
             'urgentStopStatus': _bit(value, 4),  # ST_URGENT_STOP
-            'bookingStatus': _bit(value, 5),  # ST_APPOINTMENT
-            'stickDownStatus': _bit(value, 6),  # ST_BOOM_BARRIER
+            'bookingStatus': _bit(value, 5),     # ST_APPOINTMENT
+            'stickDownStatus': _bit(value, 6),   # ST_BOOM_BARRIER
             'groundSensorStatus': _bit(value, 7),  # ST_LOOP_DETECTOR
-            'lightScreenStatus': _bit(value, 8),  # ST_LIGHT_CURTAIN
+            'lightScreenStatus': _bit(value, 8),   # ST_LIGHT_CURTAIN
             # 9–12 光源 / 光闸
-            'lightSource200Status': _bit(value, 9),
-            'lightSource160Status': _bit(value, 10),
-            'lightGate200Status': _bit(value, 11),
-            'lightGate160Status': _bit(value, 12),
-            'xrayGate200Cmd': _bit(value, 11),  # ST_XRAY_GATE_200
-            'xrayGate160Cmd': _bit(value, 12),  # ST_XRAY_GATE_160
-            # 13–14 伺服（面板「伺服复位」与只读「伺服状态」同源）
-            'gateMotor200Status': _bit(value, 13),  # ST_XRAY_MOTOR_200
-            'gateMotor160Status': _bit(value, 14),  # ST_XRAY_MOTOR_160
-            'xrayMotorRest200Cmd': _bit(value, 13),
-            'xrayMotorRest160Cmd': _bit(value, 14),
-            # 15–17
-            'interlock160Cmd': _bit(value, 15),
-            'interlock200Cmd': _bit(value, 16),
-            'soundalarmCmd': _bit(value, 17),
+            'lightSource200Status': _bit(value, 9),   # ST_XRAY_SOURCE_200
+            'lightSource160Status': _bit(value, 10),  # ST_XRAY_SOURCE_160
+            'lightGate200Status': _bit(value, 11),    # ST_XRAY_GATE_200
+            'lightGate160Status': _bit(value, 12),    # ST_XRAY_GATE_160
+            'xrayGate200Cmd': _bit(value, 11),
+            'xrayGate160Cmd': _bit(value, 12),
+            # 13–15 内锁 / 声报（无伺服反馈位）
+            'interlock200Cmd': _bit(value, 13),  # ST_INTERLOCK_200
+            'interlock160Cmd': _bit(value, 14),  # ST_INTERLOCK_160
+            'soundalarmCmd': _bit(value, 15),    # ST_SOUND_ALARM
+            'gateMotor200Status': False,
+            'gateMotor160Status': False,
+            'xrayMotorRest200Cmd': False,
+            'xrayMotorRest160Cmd': False,
         }
 
     @classmethod
@@ -276,8 +276,6 @@ class RadarReader(DeviceBase):
                         'bookingStatus', 'soundalarmCmd',
                         'interlock160Cmd', 'interlock200Cmd',
                         'xrayGate200Cmd', 'xrayGate160Cmd',
-                        'xrayMotorRest200Cmd', 'xrayMotorRest160Cmd',
-                        'gateMotor200Status', 'gateMotor160Status',
                         # 栏杆在 cmd bit6（如 6040↔6000）
                         'stickDownStatus',
                     ):

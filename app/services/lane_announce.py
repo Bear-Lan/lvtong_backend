@@ -1,6 +1,6 @@
 """车道语音/LED 播报编排（对齐现场 5 条规则）
 
-语音：预置 wav→μ-law → 预约机 TwoWayAudio；LED 同步 set_step。
+语音：预置 wav→μ-law → 预约机 TwoWayAudio；LED 同步 set_step → $MDRMC leddisplay=。
 
 1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；一条 TwoWayAudio 长连接循环推流，句间写 3s μ-law 静音
 2. 预约键上升沿 → 立刻「申请已接收，请原地等待」

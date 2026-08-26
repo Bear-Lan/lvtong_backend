@@ -1,112 +1,97 @@
-"""LED 显示屏控制器 — pyserial 直连串口
+"""LED 显示屏 — 组播 $MDRMC leddisplay=
 
-对齐 Qt Led (device/led.cpp)
-串口协议: 二进制 hex 指令（21 字节/条）
+协议码（与中间件一致）:
+  LTCL_YYJC     绿通车辆，预约检测          ← step1
+  SQYJS_QYDDD   申请已接收，请原地等待      ← step2
+  SQYQX_QTX     申请已取消，请通行
+  JCYSL_QDDFX   检测已受理，请等待放行      ← step3
+  DJCL_QTX      待检车辆，请通行            ← step4
+  JCZ_QWKJ      检测中…请勿靠近             ← step5/6
+  JCWC_QTX      检测完成，请通行            ← step7
 
-步骤指令（从 Qt Led::createOpenCommand 直接移植）:
-  1: FE 5C 4B 89 15 00 00 00 66 92 79 95 72 02 00 00 00 01 FE FF FF
-  2: FE 5C 4B 89 15 00 00 00 66 92 79 95 72 02 00 00 00 02 FD FF FF
-  ...
-  7: FE 5C 4B 89 15 00 00 00 66 92 79 95 72 02 00 00 00 07 F8 FF FF
+业务仍用 set_step1…7；内部转 leddisplay=。
 """
-import serial
+from __future__ import annotations
+
 from app.devices.base import DeviceBase, DeviceStatus
+from app.devices.mcast_cmd import send_mdrmc
+
+# Qt/业务 step → 协议码
+STEP_TO_LEDDISPLAY = {
+    1: 'LTCL_YYJC',
+    2: 'SQYJS_QYDDD',
+    3: 'JCYSL_QDDFX',
+    4: 'DJCL_QTX',
+    5: 'JCZ_QWKJ',
+    6: 'JCZ_QWKJ',
+    7: 'JCWC_QTX',
+}
+
+STEP_MSG = {
+    1: '绿通车辆 按键检测',
+    2: '已接收 请原地等待',
+    3: '已受理 请等待放行',
+    4: '待检车辆 请通行',
+    5: '检测中 请勿靠近',
+    6: '检测中...请勿靠近',
+    7: '检测完成 请通行',
+}
+
+# 具名码（驳回等可直接 set_display）
+LEDDISPLAY_CODES = frozenset(STEP_TO_LEDDISPLAY.values()) | {
+    'SQYQX_QTX',
+}
 
 
 class LedController(DeviceBase):
-    """LED 显示屏 — 串口直连"""
+    """LED 显示屏 — $MDRMC,1,leddisplay=…"""
 
-    # 每步对应的 21 字节 hex 指令（从 Qt Led::createOpenCommand 逐字节移植）
-    STEPS = {
-        1: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x01, 0xFE, 0xFF, 0xFF]),
-        2: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x02, 0xFD, 0xFF, 0xFF]),
-        3: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x03, 0xFC, 0xFF, 0xFF]),
-        4: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x04, 0xFB, 0xFF, 0xFF]),
-        5: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x05, 0xFA, 0xFF, 0xFF]),
-        6: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x06, 0xF9, 0xFF, 0xFF]),
-        7: bytes([0xFE, 0x5C, 0x4B, 0x89, 0x15, 0x00, 0x00, 0x00, 0x66, 0x92,
-                  0x79, 0x95, 0x72, 0x02, 0x00, 0x00, 0x00, 0x07, 0xF8, 0xFF, 0xFF]),
-    }
-
-    STEP_MSG = {
-        1: '绿通车辆 按键检测',
-        2: '已接收 请原地等待',
-        3: '已受理 请等待放行',
-        4: '待检车辆 请通行 勿停车倒车',
-        5: '检测中 请勿跟车',
-        6: '检测中...请勿靠近',
-        7: '检测完成 请通行',
-    }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._serial: serial.Serial | None = None
-
-    # ========== 初始化 ==========
+    STEP_MSG = STEP_MSG
 
     def initialize(self) -> bool:
-        try:
-            port = self.ip_address or self.config.get('port_name', 'COM3')
-            baudrate = self.config.get('baud_rate', 9600)
-
-            self._serial = serial.Serial(
-                port=port,
-                baudrate=baudrate,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,
-                # 过长 write_timeout 会在串口异常时长时间堵住调用方
-                write_timeout=0.5,
-            )
-            self._serial.reset_input_buffer()
-
-            self.status = DeviceStatus.Online
-            return True
-
-        except serial.SerialException as e:
-            self._last_error = f'LED串口打开失败: {e}'
-            self.status = DeviceStatus.Offline
-            return False
+        self.status = DeviceStatus.Online
+        self._last_error = ''
+        return True
 
     def health_check(self) -> bool:
-        return self._serial is not None and self._serial.is_open
+        return True
 
     def reconnect(self) -> bool:
-        self.shutdown()
         return self.initialize()
 
     def execute_action(self, action: str, params: dict | None = None) -> bool:
+        params = params or {}
         if action.startswith('set_step'):
-            step = int(action.replace('set_step', ''))
+            try:
+                step = int(action.replace('set_step', ''))
+            except ValueError:
+                return False
             return self.set_step(step)
+        if action in ('set_display', 'leddisplay'):
+            code = str(params.get('code') or params.get('leddisplay') or '').strip()
+            return self.set_display(code)
         return False
 
     def set_step(self, step: int) -> bool:
-        """发送步骤指令到 LED 屏"""
-        data = self.STEPS.get(step)
-        if data is None:
+        code = STEP_TO_LEDDISPLAY.get(int(step))
+        if not code:
+            self._last_error = f'未知 LED step={step}'
             return False
-        if not self._serial or not self._serial.is_open:
+        return self.set_display(code)
+
+    def set_display(self, code: str) -> bool:
+        code = (code or '').strip()
+        if not code:
             return False
-        try:
-            self._serial.write(data)
-            self._serial.flush()
-            return True
-        except serial.SerialException:
+        ok = send_mdrmc(f'leddisplay={code}')
+        if not ok:
+            self._last_error = f'MDRMC leddisplay={code} 发送失败'
             self.status = DeviceStatus.Offline
             return False
+        self.status = DeviceStatus.Online
+        self._last_error = ''
+        print(f'[LED:{self.device_id}] MDRMC leddisplay={code}', flush=True)
+        return True
 
     def shutdown(self):
-        if self._serial and self._serial.is_open:
-            try:
-                self._serial.close()
-            except Exception:
-                pass
-        self._serial = None
+        pass
