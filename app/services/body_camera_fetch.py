@@ -1,9 +1,8 @@
-"""车身相机（:5002）
+"""车身相机（:5002 拉图）
 
-  1. 抬杆放行 → GET /camera/capture（中间件开始采集）
-  2. 雷达距离 25–28m → 持续 GET /camera/image，每 0.2s 一帧推 WS body.1，直到：
-       - 响应头 Capture-Finish = true
-       - 或响应体是 JSON
+  1. 抬杆放行 → 组播 $MDRMC,1,camcap=true（开始采集）
+  2. 雷达距离 25–28m → 持续 GET /camera/image，每 0.2s 一帧推 WS body.1
+  3. 采集结束 / 停止 → 组播 $MDRMC,1,camcap=false
 """
 from __future__ import annotations
 
@@ -15,7 +14,6 @@ logger = logging.getLogger('body_camera_fetch')
 
 POLL_INTERVAL_SEC = 0.2
 POLL_TIMEOUT: tuple[float, float] = (3.0, 12.0)
-CAPTURE_TIMEOUT: tuple[float, float] = (3.0, 8.0)
 # 安全上限，避免无限拉
 MAX_POLL_SEC = 180.0
 
@@ -47,6 +45,7 @@ class BodyCameraFetcher:
             self._stop.set()
             self._started = False
             print('[BODY-CAM] 停止拉图', flush=True)
+        _send_camcap(False)
 
     def trigger_capture(self) -> None:
         """抬杆放行时调用：仅发 capture，不启动轮询。"""
@@ -87,26 +86,12 @@ class BodyCameraFetcher:
         self._worker.start()
 
     def _trigger_capture(self) -> bool:
-        from config.devices import BODY_CAMERA_CAPTURE_URL
-        from app.services.middleware_http import middleware_get
-
-        url = (BODY_CAMERA_CAPTURE_URL or '').strip()
-        if not url:
-            print('[BODY-CAM] BODY_CAMERA_CAPTURE_URL 空，跳过 capture', flush=True)
-            return False
-        try:
-            print(f'[BODY-CAM] capture → {url}', flush=True)
-            resp = middleware_get(url, timeout=CAPTURE_TIMEOUT)
-            ok = resp.status_code == 200
-            print(
-                f'[BODY-CAM] capture HTTP {resp.status_code} '
-                f'len={len(resp.content or b"")}',
-                flush=True,
-            )
-            return ok
-        except Exception as e:
-            print(f'[BODY-CAM] capture 失败: {e}', flush=True)
-            return False
+        ok = _send_camcap(True)
+        if ok:
+            print('[BODY-CAM] camcap=true 组播已发', flush=True)
+        else:
+            print('[BODY-CAM] camcap=true 组播失败', flush=True)
+        return ok
 
     def _poll_images(self) -> None:
         from config.devices import BODY_CAMERA_IMAGE_URL
@@ -123,49 +108,53 @@ class BodyCameraFetcher:
         t0 = time.monotonic()
         print(f'[BODY-CAM] 开始持续拉图 {url}', flush=True)
 
-        while not self._stop.is_set():
-            if time.monotonic() - t0 > MAX_POLL_SEC:
-                print(
-                    f'[BODY-CAM] 超时结束 frames={self._frame_count} '
-                    f'limit={MAX_POLL_SEC:.0f}s',
-                    flush=True,
-                )
-                break
+        try:
+            while not self._stop.is_set():
+                if time.monotonic() - t0 > MAX_POLL_SEC:
+                    print(
+                        f'[BODY-CAM] 超时结束 frames={self._frame_count} '
+                        f'limit={MAX_POLL_SEC:.0f}s',
+                        flush=True,
+                    )
+                    break
 
-            try:
-                resp = middleware_get(url, timeout=POLL_TIMEOUT)
-            except Exception as e:
-                print(f'[BODY-CAM] image GET 失败: {e}', flush=True)
+                try:
+                    resp = middleware_get(url, timeout=POLL_TIMEOUT)
+                except Exception as e:
+                    print(f'[BODY-CAM] image GET 失败: {e}', flush=True)
+                    if self._stop.wait(POLL_INTERVAL_SEC):
+                        break
+                    continue
+
+                finished, reason = _is_capture_finished(resp)
+                if finished:
+                    if _looks_like_image(resp):
+                        self._push_frame(
+                            resp.content, temp_image_cache, jpeg_preview_bytes,
+                            push_image_ready_group,
+                        )
+                    print(
+                        f'[BODY-CAM] 采集结束 reason={reason} '
+                        f'frames={self._frame_count}',
+                        flush=True,
+                    )
+                    break
+
+                if resp.status_code == 200 and _looks_like_image(resp):
+                    self._push_frame(
+                        resp.content, temp_image_cache, jpeg_preview_bytes,
+                        push_image_ready_group,
+                    )
+                elif resp.status_code != 200:
+                    print(
+                        f'[BODY-CAM] image HTTP {resp.status_code}，继续轮询',
+                        flush=True,
+                    )
+
                 if self._stop.wait(POLL_INTERVAL_SEC):
                     break
-                continue
-
-            finished, reason = _is_capture_finished(resp)
-            if finished:
-                # 结束帧若仍是图，尽量推一帧
-                if _looks_like_image(resp):
-                    self._push_frame(resp.content, temp_image_cache, jpeg_preview_bytes,
-                                    push_image_ready_group)
-                print(
-                    f'[BODY-CAM] 采集结束 reason={reason} '
-                    f'frames={self._frame_count}',
-                    flush=True,
-                )
-                break
-
-            if resp.status_code == 200 and _looks_like_image(resp):
-                self._push_frame(
-                    resp.content, temp_image_cache, jpeg_preview_bytes,
-                    push_image_ready_group,
-                )
-            elif resp.status_code != 200:
-                print(
-                    f'[BODY-CAM] image HTTP {resp.status_code}，继续轮询',
-                    flush=True,
-                )
-
-            if self._stop.wait(POLL_INTERVAL_SEC):
-                break
+        finally:
+            _send_camcap(False)
 
     def _push_frame(self, raw: bytes, cache, jpeg_preview_bytes, push_fn) -> None:
         try:
@@ -224,8 +213,13 @@ def _looks_like_image(resp) -> bool:
     return False
 
 
+def _send_camcap(enabled: bool) -> bool:
+    from app.devices.mcast_cmd import send_camcap
+    return send_camcap(enabled)
+
+
 def trigger_body_camera_capture() -> None:
-    """抬杆放行 → 发 capture 命令。"""
+    """抬杆放行 → 组播 camcap=true。"""
     BodyCameraFetcher().trigger_capture()
 
 

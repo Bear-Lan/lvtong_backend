@@ -1,13 +1,15 @@
 """X 光机控制器
 
-启扫：GET {base}/xray/capture?type=small|large&triggeroffset={车头长}
-type / triggeroffset 优先取预约受理写入的 _booking_state。
+启扫：组播 $MDRMC,1,xraycap=true&{车头长}&{small|large}
+关闭：组播 $MDRMC,1,xraycap=false
+type / 车头长优先取预约受理写入的 _booking_state。
 """
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from __future__ import annotations
 
 import requests
 
 from app.devices.base import DeviceBase, DeviceStatus
+from app.devices.mcast_cmd import format_xraycap_command, send_xraycap
 
 # 与前端 bookingMath.BIG_HEIGHT_THRESHOLD 一致：>2.8m → large
 _BIG_HEIGHT_THRESHOLD = 2.8
@@ -34,7 +36,7 @@ def _booking_scan_params(
     car_length: float | None = None,
     vehicle_type: str = '',
 ) -> tuple[str, float]:
-    """从预约状态补齐 type / triggeroffset。"""
+    """从预约状态补齐 type / 车头长。"""
     height = None
     length = car_length
     vtype = vehicle_type
@@ -62,22 +64,17 @@ def _booking_scan_params(
     return _normalize_vehicle_type(vtype, height), length_f
 
 
-def build_capture_url(base: str, vehicle_type: str, triggeroffset: float) -> str:
-    """拼启扫 URL；去掉旧 frames/id 等，只保留 type + triggeroffset。"""
-    base = (base or '').strip()
-    if not base:
-        return ''
-    parts = urlsplit(base)
-    # 若配置已带 ?frames=…&triggeroffset=…&id= 等，整段 query 重写
-    path = parts.path or '/xray/capture'
-    if not path.endswith('/capture') and '/xray/capture' not in path:
-        # 允许只配到 host:port
-        path = '/xray/capture' if path in ('', '/') else path.rstrip('/') + '/xray/capture'
-    query = urlencode({
-        'type': vehicle_type,
-        'triggeroffset': f'{triggeroffset:g}',
-    })
-    return urlunsplit((parts.scheme, parts.netloc, path, query, ''))
+def send_xray_capture(enabled: bool, *, car_length=None, vehicle_type: str = '') -> bool:
+    """组播 xraycap 启停（供 booking 驳回等场景直接调用）。"""
+    vtype, length = _booking_scan_params(car_length, vehicle_type)
+    cmd = format_xraycap_command(enabled, length, vtype)
+    ok = send_xraycap(enabled, car_length=length, vehicle_type=vtype)
+    action = '启扫' if enabled else '关闭'
+    print(
+        f'[XRAY] xraycap {action} → $MDRMC,1,{cmd} ok={ok}',
+        flush=True,
+    )
+    return ok
 
 
 class XRayController(DeviceBase):
@@ -111,20 +108,12 @@ class XRayController(DeviceBase):
                 params.get('scan_id', ''),
                 params.get('vehicle_type', ''),
             )
-        return False
-
-    def _resolve_start_base(self, channel: str) -> str:
-        """启扫 base URL：只读 devices.py / 环境变量（不读 DB）。"""
-        try:
-            from config.devices import (
-                XRAY_START_TRANSPARENT_URL,
-                XRAY_START_YR_TRANSPARENT_URL,
+        if action == 'stop_scan':
+            return self.stop_scan(
+                params.get('car_length'),
+                params.get('vehicle_type', ''),
             )
-            if str(channel) == '160':
-                return (XRAY_START_YR_TRANSPARENT_URL or XRAY_START_TRANSPARENT_URL or '').strip()
-            return (XRAY_START_TRANSPARENT_URL or '').strip()
-        except Exception:
-            return ''
+        return False
 
     def start_scan(
         self,
@@ -133,7 +122,11 @@ class XRayController(DeviceBase):
         scan_id: str = '',
         vehicle_type: str = '',
     ) -> bool:
-        # 预约「透视关」：一律不发启扫
+        _ = scan_id
+        if str(channel) == '160':
+            print('[XRAY] 160 启扫暂不支持，跳过', flush=True)
+            return True
+
         try:
             from app.api.booking import get_booking_state
             if not bool((get_booking_state() or {}).get('is_check_xray', True)):
@@ -145,32 +138,17 @@ class XRayController(DeviceBase):
         except Exception:
             pass
 
-        base = self._resolve_start_base(channel)
-        if not base:
-            self._last_error = f'未配置启扫 URL (channel={channel})'
-            return False
+        ok = send_xray_capture(True, car_length=car_length, vehicle_type=vehicle_type)
+        if not ok:
+            self._last_error = 'MDRMC xraycap 发送失败'
+        return ok
 
-        vtype, offset = _booking_scan_params(car_length, vehicle_type)
-        full_url = build_capture_url(base, vtype, offset)
-        # 兼容旧配置：若 base 已是完整 capture 且带 query，build 已重写；
-        # scan_id 新协议不用，忽略
-        _ = scan_id
-        try:
-            from app.services.middleware_http import middleware_get
-
-            print(
-                f'[XRAY] start_scan ch={channel} → {full_url}',
-                flush=True,
-            )
-            resp = middleware_get(full_url, timeout=10)
-            ok = resp.status_code == 200
-            if not ok:
-                self._last_error = f'HTTP {resp.status_code}'
-            return ok
-        except Exception as e:
-            self._last_error = str(e)
-            print(f'[XRAY] start_scan 失败: {e}', flush=True)
-            return False
+    def stop_scan(
+        self,
+        car_length: float | None = None,
+        vehicle_type: str = '',
+    ) -> bool:
+        return send_xray_capture(False, car_length=car_length, vehicle_type=vehicle_type)
 
     def get_image_url(self, channel: str) -> str:
         return self.config.get(f'image_{channel}_url', '')

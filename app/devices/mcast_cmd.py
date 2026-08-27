@@ -3,6 +3,9 @@
 协议例：
   $MDRMC,1,boombarrier=true
   $MDRMC,1,boombarrier=false
+  $MDRMC,1,camcap=true
+  $MDRMC,1,camcap=false
+  $MDRMC,1,xraycap=true&1.8&large
   $MDRMC,3,redlight=true,greenlight=false,leddisplay=LTCL_YYJC
 
 默认发往 224.0.0.100:9000；出口网卡取 MCAST_IFACE_IP / 自动猜测。
@@ -63,3 +66,41 @@ def publish_mdrmc(message: str) -> bool:
                     sock.close()
                 except OSError:
                     pass
+
+
+def send_camcap(enabled: bool) -> bool:
+    """车身相机采集开关：$MDRMC,1,camcap=true|false"""
+    flag = 'true' if enabled else 'false'
+    return send_mdrmc(f'camcap={flag}')
+
+
+def format_xraycap_command(
+    enabled: bool,
+    car_length: float,
+    vehicle_type: str,
+) -> str:
+    """xraycap 命令体：true&车头长&车型 或 false"""
+    flag = 'true' if enabled else 'false'
+    if not enabled:
+        return f'xraycap={flag}'
+    try:
+        length = f'{float(car_length):g}'
+    except (TypeError, ValueError):
+        length = '1.5'
+    vtype = (vehicle_type or 'small').strip().lower()
+    if vtype in ('big',):
+        vtype = 'large'
+    if vtype not in ('small', 'large'):
+        vtype = 'small'
+    return f'xraycap={flag}&{length}&{vtype}'
+
+
+def send_xraycap(
+    enabled: bool,
+    *,
+    car_length: float = 1.5,
+    vehicle_type: str = 'small',
+) -> bool:
+    """透视光机开关：$MDRMC,1,xraycap=true&1.8&large"""
+    cmd = format_xraycap_command(enabled, car_length, vehicle_type)
+    return send_mdrmc(cmd)

@@ -52,6 +52,8 @@ class DistanceScheduler:
         # 对齐 Qt：受理后 check_step=1，车道正常累计 >4 次再抬杆
         self._release_clear_count = 0
         self._gate_released = False
+        # 抬杆放行：物体个数=1 时须 distance >= minClearDistance
+        self._gate_release_min_distance = 25.0
         # 车尾拍照：光幕下沿记距 x，待雷达 < x-5 再拍
         self._prev_light_screen = False
         self._tail_anchor_x: float | None = None
@@ -119,7 +121,7 @@ class DistanceScheduler:
         count = int(object_count) if object_count is not None else (1 if int(mode) > 0 else 0)
 
         # 推送 WebSocket（仅受理后）— 驱动前端底部小车
-        push_radar_distance(distance, mode)
+        push_radar_distance(distance, mode, object_count=count)
         # 低频日志，便于确认「受理后有距离 → 小车应移动」
         n = getattr(self, '_radar_push_count', 0) + 1
         self._radar_push_count = n
@@ -134,7 +136,7 @@ class DistanceScheduler:
         # VMRMC：物体个数==1 为正常；否则占用/无车，不累计
         if intrusion is None:
             intrusion = count != 1
-        self._try_release_after_accept(count, intrusion=intrusion)
+        self._try_release_after_accept(count, distance, intrusion=intrusion)
 
         # 车尾拍照：光幕下沿记 x，雷达 < x-5 时触发
         self._try_tail_capture(distance)
@@ -143,11 +145,17 @@ class DistanceScheduler:
         self._process_distance_update(distance)
 
     def _try_release_after_accept(
-        self, object_count: int, *, intrusion: bool | None = None,
+        self,
+        object_count: int,
+        distance: float,
+        *,
+        intrusion: bool | None = None,
     ) -> None:
         """受理后未放行：车道正常累计 >4 次 → 绿灯 + 开闸（Qt m_radarCount > 4）。
 
-        现场约定：$VMRMC 物体个数 == 1 → 正常；其它 → 占用/异常。
+        现场约定：
+          - $VMRMC 物体个数 == 1 → 正常；其它 → 占用/异常
+          - 物体个数 == 1 且距离 < gateRelease.minClearDistance → 车道占用，不抬杆
         """
         if self._gate_released or not self._is_detection:
             return
@@ -159,10 +167,25 @@ class DistanceScheduler:
                 return
 
             occupied = bool(intrusion) if intrusion is not None else (object_count != 1)
+            min_clear = float(self._gate_release_min_distance or 0)
+            too_close = (
+                not occupied
+                and object_count == 1
+                and min_clear > 0
+                and float(distance) < min_clear
+            )
+            if too_close:
+                occupied = True
+
             if occupied:
                 if self._release_clear_count:
+                    reason = (
+                        f'distance={distance:.2f}<{min_clear:.1f}m'
+                        if too_close
+                        else f'objects={object_count}'
+                    )
                     print(
-                        f'[SCHEDULER] 放行等待中断：objects={object_count}，清零累计',
+                        f'[SCHEDULER] 放行等待中断：{reason}，清零累计',
                         flush=True,
                     )
                 self._release_clear_count = 0
@@ -179,7 +202,8 @@ class DistanceScheduler:
                 if self._release_clear_count == 1 or self._release_clear_count == 4:
                     print(
                         f'[SCHEDULER] 放行确认中 {self._release_clear_count}/5 '
-                        f'(objects={object_count} 正常)',
+                        f'(objects={object_count} distance={distance:.2f}m '
+                        f'min={min_clear:.1f}m)',
                         flush=True,
                     )
                 return
@@ -205,7 +229,7 @@ class DistanceScheduler:
                     execute_device_action('gate_001', 'open')
                 except Exception as e:
                     print(f'[SCHEDULER] 放行开闸失败: {e}', flush=True)
-                # 车道 5 次确认后抬杆：触发车身相机 capture（轮询在雷达 25–28m）
+                # 抬杆：camcap=true + xraycap 启扫（车身/200 透视轮询在雷达 25–28m）
                 try:
                     from app.services.body_camera_fetch import (
                         trigger_body_camera_capture,
@@ -214,7 +238,11 @@ class DistanceScheduler:
                 except Exception as e:
                     print(f'[SCHEDULER] 车身相机 capture 失败: {e}', flush=True)
                 try:
-                    push_detection_step(2, '放行中')
+                    self._trigger_xray_start_scan()
+                except Exception as e:
+                    print(f'[SCHEDULER] 光机启扫失败: {e}', flush=True)
+                try:
+                    push_detection_step(2, '放行中', gate_released=True)
                     push_lane_occupied(False)
                 except Exception:
                     pass
@@ -224,6 +252,28 @@ class DistanceScheduler:
             ).start()
         except Exception as e:
             print(f'[SCHEDULER] 放行判定异常: {e}', flush=True)
+
+    def _trigger_xray_start_scan(self) -> None:
+        """抬杆时组播 $MDRMC,1,xraycap=true&{车头长}&{车型}（与 camcap 同时）。"""
+        try:
+            from app.api.booking import get_booking_state
+            st = get_booking_state() or {}
+            if not bool(st.get('is_check_xray', True)):
+                print(
+                    '[SCHEDULER] skip xray start_scan (透视关 is_check_xray=False)',
+                    flush=True,
+                )
+                return
+        except Exception:
+            st = {}
+
+        from app.services.device_action import execute_device_action
+        scan_params = {
+            'channel': '200',
+            'vehicle_type': st.get('vehicle_type') or '',
+            'car_length': st.get('car_length'),
+        }
+        execute_device_action('xray_200', 'start_scan', scan_params)
 
     def on_plc_status(self, parsed: dict) -> None:
         """组播 DEVICE：检测光幕下沿（lightScreen true→false），记当前距离为车尾拍照锚点。"""
@@ -319,85 +369,28 @@ class DistanceScheduler:
         for device_id, _, _ in actions:
             self._device_activation_status[device_id] = True
 
-        # 雷达距离 25–28m：拉透视图 + 车身轮询 + 启扫
+        # 雷达距离 25–28m：车身 + 200 透视 0.2s 轮询
         if threshold.id == 'xray_capture_trigger':
-            xray_actions = [
-                (d, a, p) for d, a, p in actions if str(d).startswith('xray_')
-            ]
-            actions = [
-                (d, a, p) for d, a, p in actions if not str(d).startswith('xray_')
-            ]
-
-            def _panel_then_scan() -> None:
+            def _start_25_28m_poll() -> None:
                 try:
                     from app.services.body_camera_fetch import start_body_camera_poll
                     start_body_camera_poll()
                 except Exception as e:
                     print(f'[SCHEDULER] 车身相机轮询启动失败: {e}', flush=True)
-
                 try:
                     from app.services.progressive_image_fetch import (
-                        ProgressivePanelFetcher,
                         start_progressive_panel_fetch,
                     )
                     start_progressive_panel_fetch()
-                    worker = ProgressivePanelFetcher()._worker
-                    if worker is not None and worker.is_alive():
-                        worker.join(timeout=120.0)
                 except Exception as e:
-                    print(f'[SCHEDULER] 渐进拉图启动失败: {e}', flush=True)
-
-                # 预约弹窗「透视关」→ 不发光机启扫
-                try:
-                    from app.api.booking import get_booking_state
-                    st = get_booking_state() or {}
-                    xray_on = bool(st.get('is_check_xray', True))
-                except Exception:
-                    st = {}
-                    xray_on = True
-                if not xray_on:
-                    print(
-                        '[SCHEDULER] skip xray start_scan (透视关 is_check_xray=False)',
-                        flush=True,
-                    )
-                    return
-
-                if not xray_actions:
-                    return
-                # 启扫：type=small|large、triggeroffset=车头长（来自预约）
-                scan_params = {
-                    'vehicle_type': st.get('vehicle_type') or '',
-                    'car_length': st.get('car_length'),
-                }
-                from app.services.device_action import execute_device_action
-                started_urls: set[str] = set()
-                for device_id, action, params in xray_actions:
-                    merged = {
-                        **(params or {}),
-                        **{k: v for k, v in scan_params.items() if v not in (None, '')},
-                    }
-                    try:
-                        ch = str(merged.get('channel') or '')
-                        if ch == '160' and started_urls:
-                            print(
-                                f'[SCHEDULER] skip duplicate xray start ({device_id})',
-                                flush=True,
-                            )
-                            continue
-                        execute_device_action(device_id, action, merged)
-                        started_urls.add(device_id)
-                    except Exception as e:
-                        print(
-                            f'[SCHEDULER] async action failed '
-                            f'{threshold.id}/{device_id}.{action}: {e}',
-                            flush=True,
-                        )
+                    print(f'[SCHEDULER] 200 透视轮询启动失败: {e}', flush=True)
 
             threading.Thread(
-                target=_panel_then_scan,
+                target=_start_25_28m_poll,
                 daemon=True,
-                name='panel-then-xray',
+                name='radar-25-28m-image-poll',
             ).start()
+            return
 
         if actions:
             threshold_id = threshold.id
@@ -525,6 +518,14 @@ class DistanceScheduler:
         """
         thresholds_data = config.get('thresholds', [])
         self._distance_thresholds = []
+        gate_release = config.get('gateRelease') or {}
+        try:
+            self._gate_release_min_distance = float(
+                gate_release.get('minClearDistance', 25.0),
+            )
+        except (TypeError, ValueError):
+            self._gate_release_min_distance = 25.0
+
         for item in thresholds_data:
             t = DistanceThreshold(
                 id=item.get('id', ''),
@@ -559,8 +560,11 @@ class DistanceScheduler:
                 ))
             self._plc_state_rules.append(rule)
 
-        print(f'[SCHEDULER] 加载 {len(self._distance_thresholds)} 个距离阈值, '
-              f'{len(self._plc_state_rules)} 个PLC规则')
+        print(
+            f'[SCHEDULER] 加载 {len(self._distance_thresholds)} 个距离阈值, '
+            f'{len(self._plc_state_rules)} 个PLC规则, '
+            f'抬杆最小净空距离={self._gate_release_min_distance:.1f}m',
+        )
 
     def load_configuration_from_file(self, filepath: str, car_head_length: float = 1.8):
         """从文件加载配置

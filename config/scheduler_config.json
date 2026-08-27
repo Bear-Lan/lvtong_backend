@@ -1,4 +1,8 @@
 {
+  "gateRelease": {
+    "minClearDistance": 21.0,
+    "description": "健康检测：物体个数=1时，距离须>=该值才允许抬杆；小于则车道占用"
+  },
   "thresholds": [
     {
       "id": "initial_approach",
@@ -50,13 +54,11 @@
     },
     {
       "id": "xray_capture_trigger",
-      "minDistance": 25,
+      "minDistance": 23,
       "maxDistance": 28,
-      "description": "雷达距离25-28m：拉透视 + 车身轮询 + X光启扫",
+      "description": "雷达距离23-28m：车身+200透视轮询",
       "isActive": true,
-      "deviceActions": {
-        "xray_200": {"action": "start_scan", "params": {"channel": "200"}}
-      }
+      "deviceActions": {}
     },
     {
       "id": "auto_capture_head",

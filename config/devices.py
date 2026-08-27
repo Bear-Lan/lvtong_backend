@@ -38,9 +38,8 @@ MCAST_PORT = int(os.environ.get('MCAST_PORT', '9000'))
 #   set MCAST_IFACE_IP=192.168.0.138
 MCAST_IFACE_IP = os.environ.get('MCAST_IFACE_IP', '')
 
-# ---- X 光机启扫 ----
-# GET {base}?type=small|large&triggeroffset={预约车头长}
-# type / triggeroffset 由 XRayController 按预约状态拼，这里只配 base（可带旧 query，运行时会重写）
+# ---- X 光机启扫（组播）----
+# $MDRMC,1,xraycap=true&{车头长}&{small|large}；拉图仍走 :5003/xray/image
 XRAY_BASE_URL = os.environ.get(
     'XRAY_BASE_URL', 'http://192.168.88.201:5003'
 )
@@ -54,8 +53,8 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
     XRAY_START_TRANSPARENT_URL,
 )
 
-# ---- 车身相机（:5002）----
-# 抬杆时先 GET capture 才会开始采；再持续 GET image 直到 Capture-Finish 或 JSON
+# ---- 车身相机（:5002 拉图）----
+# 启停采集：组播 $MDRMC,1,camcap=true|false；轮询 GET /camera/image
 BODY_CAMERA_CAPTURE_URL = os.environ.get(
     'BODY_CAMERA_CAPTURE_URL',
     'http://192.168.88.201:5002/camera/capture',
@@ -70,14 +69,13 @@ BODY_TOP_IMAGE_URL = os.environ.get('BODY_TOP_IMAGE_URL', image_fetch_url('vtop'
 BODY_SIDE_IMAGE_URL = os.environ.get('BODY_SIDE_IMAGE_URL', image_fetch_url('vside'))
 BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')
 
-# ---- 透视：200=x200 / 160=x160 / 拼接=merge ----
-TRANSPARENT_IMAGE_URL = os.environ.get(
-    'TRANSPARENT_IMAGE_URL', image_fetch_url('x200'),
+# ---- 透视：200=:5003/xray/image；160/拼接暂不接 ----
+XRAY_IMAGE_URL = os.environ.get(
+    'XRAY_IMAGE_URL', 'http://192.168.88.201:5003/xray/image',
 )
-YR_TRANSPARENT_IMAGE_URL = os.environ.get(
-    'YR_TRANSPARENT_IMAGE_URL', image_fetch_url('x160'),
-)
-STITCH_IMAGE_URL = os.environ.get('STITCH_IMAGE_URL', image_fetch_url('merge'))
+TRANSPARENT_IMAGE_URL = os.environ.get('TRANSPARENT_IMAGE_URL', XRAY_IMAGE_URL)
+YR_TRANSPARENT_IMAGE_URL = os.environ.get('YR_TRANSPARENT_IMAGE_URL', '')
+STITCH_IMAGE_URL = os.environ.get('STITCH_IMAGE_URL', '')
 
 # ---- AI 统一服务 ----
 # 业务：行驶证 AI 裁剪、装载率 mask、货车/货箱识别等 → AI_DETECT_URL (.../detect)

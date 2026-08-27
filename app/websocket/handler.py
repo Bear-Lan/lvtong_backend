@@ -122,7 +122,7 @@ _last_plc_lock = threading.Lock()
 # 雷达距离推送节流：硬件常 ~10Hz；过密会压 gevent + 前端重绘
 _RADAR_MIN_INTERVAL_SEC = 0.08  # ≈12.5 Hz 上限
 _RADAR_MIN_DELTA_M = 0.05
-_radar_push_state = {'t': 0.0, 'd': None, 'mode': None}
+_radar_push_state = {'t': 0.0, 'd': None, 'mode': None, 'count': None}
 _radar_push_lock = threading.Lock()
 
 
@@ -132,20 +132,28 @@ def get_last_plc_status() -> dict | None:
         return dict(_last_plc_data) if _last_plc_data else None
 
 
-def push_radar_distance(distance: float, mode: int = 1):
+def push_radar_distance(
+    distance: float,
+    mode: int = 1,
+    *,
+    object_count: int | None = None,
+):
     """推送雷达距离更新（节流后约 ≤12Hz，且距离变化过小则跳过）
 
     Qt 参考: DistanceBasedScheduler::distanceChanged
     """
     now = time.monotonic()
     rounded = round(distance, 2)
+    count = int(object_count) if object_count is not None else None
     with _radar_push_lock:
         last_t = _radar_push_state['t']
         last_d = _radar_push_state['d']
         last_mode = _radar_push_state['mode']
+        last_count = _radar_push_state.get('count')
         if (
             last_d is not None
             and last_mode == mode
+            and last_count == count
             and (now - last_t) < _RADAR_MIN_INTERVAL_SEC
             and abs(rounded - float(last_d)) < _RADAR_MIN_DELTA_M
         ):
@@ -153,14 +161,20 @@ def push_radar_distance(distance: float, mode: int = 1):
         _radar_push_state['t'] = now
         _radar_push_state['d'] = rounded
         _radar_push_state['mode'] = mode
+        if count is not None:
+            _radar_push_state['count'] = count
+
+    payload: dict = {
+        'distance': rounded,
+        'mode': mode,
+    }
+    if count is not None:
+        payload['objectCount'] = count
 
     socketio.emit('message', {
         'type': 'radar_distance',
         'timestamp': int(time.time() * 1000),
-        'data': {
-            'distance': rounded,
-            'mode': mode,
-        },
+        'data': payload,
     })
 
 
@@ -300,19 +314,23 @@ def push_dm_temp(temperatures: list[float]):
     })
 
 
-def push_detection_step(step: int, message: str = ''):
+def push_detection_step(step: int, message: str = '', *, gate_released: bool = False):
     """推送检测流程步骤变化
 
     Qt 参考: m_checkstep 的各个阶段
     步骤: 0=空闲, 1=预约等待, 2=放行中, 3=检测中, 4=检测完成
+    gate_released: True 表示抬杆放行（区别于距离阈值误推的 step=2）
     """
+    data: dict = {
+        'step': step,
+        'message': message,
+    }
+    if gate_released:
+        data['gateReleased'] = True
     socketio.emit('message', {
         'type': 'detection_step',
         'timestamp': int(time.time() * 1000),
-        'data': {
-            'step': step,
-            'message': message,
-        },
+        'data': data,
     })
 
 

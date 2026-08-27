@@ -1,7 +1,7 @@
 """中间层出图（按 type 拉图）
 
   车身影像：cam / vtop / vside
-  透视影像：x200 / x160（拼接图暂无）
+  透视影像：200=:5003/xray/image；160/拼接暂不接
   预约雷达：appt（booking /radar-image 另走 RADAR_HEAD_URL）
 
 拉远程图 → 放内存临时缓存 → 推 image_ready（/api/temp-images/<id>）。
@@ -83,9 +83,13 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
         # body1 车身 cam 由 body_camera_fetch（:5002）负责，此处不拉
         'body2': BODY_TOP_IMAGE_URL,       # vtop
         'body3': BODY_SIDE_IMAGE_URL,      # vside
-        'x200': TRANSPARENT_IMAGE_URL,     # x200
-        'x160': YR_TRANSPARENT_IMAGE_URL,  # x160
     }
+    x200_url = (TRANSPARENT_IMAGE_URL or '').strip()
+    if x200_url:
+        jobs['x200'] = x200_url
+    x160_url = (YR_TRANSPARENT_IMAGE_URL or '').strip()
+    if x160_url:
+        jobs['x160'] = x160_url
 
     previews: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=5) as pool:
