@@ -84,6 +84,15 @@ def _fetch_one(
     return None
 
 
+def _panel_push_allowed() -> bool:
+    """重置后 is_detection=False，丢弃仍在途的 progressive 帧。"""
+    try:
+        from app.api.booking import _booking_state
+        return bool(_booking_state.get('is_detection'))
+    except Exception:
+        return False
+
+
 class ProgressivePanelFetcher:
     """200 透视轮询协调器（单例）。"""
 
@@ -217,6 +226,9 @@ class ProgressivePanelFetcher:
                 print(f'[PROG-IMG] xraycap=false 失败: {e}', flush=True)
 
     def _push_x200_frame(self, raw: bytes) -> None:
+        if not _panel_push_allowed():
+            print('[PROG-IMG] 200 透视帧丢弃（非检测中）', flush=True)
+            return
         from app.services import temp_image_cache
         from app.services.image_preview import jpeg_preview_bytes
 
