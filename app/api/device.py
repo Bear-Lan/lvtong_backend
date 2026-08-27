@@ -274,6 +274,28 @@ def gate_status():
 
 # ---- 重连 ----
 
+@device_api.route('/body-radar-image', methods=['POST'])
+@login_required
+def body_radar_image():
+    """切换显示车顶/车侧雷达图时按需拉图。
+
+    Body: { view: 'top' | 'side' }
+    """
+    body = request.get_json(silent=True) or {}
+    view = str(body.get('view') or '').strip().lower()
+    if view not in ('top', 'side'):
+        return fail(400, 'view 须为 top 或 side')
+
+    from app.services.progressive_image_fetch import fetch_body_radar_image
+
+    image_url = fetch_body_radar_image(view)
+    if not image_url:
+        return fail(502, f'{view} 雷达图拉取失败')
+
+    slot = '2' if view == 'top' else '3'
+    return ok({'imageUrl': image_url, 'view': view, 'slot': slot})
+
+
 @device_api.route('/reconnect', methods=['POST'])
 @login_required
 def reconnect_devices():

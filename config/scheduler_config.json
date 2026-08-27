@@ -39,10 +39,20 @@
       }
     },
     {
+      "id": "gate_close_scan",
+      "minDistance": 25,
+      "maxDistance": 27,
+      "description": "雷达距离25-27m：落杆",
+      "isActive": true,
+      "deviceActions": {
+        "gate_001": {"action": "close", "params": {}}
+      }
+    },
+    {
       "id": "xray_capture_trigger",
-      "minDistance": 0.0,
-      "maxDistance": 32.999,
-      "description": "雷达距离<33m：拉车身/透视 + X光启扫",
+      "minDistance": 25,
+      "maxDistance": 28,
+      "description": "雷达距离25-28m：拉透视 + 车身轮询 + X光启扫",
       "isActive": true,
       "deviceActions": {
         "xray_200": {"action": "start_scan", "params": {"channel": "200"}}
@@ -50,8 +60,8 @@
     },
     {
       "id": "auto_capture_head",
-      "minDistance": 28.0,
-      "maxDistance": 32.0,
+      "minDistance": 26.5,
+      "maxDistance": 28.5,
       "description": "车头拍照（前）",
       "isActive": true,
       "deviceActions": {
@@ -61,7 +71,7 @@
     {
       "id": "auto_capture_top",
       "minDistance": 20.0,
-      "maxDistance": 25.0,
+      "maxDistance": 22.5,
       "description": "车顶拍照",
       "isActive": true,
       "deviceActions": {
@@ -70,13 +80,11 @@
     },
     {
       "id": "auto_capture_tail",
-      "minDistance": 0.0,
-      "maxDistance": 2.0,
-      "description": "车尾拍照（后）",
-      "isActive": true,
-      "deviceActions": {
-        "camera_001": {"action": "capture", "params": {"category": "tail"}}
-      }
+      "minDistance": 0,
+      "maxDistance": 0,
+      "description": "车尾拍照（光幕下沿记x，雷达<x-5触发，见 scheduler）",
+      "isActive": false,
+      "deviceActions": {}
     },
     {
       "id": "arrived",

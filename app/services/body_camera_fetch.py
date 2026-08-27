@@ -1,8 +1,7 @@
 """车身相机（:5002）
 
-抬杆放行时：
-  1. GET /camera/capture  — 不发则中间件不采集
-  2. 持续 GET /camera/image — 每帧推 WS body.1，直到：
+  1. 抬杆放行 → GET /camera/capture（中间件开始采集）
+  2. 雷达距离 25–28m → 持续 GET /camera/image，每 0.2s 一帧推 WS body.1，直到：
        - 响应头 Capture-Finish = true
        - 或响应体是 JSON
 """
@@ -14,7 +13,7 @@ import time
 
 logger = logging.getLogger('body_camera_fetch')
 
-POLL_INTERVAL_SEC = 0.35
+POLL_INTERVAL_SEC = 0.2
 POLL_TIMEOUT: tuple[float, float] = (3.0, 12.0)
 CAPTURE_TIMEOUT: tuple[float, float] = (3.0, 8.0)
 # 安全上限，避免无限拉
@@ -49,8 +48,21 @@ class BodyCameraFetcher:
             self._started = False
             print('[BODY-CAM] 停止拉图', flush=True)
 
-    def trigger_and_poll(self) -> None:
-        """抬杆后调用：先 capture，再后台持续 image。"""
+    def trigger_capture(self) -> None:
+        """抬杆放行时调用：仅发 capture，不启动轮询。"""
+        def _run() -> None:
+            try:
+                self._trigger_capture()
+            except Exception as e:
+                logger.warning('[BODY-CAM] capture 异常: %s', e)
+                print(f'[BODY-CAM] capture 异常: {e}', flush=True)
+
+        threading.Thread(
+            target=_run, daemon=True, name='body-camera-capture',
+        ).start()
+
+    def start_poll(self) -> None:
+        """雷达距离 25–28m 时调用：后台持续拉 image。"""
         with self._guard:
             if self._started:
                 print('[BODY-CAM] 已在拉图，忽略重复启动', flush=True)
@@ -61,8 +73,6 @@ class BodyCameraFetcher:
 
         def _run() -> None:
             try:
-                if not self._trigger_capture():
-                    print('[BODY-CAM] capture 失败，仍尝试拉 image', flush=True)
                 self._poll_images()
             except Exception as e:
                 logger.warning('[BODY-CAM] 异常: %s', e)
@@ -214,8 +224,14 @@ def _looks_like_image(resp) -> bool:
     return False
 
 
-def start_body_camera_after_gate_open() -> None:
-    BodyCameraFetcher().trigger_and_poll()
+def trigger_body_camera_capture() -> None:
+    """抬杆放行 → 发 capture 命令。"""
+    BodyCameraFetcher().trigger_capture()
+
+
+def start_body_camera_poll() -> None:
+    """雷达 25–28m → 开始 0.2s 轮询拉图。"""
+    BodyCameraFetcher().start_poll()
 
 
 def stop_body_camera_fetch() -> None:

@@ -266,6 +266,12 @@ if __name__ == '__main__':
             get_lane_announce().on_plc_status(parsed)
         except Exception as e:
             print(f'[ANNOUNCE] PLC 处理失败: {e}')
+        try:
+            from app.services.scheduler import DistanceScheduler
+
+            DistanceScheduler().on_plc_status(parsed)
+        except Exception as e:
+            print(f'[SCHEDULER] PLC 处理失败: {e}')
 
     def _on_xray_status(xray_type: str, current: float, voltage: float, temperature: float):
         # 协议：电流/电压/温度 → 前端沿用 kv/ma/temperature

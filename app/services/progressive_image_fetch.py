@@ -1,14 +1,15 @@
 """面板拉图（当前中间层为单帧）
 
-触发：雷达距离 <33m（调度器 xray_capture_trigger）。
+触发：雷达距离 25–28m（调度器 xray_capture_trigger）。
 
 成功率策略（中间件偶发 hang-or-fast，Keep-Alive 实测无效）：
   1. 始终串行（并发更易超时）
   2. 单路超时递增重试
   3. 首轮拉完后对缺图做 1～2 轮补漏（中间件恢复后再拉，成功率显著高于死磕同一路）
 
-  串行拉 vtop / vside / x160 /（高车）x200
-  车身 cam（body1）改由抬杆后 body_camera_fetch 持续拉 :5002
+  串行拉 x160 /（高车）x200
+  车身 cam（body1）改由抬杆 capture + 雷达 25–28m 时 body_camera_fetch 持续拉 :5002
+  车顶/车侧雷达（vtop/vside）改由前端切换显示时按需拉
   merge：等高车且 x160、x200 都成功后再 GET
 
 预约雷达 appt 仍走 booking /radar-image，不在本模块。
@@ -223,8 +224,6 @@ class ProgressivePanelFetcher:
 
     def _fetch_all(self, *, car_height: float, xray_enabled: bool) -> None:
         from config import (
-            BODY_SIDE_IMAGE_URL,
-            BODY_TOP_IMAGE_URL,
             STITCH_IMAGE_URL,
             TRANSPARENT_IMAGE_URL,
             USE_PLACEHOLDER_IMAGES,
@@ -235,11 +234,8 @@ class ProgressivePanelFetcher:
             return
 
         tall = float(car_height or 0) > TALL_CAR_HEIGHT_M
-        # 车身 cam（body1）改由抬杆后 body_camera_fetch 持续拉 :5002；这里只拉雷达图与透视
-        slots: list[tuple[str, str]] = [
-            ('body2', BODY_TOP_IMAGE_URL),
-            ('body3', BODY_SIDE_IMAGE_URL),
-        ]
+        # 只拉透视；车身 cam 走 :5002；车顶/车侧雷达前端按需拉
+        slots: list[tuple[str, str]] = []
         if xray_enabled:
             slots.append(('x160', YR_TRANSPARENT_IMAGE_URL))
             if tall:
@@ -342,7 +338,7 @@ class ProgressivePanelFetcher:
 
 
 def start_progressive_panel_fetch() -> None:
-    """供调度器在距离 <33m 时调用。"""
+    """供调度器在距离 25–28m 时调用。"""
     try:
         from app.api.booking import _booking_state
         car_height = float(_booking_state.get('car_height') or 3.0)
@@ -358,3 +354,31 @@ def start_progressive_panel_fetch() -> None:
 
 def stop_progressive_panel_fetch() -> None:
     ProgressivePanelFetcher().stop()
+
+
+def fetch_body_radar_image(view: str) -> str | None:
+    """按需拉车顶/车侧雷达图，推 WS 并返回 temp URL。view: top | side"""
+    from config import BODY_SIDE_IMAGE_URL, BODY_TOP_IMAGE_URL, USE_PLACEHOLDER_IMAGES
+
+    if not USE_PLACEHOLDER_IMAGES:
+        return None
+
+    v = (view or '').strip().lower()
+    if v == 'top':
+        name, url, slot = 'body2', BODY_TOP_IMAGE_URL, '2'
+    elif v == 'side':
+        name, url, slot = 'body3', BODY_SIDE_IMAGE_URL, '3'
+    else:
+        return None
+
+    stop = threading.Event()
+    temp_url = _fetch_one(name, url, stop)
+    if not temp_url:
+        return None
+
+    from app.websocket.handler import push_image_ready_group
+    try:
+        push_image_ready_group('body', {slot: temp_url}, group=1)
+    except Exception as e:
+        print(f'[PROG-IMG] WS 推送 {name} 失败: {e}', flush=True)
+    return temp_url

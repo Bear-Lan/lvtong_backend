@@ -52,6 +52,10 @@ class DistanceScheduler:
         # 对齐 Qt：受理后 check_step=1，车道正常累计 >4 次再抬杆
         self._release_clear_count = 0
         self._gate_released = False
+        # 车尾拍照：光幕下沿记距 x，待雷达 < x-5 再拍
+        self._prev_light_screen = False
+        self._tail_anchor_x: float | None = None
+        self._tail_captured = False
 
     # ---- 控制 ----
 
@@ -61,6 +65,9 @@ class DistanceScheduler:
         self._radar_push_count = 0
         self._release_clear_count = 0
         self._gate_released = False
+        self._prev_light_screen = False
+        self._tail_anchor_x = None
+        self._tail_captured = False
         self._is_running = True
 
     def stop(self):
@@ -78,6 +85,9 @@ class DistanceScheduler:
         if is_detection:
             self._release_clear_count = 0
             self._gate_released = False
+            self._prev_light_screen = False
+            self._tail_anchor_x = None
+            self._tail_captured = False
 
     @property
     def is_running(self) -> bool:
@@ -125,6 +135,9 @@ class DistanceScheduler:
         if intrusion is None:
             intrusion = count != 1
         self._try_release_after_accept(count, intrusion=intrusion)
+
+        # 车尾拍照：光幕下沿记 x，雷达 < x-5 时触发
+        self._try_tail_capture(distance)
 
         # 距离阈值 → 设备动作（仅受理后）
         self._process_distance_update(distance)
@@ -192,14 +205,14 @@ class DistanceScheduler:
                     execute_device_action('gate_001', 'open')
                 except Exception as e:
                     print(f'[SCHEDULER] 放行开闸失败: {e}', flush=True)
-                # 车道 5 次确认后抬杆：触发车身相机采集并持续拉图
+                # 车道 5 次确认后抬杆：触发车身相机 capture（轮询在雷达 25–28m）
                 try:
                     from app.services.body_camera_fetch import (
-                        start_body_camera_after_gate_open,
+                        trigger_body_camera_capture,
                     )
-                    start_body_camera_after_gate_open()
+                    trigger_body_camera_capture()
                 except Exception as e:
-                    print(f'[SCHEDULER] 车身相机 capture/拉图启动失败: {e}', flush=True)
+                    print(f'[SCHEDULER] 车身相机 capture 失败: {e}', flush=True)
                 try:
                     push_detection_step(2, '放行中')
                     push_lane_occupied(False)
@@ -211,6 +224,50 @@ class DistanceScheduler:
             ).start()
         except Exception as e:
             print(f'[SCHEDULER] 放行判定异常: {e}', flush=True)
+
+    def on_plc_status(self, parsed: dict) -> None:
+        """组播 DEVICE：检测光幕下沿（lightScreen true→false），记当前距离为车尾拍照锚点。"""
+        if not self._is_running or not self._is_detection:
+            return
+        light = bool(parsed.get('lightScreenStatus'))
+        falling = self._prev_light_screen and not light
+        self._prev_light_screen = light
+        if not falling or self._tail_captured:
+            return
+        if self._current_distance <= 0:
+            return
+        self._tail_anchor_x = self._current_distance
+        print(
+            f'[SCHEDULER] 光幕下沿 → 车尾锚点 x={self._tail_anchor_x:.2f}m',
+            flush=True,
+        )
+
+    def _try_tail_capture(self, distance: float) -> None:
+        """光幕下沿记 x 后，雷达距离 < x-5 时拍车尾（每轮检测一次）。"""
+        if self._tail_captured or self._tail_anchor_x is None:
+            return
+        trigger_at = self._tail_anchor_x - 5.0
+        if distance >= trigger_at:
+            return
+        self._tail_captured = True
+        print(
+            f'[SCHEDULER] 车尾拍照 distance={distance:.2f} < x-5={trigger_at:.2f} '
+            f'(x={self._tail_anchor_x:.2f})',
+            flush=True,
+        )
+
+        def _capture() -> None:
+            from app.services.device_action import execute_device_action
+            try:
+                execute_device_action(
+                    'camera_001', 'capture', {'category': 'tail'},
+                )
+            except Exception as e:
+                print(f'[SCHEDULER] 车尾拍照失败: {e}', flush=True)
+
+        threading.Thread(
+            target=_capture, daemon=True, name='tail-capture',
+        ).start()
 
     def _process_distance_update(self, distance: float):
         """处理距离更新
@@ -262,7 +319,7 @@ class DistanceScheduler:
         for device_id, _, _ in actions:
             self._device_activation_status[device_id] = True
 
-        # 雷达距离 <33m：先拉面板图，再启扫（中间件单口，并行会互抢超时）
+        # 雷达距离 25–28m：拉透视图 + 车身轮询 + 启扫
         if threshold.id == 'xray_capture_trigger':
             xray_actions = [
                 (d, a, p) for d, a, p in actions if str(d).startswith('xray_')
@@ -272,6 +329,12 @@ class DistanceScheduler:
             ]
 
             def _panel_then_scan() -> None:
+                try:
+                    from app.services.body_camera_fetch import start_body_camera_poll
+                    start_body_camera_poll()
+                except Exception as e:
+                    print(f'[SCHEDULER] 车身相机轮询启动失败: {e}', flush=True)
+
                 try:
                     from app.services.progressive_image_fetch import (
                         ProgressivePanelFetcher,
