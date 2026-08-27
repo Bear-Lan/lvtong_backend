@@ -232,18 +232,13 @@ def fetch_radar_image():
 
     GET /api/booking/radar-image
 
-    返回雷达扫描图像 URL 和相关数据。
-    参考 Qt OrderDialog::onRefreshClicked() —
-    从雷达设备 HTTP 接口获取图像及响应头信息。
+    中间件 :5001/geom/image 响应头（现场）：
+    - Vehicle-Height: 车高（米）
+    - Vehicle-SX: 车头距图片起始位置（米）
+    - Image-Resolution: 米/像素（如 0.01 → 1px=0.01m）
+    - Image-Envelope: 可选包络
 
-    响应头关键字段：
-    - Image-Envelope: 图像包络（车辆在图中的范围，用于初始红线位置）
-    - Image-Resolution: 图像分辨率
-    - VehicleHeader-Envelope: 车头包络
-    - Vehicle-Height: 车辆高度
-
-    注意：当前 :5006/image?type=appt 往往不带头；无包络时用内容最左列作原点。
-    中间件偶发超时，本接口自动重试若干次。
+    红线默认放在车头后 1.5m：像素 = (Vehicle-SX + 1.5) / Image-Resolution
     """
     radar_head_url = current_app.config.get('RADAR_HEAD_URL', RADAR_HEAD_URL)
     print(f'[BOOKING] 拉取雷达图像: {radar_head_url}')
@@ -253,6 +248,8 @@ def fetch_radar_image():
     image_resolution = ''
     vehicle_header_envelope = ''
     vehicle_height = _booking_state['car_height']
+    vehicle_sx = None  # 车头距图起点（米）；None=未返回 Vehicle-SX
+    meters_per_pixel = 0.01
     orig_width = 0
     orig_height = 0
     content_origin_x = 0
@@ -282,12 +279,38 @@ def fetch_radar_image():
                 image_envelope = resp.headers.get('Image-Envelope', '') or ''
                 image_resolution = resp.headers.get('Image-Resolution', '') or ''
                 vehicle_header_envelope = resp.headers.get('VehicleHeader-Envelope', '') or ''
+
+                try:
+                    meters_per_pixel = float(image_resolution) if image_resolution else 0.01
+                    if meters_per_pixel <= 0:
+                        meters_per_pixel = 0.01
+                except ValueError:
+                    meters_per_pixel = 0.01
+
+                sx_str = resp.headers.get('Vehicle-SX', '') or ''
+                if sx_str:
+                    try:
+                        vehicle_sx = float(sx_str)
+                    except ValueError:
+                        vehicle_sx = None
+
+                # 车头在图中的像素起点（供兼容旧前端字段）
+                if vehicle_sx is not None and meters_per_pixel > 0:
+                    content_origin_x = int(round(max(0.0, vehicle_sx) / meters_per_pixel))
+                    if not vehicle_header_envelope:
+                        vehicle_header_envelope = f'{content_origin_x},0'
+
                 if orig_width <= 0:
                     rw, rh = _parse_image_resolution(image_resolution)
                     if rw > 0:
                         orig_width, orig_height = rw, rh
 
-                if not image_envelope and not vehicle_header_envelope and resp.content:
+                if (
+                    content_origin_x <= 0
+                    and not image_envelope
+                    and not vehicle_header_envelope
+                    and resp.content
+                ):
                     content_origin_x = _leftmost_content_x(resp.content)
                     vehicle_header_envelope = f'{content_origin_x},0'
 
@@ -304,8 +327,10 @@ def fetch_radar_image():
                     f'elapsed={elapsed:.2f}s '
                     f'url={image_url} bytes={preview_len} (raw={len(resp.content)}) '
                     f'size={orig_width}x{orig_height} '
-                    f'originX={content_origin_x} '
-                    f'env={image_envelope!r} hdr={vehicle_header_envelope!r}',
+                    f'height={vehicle_height} '
+                    f'sx={vehicle_sx if vehicle_sx is not None else "-"}m '
+                    f'mpp={meters_per_pixel} originX={content_origin_x} '
+                    f'env={image_envelope!r}',
                     flush=True,
                 )
                 last_error = ''
@@ -335,8 +360,10 @@ def fetch_radar_image():
                 'imageUrl': '',
                 'imageEnvelope': '',
                 'imageResolution': '',
+                'metersPerPixel': 0.01,
                 'vehicleHeaderEnvelope': '',
                 'vehicleHeight': vehicle_height,
+                'vehicleSx': None,
                 'originalImageWidth': 0,
                 'originalImageHeight': 0,
                 'contentOriginX': 0,
@@ -348,8 +375,10 @@ def fetch_radar_image():
         'imageUrl': image_url,
         'imageEnvelope': image_envelope,
         'imageResolution': image_resolution,
+        'metersPerPixel': meters_per_pixel,
         'vehicleHeaderEnvelope': vehicle_header_envelope,
         'vehicleHeight': vehicle_height,
+        'vehicleSx': vehicle_sx,
         'originalImageWidth': orig_width,
         'originalImageHeight': orig_height,
         'contentOriginX': content_origin_x,
