@@ -192,6 +192,14 @@ class DistanceScheduler:
                     execute_device_action('gate_001', 'open')
                 except Exception as e:
                     print(f'[SCHEDULER] 放行开闸失败: {e}', flush=True)
+                # 车道 5 次确认后抬杆：触发车身相机采集并持续拉图
+                try:
+                    from app.services.body_camera_fetch import (
+                        start_body_camera_after_gate_open,
+                    )
+                    start_body_camera_after_gate_open()
+                except Exception as e:
+                    print(f'[SCHEDULER] 车身相机 capture/拉图启动失败: {e}', flush=True)
                 try:
                     push_detection_step(2, '放行中')
                     push_lane_occupied(False)

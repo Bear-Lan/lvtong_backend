@@ -54,8 +54,18 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
     XRAY_START_TRANSPARENT_URL,
 )
 
-# ---- 车身影像：车身 cam / 车顶雷达 vtop / 车侧雷达 vside ----
-BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', image_fetch_url('cam'))
+# ---- 车身相机（:5002）----
+# 抬杆时先 GET capture 才会开始采；再持续 GET image 直到 Capture-Finish 或 JSON
+BODY_CAMERA_CAPTURE_URL = os.environ.get(
+    'BODY_CAMERA_CAPTURE_URL',
+    'http://192.168.88.201:5002/camera/capture',
+)
+BODY_CAMERA_IMAGE_URL = os.environ.get(
+    'BODY_CAMERA_IMAGE_URL',
+    'http://192.168.88.201:5002/camera/image',
+)
+# 车身 cam：改为 :5002 持续拉图（vtop/vside 仍走 5006）
+BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', BODY_CAMERA_IMAGE_URL)
 BODY_TOP_IMAGE_URL = os.environ.get('BODY_TOP_IMAGE_URL', image_fetch_url('vtop'))
 BODY_SIDE_IMAGE_URL = os.environ.get('BODY_SIDE_IMAGE_URL', image_fetch_url('vside'))
 BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')

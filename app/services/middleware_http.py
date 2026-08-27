@@ -32,7 +32,7 @@ def _is_middleware_host(url: str) -> bool:
         port = urlparse(url).port
     except Exception:
         return False
-    if port in (5003, 5006):
+    if port in (5002, 5003, 5006):
         return True
     return host in ('192.168.88.201', '127.0.0.1', 'localhost')
 

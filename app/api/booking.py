@@ -564,6 +564,11 @@ def reject_booking():
         stop_progressive_panel_fetch()
     except Exception as e:
         print(f'[BOOKING] 渐进拉图停止失败: {e}')
+    try:
+        from app.services.body_camera_fetch import stop_body_camera_fetch
+        stop_body_camera_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 车身相机拉图停止失败: {e}')
 
     try:
         from app.websocket.handler import socketio
@@ -712,6 +717,11 @@ def reset_booking():
         stop_progressive_panel_fetch()
     except Exception as e:
         print(f'[BOOKING] 渐进拉图停止失败: {e}')
+    try:
+        from app.services.body_camera_fetch import stop_body_camera_fetch
+        stop_body_camera_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 车身相机拉图停止失败: {e}')
 
     # 3. 设备复位（先停语音+清播报，再开闸，避免误播/抢通道）
     try:

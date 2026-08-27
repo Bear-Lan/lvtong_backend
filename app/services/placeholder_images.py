@@ -70,7 +70,6 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
     返回 {body: {1,2,3}, transparent: {1,2,3}, sources}
     """
     from config import (
-        BODY_IMAGE_URL,
         BODY_SIDE_IMAGE_URL,
         BODY_TOP_IMAGE_URL,
         TRANSPARENT_IMAGE_URL,
@@ -81,7 +80,7 @@ def publish_placeholder_panel_images(scan_id: str | None = None) -> dict:
     _ = scan_id
 
     jobs = {
-        'body1': BODY_IMAGE_URL,           # cam
+        # body1 车身 cam 由 body_camera_fetch（:5002）负责，此处不拉
         'body2': BODY_TOP_IMAGE_URL,       # vtop
         'body3': BODY_SIDE_IMAGE_URL,      # vside
         'x200': TRANSPARENT_IMAGE_URL,     # x200

@@ -7,7 +7,8 @@
   2. 单路超时递增重试
   3. 首轮拉完后对缺图做 1～2 轮补漏（中间件恢复后再拉，成功率显著高于死磕同一路）
 
-  串行拉 cam / vtop / vside / x160 /（高车）x200
+  串行拉 vtop / vside / x160 /（高车）x200
+  车身 cam（body1）改由抬杆后 body_camera_fetch 持续拉 :5002
   merge：等高车且 x160、x200 都成功后再 GET
 
 预约雷达 appt 仍走 booking /radar-image，不在本模块。
@@ -222,7 +223,6 @@ class ProgressivePanelFetcher:
 
     def _fetch_all(self, *, car_height: float, xray_enabled: bool) -> None:
         from config import (
-            BODY_IMAGE_URL,
             BODY_SIDE_IMAGE_URL,
             BODY_TOP_IMAGE_URL,
             STITCH_IMAGE_URL,
@@ -235,8 +235,8 @@ class ProgressivePanelFetcher:
             return
 
         tall = float(car_height or 0) > TALL_CAR_HEIGHT_M
+        # 车身 cam（body1）改由抬杆后 body_camera_fetch 持续拉 :5002；这里只拉雷达图与透视
         slots: list[tuple[str, str]] = [
-            ('body1', BODY_IMAGE_URL),
             ('body2', BODY_TOP_IMAGE_URL),
             ('body3', BODY_SIDE_IMAGE_URL),
         ]
@@ -251,7 +251,7 @@ class ProgressivePanelFetcher:
                 )
 
         print(
-            f'[PROG-IMG] 串行拉取 {len(slots)} 路 '
+            f'[PROG-IMG] 串行拉取 {len(slots)} 路（不含 body cam） '
             f'height={car_height} xray={xray_enabled} tall={tall}',
             flush=True,
         )
