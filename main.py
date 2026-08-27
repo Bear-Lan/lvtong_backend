@@ -227,9 +227,11 @@ if __name__ == '__main__':
 
     mgr = DeviceManager()
 
-    # 1. 从数据库加载设备，创建控制器实例
-    loaded = mgr.load_from_db()
-    print(f'[设备] 加载了 {len(loaded)} 台设备')
+    # 1. 代码加载控制设备 + DB 仅摄像头
+    loaded = mgr.load_devices()
+    code_n = sum(1 for x in loaded if x.get('source') == 'code')
+    cam_n = sum(1 for x in loaded if x.get('source') == 'db')
+    print(f'[设备] 代码控制设备 {code_n} 台，DB 摄像头 {cam_n} 台')
 
     # 2. 逐个初始化设备（ping 硬件中间层）
     init_results = mgr.initialize_all()

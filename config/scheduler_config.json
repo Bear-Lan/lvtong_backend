@@ -45,8 +45,7 @@
       "description": "雷达距离<33m：拉车身/透视 + X光启扫",
       "isActive": true,
       "deviceActions": {
-        "xray_200": {"action": "start_scan", "params": {"channel": "200", "car_length": 5.0, "scan_id": ""}},
-        "xray_160": {"action": "start_scan", "params": {"channel": "160", "car_length": 5.0, "scan_id": ""}}
+        "xray_200": {"action": "start_scan", "params": {"channel": "200"}}
       }
     },
     {

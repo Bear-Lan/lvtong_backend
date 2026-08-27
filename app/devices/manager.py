@@ -2,10 +2,13 @@
 
 对齐 Qt DeviceManager (device/devicemanager.h/.cpp)
 
-核心原则：设备状态由实时连通性测试决定，不从数据库读取，也不写回。
-数据库只存元数据（名称、IP、URL），状态纯内存维护。
+- 摄像头：只从 DB devices 表读（IP/账号/RTSP）
+- PLC / 道闸 / LED / 雷达 / 光机：代码内固定创建实例，**不读库、也不在 devices.py 列清单**
+  - 控制：组播 $MDRMC / HTTP 启扫（URL 见 config.devices）
+  - 状态：组播 $NTRMC（DEVICE / XRAY / …），不靠逐台探活当权威
 """
 import threading
+
 from app.db.device import DBDevice
 from app.devices.base import DeviceBase, DeviceStatus
 from app.devices.plc import PLCController
@@ -14,13 +17,44 @@ from app.devices.led import LedController
 from app.devices.radar import RadarReader
 from app.devices.xray import XRayController
 
-_DEVICE_CLASS_MAP = {
-    'controller': PLCController,
-    'gate': GateController,
-    'led': LedController,
-    'udpradar': RadarReader,
-    'xray': XRayController,
-}
+# DB 中视为摄像头的类型
+_CAMERA_TYPES = frozenset({'camera', 'hikvision', 'hik'})
+
+
+def _wire_control_controllers() -> dict[str, DeviceBase]:
+    """固定接线：业务 execute_device_action / 组播监听需要的实例。
+
+    不做成可配置设备表；状态以组播为准。
+    """
+    return {
+        'plc_001': PLCController(
+            device_id='plc_001',
+            device_name='PLC',
+            device_type='controller',
+        ),
+        'gate_001': GateController(
+            device_id='gate_001',
+            device_name='道闸',
+            device_type='gate',
+        ),
+        'led_001': LedController(
+            device_id='led_001',
+            device_name='LED',
+            device_type='led',
+        ),
+        # 组播收距离 + DEVICE/XRAY 状态
+        'radar_001': RadarReader(
+            device_id='radar_001',
+            device_name='车道雷达',
+            device_type='udpradar',
+        ),
+        # 启扫 HTTP（URL 在 config.devices；scheduler 用 xray_200）
+        'xray_200': XRayController(
+            device_id='xray_200',
+            device_name='X光启扫',
+            device_type='xray',
+        ),
+    }
 
 
 class DeviceManager:
@@ -46,8 +80,8 @@ class DeviceManager:
             return
         self._initialized = True
 
-        self._devices: dict[str, DeviceBase] = {}       # 有驱动的控制器实例
-        self._db_devices: list[dict] = []                # 所有数据库设备记录（含无驱动的）
+        self._devices: dict[str, DeviceBase] = {}
+        self._db_devices: list[dict] = []  # 仅摄像头
         self._db = DBDevice()
 
         self._health_timer: threading.Timer | None = None
@@ -58,58 +92,51 @@ class DeviceManager:
 
     # ========== 加载 & 初始化 ==========
 
-    def load_from_db(self) -> list[dict]:
-        """从数据库加载设备元数据（不读 status 列），创建控制器实例
+    def load_devices(self) -> list[dict]:
+        """代码固定控制实例 + DB 摄像头。"""
+        result: list[dict] = []
+        self._devices.clear()
 
-        DB 职责：device_id, device_name, device_type, ip_address, port, config(URL等)
-        状态职责：运行时通过 ping 确定
-        """
-        db_devices = self._db.getAllDevices()
-        self._db_devices = db_devices
-        result = []
-
-        for d in db_devices:
-            device_id = d['device_id']
-            device_type = (d.get('device_type') or '').lower()
-
-            cls = _DEVICE_CLASS_MAP.get(device_type)
-            if cls is None:
-                result.append({
-                    'device_id': device_id,
-                    'device_name': d['device_name'],
-                    'device_type': device_type,
-                    'initialized': False,
-                    'reason': f'暂无 {device_type} 驱动',
-                })
-                continue
-
-            ctrl = cls(
-                device_id=device_id,
-                device_name=d.get('device_name', ''),
-                device_type=device_type,
-                ip_address=d.get('ip_address', ''),
-                port=d.get('port', 0),
-                username=d.get('username', ''),
-                password=d.get('password', ''),
-                config=d.get('config', {}) if isinstance(d.get('config'), dict) else {},
-            )
+        for device_id, ctrl in _wire_control_controllers().items():
             ctrl.set_status_changed_callback(self._on_device_status_changed)
-
             self._devices[device_id] = ctrl
             result.append({
                 'device_id': device_id,
-                'device_name': d['device_name'],
-                'device_type': device_type,
+                'device_name': ctrl.device_name,
+                'device_type': ctrl.device_type,
                 'initialized': False,
+                'source': 'code',
+            })
+
+        cameras: list[dict] = []
+        try:
+            for d in self._db.getAllDevices():
+                dt = (d.get('device_type') or '').lower()
+                did = str(d.get('device_id') or '')
+                if dt in _CAMERA_TYPES or dt.startswith('cam') or did.startswith('cam_'):
+                    cameras.append(d)
+        except Exception as e:
+            print(f'[设备] 读摄像头 DB 失败: {e}', flush=True)
+
+        self._db_devices = cameras
+        for d in cameras:
+            result.append({
+                'device_id': d['device_id'],
+                'device_name': d.get('device_name', ''),
+                'device_type': d.get('device_type', 'camera'),
+                'initialized': False,
+                'source': 'db',
+                'reason': '摄像头无 DeviceManager 驱动（抓图/MediaMTX 直读 DB）',
             })
 
         return result
 
-    def initialize_all(self) -> dict[str, bool]:
-        """逐个初始化设备 — 真实 ping 硬件，结果即状态
+    def load_from_db(self) -> list[dict]:
+        """兼容旧启动入口 → load_devices()"""
+        return self.load_devices()
 
-        状态只在内存中，不写 DB。
-        """
+    def initialize_all(self) -> dict[str, bool]:
+        """启动监听/发送通道；业务状态仍以组播推送为准。"""
         result = {}
         for device_id, ctrl in self._devices.items():
             try:
@@ -219,10 +246,9 @@ class DeviceManager:
                     pass
         return reconnected
 
-    # ========== 状态回调（纯内存 + WS 推送，不写 DB） ==========
+    # ========== 状态回调 ==========
 
     def _on_device_status_changed(self, device_id: str, _old: int, new: int):
-        """设备状态变化时推送 WebSocket"""
         if self._ws_push_device_status:
             status_text = {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(new, '未知')
             self._ws_push_device_status(device_id, new, status_text)
@@ -240,39 +266,34 @@ class DeviceManager:
                 if c.device_type == device_type.lower()]
 
     def get_all_status(self) -> list[dict]:
-        """获取所有设备状态
-
-        有驱动的 → 从控制器实例获取实时状态
-        无驱动的 → 从 DB 记录展示「暂无驱动」
-        """
+        """控制实例（接线用）+ DB 摄像头。开关量权威在组播 plc_status。"""
         result = []
+        for device_id, ctrl in self._devices.items():
+            item = {
+                'deviceId': device_id,
+                'deviceName': ctrl.device_name,
+                'deviceType': ctrl.device_type,
+                'status': {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(int(ctrl.status), '未知'),
+                'statusCode': int(ctrl.status),
+                'connected': ctrl.is_online,
+                'lastError': ctrl.last_error,
+                'source': 'code',
+            }
+            if device_id == 'gate_001' or ctrl.device_type == 'gate':
+                item['gateOpen'] = bool(getattr(ctrl, 'is_opened', False))
+            result.append(item)
+
         for d in self._db_devices:
-            device_id = d['device_id']
-            ctrl = self._devices.get(device_id)
-            if ctrl:
-                item = {
-                    'deviceId': device_id,
-                    'deviceName': ctrl.device_name,
-                    'deviceType': ctrl.device_type,
-                    'status': {0: '离线', 1: '在线', 2: '忙碌', 3: '错误'}.get(int(ctrl.status), '未知'),
-                    'statusCode': int(ctrl.status),
-                    'connected': ctrl.is_online,
-                    'lastError': ctrl.last_error,
-                }
-                if device_id == 'gate_001' or ctrl.device_type == 'gate':
-                    item['gateOpen'] = bool(getattr(ctrl, 'is_opened', False))
-                result.append(item)
-            else:
-                dt = d['device_type']
-                result.append({
-                    'deviceId': device_id,
-                    'deviceName': d['device_name'],
-                    'deviceType': dt,
-                    'status': '暂无驱动',
-                    'statusCode': -1,
-                    'connected': False,
-                    'lastError': f'暂无 {dt} 类型驱动',
-                })
+            result.append({
+                'deviceId': d['device_id'],
+                'deviceName': d.get('device_name', ''),
+                'deviceType': d.get('device_type', 'camera'),
+                'status': '摄像头',
+                'statusCode': -1,
+                'connected': False,
+                'lastError': '',
+                'source': 'db',
+            })
         return result
 
     def online_count(self) -> int:

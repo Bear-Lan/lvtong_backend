@@ -37,7 +37,8 @@ _booking_state = {
     'booking_dialog_shown': False,
     'btn_prebook_state': False,  # 是否有待受理预约（司机已按键）
     'car_height': 3.0,
-    'car_length': 2.5,           # 默认车头宽度
+    'car_length': 1.5,           # 默认车头长度（光机 triggeroffset）
+    'vehicle_type': 'small',     # 光机 type：small | large（与预约弹窗车型一致）
     'is_check_xray': True,
     'check_step': 0,
     'radar_count': 0,
@@ -373,9 +374,26 @@ def accept_booking():
     vehicle_height = body.get('vehicleHeight', 3.0)
     car_head_length = body.get('carHeadLength', 2.5)
     xray_enabled = body.get('xrayEnabled', True)
+    # 光机 type 与预约弹窗车型一致：前端 vehicleType(small|big) 优先；未传再按车高
+    raw_vtype = str(body.get('vehicleType') or body.get('vehicle_type') or '').strip().lower()
+    if raw_vtype in ('large', 'big'):
+        vehicle_type = 'large'
+    elif raw_vtype == 'small':
+        vehicle_type = 'small'
+    else:
+        try:
+            _h = float(vehicle_height)
+        except (TypeError, ValueError):
+            _h = 3.0
+        vehicle_type = 'large' if _h > 2.8 else 'small'
+    try:
+        car_head_length = float(car_head_length)
+    except (TypeError, ValueError):
+        car_head_length = 2.5
 
     print(f'[BOOKING] 用户 {user["username"]} 受理预约: '
-          f'车高={vehicle_height}, 车头长={car_head_length}, X光={xray_enabled}')
+          f'车高={vehicle_height}, 车头长={car_head_length}, '
+          f'车型={vehicle_type}, X光={xray_enabled}')
 
     from app.services.device_action import execute_device_action
 
@@ -392,6 +410,7 @@ def accept_booking():
     _booking_state.update({
         'car_height': vehicle_height,
         'car_length': car_head_length,
+        'vehicle_type': vehicle_type,
         'is_check_xray': xray_enabled,
         'is_detection': True,
         'check_step': 1,
@@ -428,6 +447,7 @@ def accept_booking():
             'data': {
                 'vehicleHeight': vehicle_height,
                 'carHeadLength': car_head_length,
+                'vehicleType': vehicle_type,
                 'xrayEnabled': xray_enabled,
                 'acceptanceTime': acceptance_time,
                 'btnPrebookTime': btn_prebook_time,
@@ -666,6 +686,7 @@ def reset_booking():
         'car_height': 3.0,
         'car_length': 2.5,
         'is_check_xray': True,
+        'vehicle_type': 'small',
         'check_step': 0,
         'radar_count': 0,
         'btn_prebook_time': '',

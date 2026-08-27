@@ -25,8 +25,10 @@ PLACEHOLDER_IMAGE_URL = os.environ.get(
 # True：距离 <33m 触发后按 type 单帧拉图（GET 成功即结束）
 USE_PLACEHOLDER_IMAGES = os.environ.get('USE_PLACEHOLDER_IMAGES', 'true').lower() == 'true'
 
-# ---- 预约雷达图（appt）----
-RADAR_HEAD_URL = os.environ.get('RADAR_HEAD_URL', image_fetch_url('appt'))
+# ---- 预约雷达图（appt / 几何图）----
+RADAR_HEAD_URL = os.environ.get(
+    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/geom/image'
+)
 
 # 现场组播（$VMRMC 距离 / $NTRMC 状态），默认启用
 RADAR_TRANSPORT = os.environ.get('RADAR_TRANSPORT', 'multicast').lower()
@@ -36,17 +38,20 @@ MCAST_PORT = int(os.environ.get('MCAST_PORT', '9000'))
 #   set MCAST_IFACE_IP=192.168.0.138
 MCAST_IFACE_IP = os.environ.get('MCAST_IFACE_IP', '')
 
-# ---- X 光机 ----
+# ---- X 光机启扫 ----
+# GET {base}?type=small|large&triggeroffset={预约车头长}
+# type / triggeroffset 由 XRayController 按预约状态拼，这里只配 base（可带旧 query，运行时会重写）
 XRAY_BASE_URL = os.environ.get(
-    'XRAY_BASE_URL', 'http://192.168.88.201:5006'
+    'XRAY_BASE_URL', 'http://192.168.88.201:5003'
 )
 XRAY_START_TRANSPARENT_URL = os.environ.get(
     'XRAY_START_TRANSPARENT_URL',
-    'http://192.168.88.201:5003/xray/capture?frames=500&triggeroffset=2.5&id='
+    'http://192.168.88.201:5003/xray/capture',
 )
+# 若现场 160 与 200 同口，可与上相同；分口时再改 env
 XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
     'XRAY_START_YR_TRANSPARENT_URL',
-    'http://192.168.88.201:5006/xray/capture?frames=500&triggeroffset=2.5&id='
+    XRAY_START_TRANSPARENT_URL,
 )
 
 # ---- 车身影像：车身 cam / 车顶雷达 vtop / 车侧雷达 vside ----
@@ -86,3 +91,4 @@ TTS_CONTROL_URL = os.environ.get('TTS_CONTROL_URL', '')
 IMAGE_STORAGE_ROOT = os.environ.get(
     'IMAGE_STORAGE_ROOT', r'E:/code_product/gcms_src/captures'
 )
+

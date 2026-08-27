@@ -102,7 +102,7 @@ class RadarReader(DeviceBase):
         self._dm_callback = cb
 
     def initialize(self) -> bool:
-        cfg = self.config or {}
+        # 组播参数只读 config.devices / 环境变量（不读 DB）
         try:
             from config import (
                 RADAR_TRANSPORT,
@@ -116,27 +116,25 @@ class RadarReader(DeviceBase):
             )
 
         self._transport = (
-            cfg.get('transport')
-            or os.environ.get('RADAR_TRANSPORT')
+            os.environ.get('RADAR_TRANSPORT')
             or RADAR_TRANSPORT
             or 'multicast'
         ).lower()
 
         if self._transport == 'unicast':
-            udp_port = int(cfg.get('port') or self.port or 0)
+            udp_port = int(self.port or os.environ.get('RADAR_UDP_PORT') or 0)
             if not udp_port:
                 self.status = DeviceStatus.Online
                 return True
             ok = self._start_unicast_listen(udp_port)
         else:
-            group = cfg.get('mcast_group') or MCAST_GROUP
+            group = MCAST_GROUP
             port = int(
-                cfg.get('mcast_port')
-                or os.environ.get('MCAST_PORT')
+                os.environ.get('MCAST_PORT')
                 or MCAST_PORT
                 or 9000
             )
-            iface = cfg.get('iface_ip') or MCAST_IFACE_IP or ''
+            iface = MCAST_IFACE_IP or ''
             self._iface_ip = _guess_mcast_iface(iface)
             ok = self._start_multicast_listen(group, port, self._iface_ip)
             if ok:

@@ -275,12 +275,46 @@ class DistanceScheduler:
                         worker.join(timeout=120.0)
                 except Exception as e:
                     print(f'[SCHEDULER] 渐进拉图启动失败: {e}', flush=True)
+
+                # 预约弹窗「透视关」→ 不发光机启扫
+                try:
+                    from app.api.booking import get_booking_state
+                    st = get_booking_state() or {}
+                    xray_on = bool(st.get('is_check_xray', True))
+                except Exception:
+                    st = {}
+                    xray_on = True
+                if not xray_on:
+                    print(
+                        '[SCHEDULER] skip xray start_scan (透视关 is_check_xray=False)',
+                        flush=True,
+                    )
+                    return
+
                 if not xray_actions:
                     return
+                # 启扫：type=small|large、triggeroffset=车头长（来自预约）
+                scan_params = {
+                    'vehicle_type': st.get('vehicle_type') or '',
+                    'car_length': st.get('car_length'),
+                }
                 from app.services.device_action import execute_device_action
+                started_urls: set[str] = set()
                 for device_id, action, params in xray_actions:
+                    merged = {
+                        **(params or {}),
+                        **{k: v for k, v in scan_params.items() if v not in (None, '')},
+                    }
                     try:
-                        execute_device_action(device_id, action, params)
+                        ch = str(merged.get('channel') or '')
+                        if ch == '160' and started_urls:
+                            print(
+                                f'[SCHEDULER] skip duplicate xray start ({device_id})',
+                                flush=True,
+                            )
+                            continue
+                        execute_device_action(device_id, action, merged)
+                        started_urls.add(device_id)
                     except Exception as e:
                         print(
                             f'[SCHEDULER] async action failed '
