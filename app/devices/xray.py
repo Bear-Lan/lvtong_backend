@@ -77,6 +77,11 @@ def send_xray_capture(enabled: bool, *, car_length=None, vehicle_type: str = '')
     return ok
 
 
+def close_xray_capture() -> bool:
+    """手动关光机：$MDRMC,1,xraycap=false（急停/重置/闸机等）。"""
+    return send_xray_capture(False)
+
+
 class XRayController(DeviceBase):
 
     def initialize(self) -> bool:
