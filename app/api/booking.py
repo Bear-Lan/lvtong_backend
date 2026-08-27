@@ -612,35 +612,110 @@ def reject_booking():
     return ok(message='已驳回')
 
 
+def _perform_booking_reset(user: dict) -> dict:
+    """重置预约状态机 — 底部「重置」专用。"""
+    from app.services.device_action import execute_device_action
+
+    pending = bool(_booking_state.get('btn_prebook_state'))
+    pending_time = _booking_state.get('last_btn_click_time', '')
+    _booking_state.update({
+        'is_detection': False,
+        'last_booking_state': False,
+        'booking_dialog_shown': False,
+        'car_height': 3.0,
+        'car_length': 2.5,
+        'is_check_xray': True,
+        'vehicle_type': 'small',
+        'check_step': 0,
+        'radar_count': 0,
+        'btn_prebook_time': '',
+        'acceptance_time': '',
+        'opengate_time': '',
+        'openlightscreen_time': '',
+        'closelightscreen_time': '',
+        'cd_photo_time': '',
+    })
+    if pending:
+        print(f'[BOOKING] 重置保留待受理预约 last_btn_click_time={pending_time}')
+
+    try:
+        from app.services.scheduler import DistanceScheduler
+        DistanceScheduler().set_detection_state(False)
+        DistanceScheduler().stop()
+        print('[BOOKING] 距离调度器已停止')
+    except Exception as e:
+        print(f'[BOOKING] 调度器停止失败: {e}')
+    try:
+        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
+        stop_progressive_panel_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 渐进拉图停止失败: {e}')
+    try:
+        from app.services.body_camera_fetch import stop_body_camera_fetch
+        stop_body_camera_fetch()
+    except Exception as e:
+        print(f'[BOOKING] 车身相机拉图停止失败: {e}')
+
+    try:
+        from app.devices.xray import close_xray_capture
+        close_xray_capture()
+    except Exception as e:
+        print(f'[BOOKING] 重置 xraycap=false 失败: {e}')
+
+    try:
+        from app.services.booking_camera_tts import release_voice_channel, stop_speak
+        from app.services.lane_announce import get_lane_announce
+
+        stop_speak()
+        release_voice_channel()
+        get_lane_announce().on_reset_to_idle()
+    except Exception as e:
+        print(f'[BOOKING] 复位播报状态失败: {e}')
+
+    execute_device_action('plc_001', 'setPLC', {
+        'redlight': False, 'yellowlight': True, 'greenlight': False
+    })
+    execute_device_action('gate_001', 'open')
+    execute_device_action('led_001', 'set_step1')
+
+    try:
+        socketio.emit('message', {
+            'type': 'booking_reset',
+            'timestamp': int(time.time() * 1000),
+            'data': {
+                'state': dict(_booking_state),
+                'operator': user['real_name'],
+            },
+        })
+    except Exception as e:
+        print(f'[WS] 推送 booking_reset 失败: {e}')
+
+    return dict(_booking_state)
+
+
 @booking_api.route('/urgent-stop', methods=['POST'])
 @login_required
 def urgent_stop():
-    """急停操作
+    """顶部 STOP — 仅停光机 + 停止透视轮询拉图。
 
     POST /api/booking/urgent-stop
-
-    对齐 Qt LvTongPro::onStopClicked()
     """
     user = request.gc_user
-    print(f'[BOOKING] 用户 {user["username"]} 执行急停')
+    print(f'[BOOKING] 用户 {user["username"]} 执行 STOP')
 
-    from app.services.device_action import execute_device_action
+    try:
+        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
+        stop_progressive_panel_fetch()
+    except Exception as e:
+        print(f'[BOOKING] STOP 停止透视轮询失败: {e}')
 
-    # 对齐 Qt: m_plc->executeAction("setPLC", {urgentstop: true})
-    success = execute_device_action('plc_001', 'setPLC', {'urgentstop': True})
-    if not success:
-        return fail(503, 'PLC 急停控制失败，请检查设备连接')
+    try:
+        from app.devices.xray import close_xray_capture
+        close_xray_capture()
+    except Exception as e:
+        print(f'[BOOKING] STOP xraycap=false 失败: {e}')
 
-    socketio.emit('message', {
-        'type': 'plc_status',
-        'timestamp': int(time.time() * 1000),
-        'data': {
-            'urgentstop': True,
-            'operator': user['real_name'],
-        },
-    })
-
-    return ok(message='急停指令已发送')
+    return ok(message='已停止光机及透视拉图')
 
 
 @booking_api.route('/stop-reset', methods=['POST'])
@@ -661,6 +736,12 @@ def stop_reset():
     success = execute_device_action('plc_001', 'setPLC', {'urgentstop': False})
     if not success:
         return fail(503, 'PLC 复位失败，请检查设备连接')
+
+    try:
+        from app.devices.xray import close_xray_capture
+        close_xray_capture()
+    except Exception as e:
+        print(f'[BOOKING] 急停复位 xraycap=false 失败: {e}')
 
     socketio.emit('message', {
         'type': 'plc_status',
@@ -699,88 +780,8 @@ def reset_booking():
     """重置预约状态机 — 对齐 LvTongPro::onReset
 
     POST /api/booking/reset
-
-    1. 重置检测相关状态（保留 btn_prebook_state / last_btn_click_time，供下一辆等待）
-    2. 停止 DistanceScheduler
-    3. 设备复位（PLC 黄灯 + 开闸 + LED step1）
-    4. WS 推 booking_reset 事件同步前端
     """
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 重置预约状态')
-
-    from app.services.device_action import execute_device_action
-
-    # 1. 清本轮检测状态；不 clear_book_button（提交/重置保留待受理预约）
-    pending = bool(_booking_state.get('btn_prebook_state'))
-    pending_time = _booking_state.get('last_btn_click_time', '')
-    _booking_state.update({
-        'is_detection': False,
-        'last_booking_state': False,
-        'booking_dialog_shown': False,
-        'car_height': 3.0,
-        'car_length': 2.5,
-        'is_check_xray': True,
-        'vehicle_type': 'small',
-        'check_step': 0,
-        'radar_count': 0,
-        'btn_prebook_time': '',
-        'acceptance_time': '',
-        'opengate_time': '',
-        'openlightscreen_time': '',
-        'closelightscreen_time': '',
-        'cd_photo_time': '',
-    })
-    if pending:
-        print(f'[BOOKING] 重置保留待受理预约 last_btn_click_time={pending_time}')
-
-    # 2. 停止距离调度器 + 渐进拉图
-    try:
-        from app.services.scheduler import DistanceScheduler
-        DistanceScheduler().set_detection_state(False)
-        DistanceScheduler().stop()
-        print('[BOOKING] 距离调度器已停止')
-    except Exception as e:
-        print(f'[BOOKING] 调度器停止失败: {e}')
-    try:
-        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
-        stop_progressive_panel_fetch()
-    except Exception as e:
-        print(f'[BOOKING] 渐进拉图停止失败: {e}')
-    try:
-        from app.services.body_camera_fetch import stop_body_camera_fetch
-        stop_body_camera_fetch()
-    except Exception as e:
-        print(f'[BOOKING] 车身相机拉图停止失败: {e}')
-
-    # 3. 设备复位（先停语音+清播报，再开闸，避免误播/抢通道）
-    try:
-        from app.services.booking_camera_tts import release_voice_channel, stop_speak
-        from app.services.lane_announce import get_lane_announce
-
-        stop_speak()
-        release_voice_channel()
-        get_lane_announce().on_reset_to_idle()
-    except Exception as e:
-        print(f'[BOOKING] 复位播报状态失败: {e}')
-
-    execute_device_action('plc_001', 'setPLC', {
-        'redlight': False, 'yellowlight': True, 'greenlight': False
-    })
-    execute_device_action('gate_001', 'open')
-    execute_device_action('led_001', 'set_step1')
-
-    # 4. WS 推 booking_reset 给前端
-    try:
-        from app.websocket.handler import socketio
-        socketio.emit('message', {
-            'type': 'booking_reset',
-            'timestamp': int(time.time() * 1000),
-            'data': {
-                'state': dict(_booking_state),
-                'operator': user['real_name'],
-            },
-        })
-    except Exception as e:
-        print(f'[WS] 推送 booking_reset 失败: {e}')
-
-    return ok(_booking_state, '重置成功')
+    state = _perform_booking_reset(user)
+    return ok(state, '重置成功')
