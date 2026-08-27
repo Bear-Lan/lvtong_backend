@@ -202,10 +202,24 @@ def device_control(device_id):
     if ctrl.status != 1:
         return fail(503, f'设备 {device_id} 当前离线，无法控制')
 
+    is_gate = device_id == 'gate_001' or getattr(ctrl, 'device_type', '') == 'gate'
+    gate_will_raise = False
+    if is_gate and action in ('open', 'close', 'toggle'):
+        if action == 'open':
+            gate_will_raise = True
+        elif action == 'toggle':
+            gate_will_raise = not bool(getattr(ctrl, 'is_opened', False))
+
     success = ctrl.execute_action(action, params)
     if success:
+        if is_gate and gate_will_raise:
+            try:
+                from app.devices.xray import close_xray_capture
+                close_xray_capture()
+            except Exception as e:
+                print(f'[GATE] 抬杆 xraycap=false 失败: {e}', flush=True)
         data = None
-        if device_id == 'gate_001' or getattr(ctrl, 'device_type', '') == 'gate':
+        if is_gate:
             boom = getattr(ctrl, 'last_boom_result', {}) or {}
             # 有组播确认则用反馈；否则用本机记忆
             if boom.get('confirmed') and isinstance(boom.get('stickdown'), bool):
