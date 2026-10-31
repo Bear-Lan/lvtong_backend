@@ -177,6 +177,45 @@ def device_preview_config(device_id):
 
 # ---- 设备控制 ----
 
+@device_api.route('/<device_id>/ptz/continuous', methods=['POST'])
+@login_required
+def device_ptz_continuous(device_id):
+    """球机连续云台控制（后端直连 ISAPI，不依赖浏览器插件）。"""
+    from app.services.hik_ptz import PtzError, get_hik_ptz_service
+
+    body = request.get_json(silent=True) or {}
+    action = str(body.get('action') or '').strip().lower()
+    direction = str(body.get('direction') or '').strip().lower()
+    try:
+        speed = int(body.get('speed', 45))
+    except (TypeError, ValueError):
+        return fail(400, 'speed 须为整数')
+    try:
+        data = get_hik_ptz_service().continuous(device_id, action, direction, speed)
+    except PtzError as exc:
+        return fail(502, str(exc))
+    return ok(data, 'PTZ 指令已执行')
+
+
+@device_api.route('/<device_id>/ptz/preset', methods=['POST'])
+@login_required
+def device_ptz_preset(device_id):
+    """设置或调用球机预置位 1-9。"""
+    from app.services.hik_ptz import PtzError, get_hik_ptz_service
+
+    body = request.get_json(silent=True) or {}
+    action = str(body.get('action') or '').strip().lower()
+    try:
+        preset_id = int(body.get('preset'))
+    except (TypeError, ValueError):
+        return fail(400, 'preset 须为整数')
+    try:
+        data = get_hik_ptz_service().preset(device_id, action, preset_id)
+    except PtzError as exc:
+        return fail(502, str(exc))
+    return ok(data, '预置位指令已执行')
+
+
 @device_api.route('/<device_id>/control', methods=['POST'])
 @login_required
 def device_control(device_id):

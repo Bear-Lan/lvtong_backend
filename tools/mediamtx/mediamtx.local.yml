@@ -40,3 +40,9 @@ paths:
   cam4:
     source: rtsp://admin:whds%402025@192.168.188.101:554/Streaming/Channels/101
     rtspTransport: tcp
+
+  # Pad 前端: /mtx/cam5/whep — 球机纯浏览器预览
+  # 独立于 Web 正在使用的 cam1/cam4；source 由 Flask 从 cam_ptz 写入
+  cam5:
+    source: rtsp://admin:whds%402025@192.168.188.104:554/Streaming/Channels/101
+    rtspTransport: tcp

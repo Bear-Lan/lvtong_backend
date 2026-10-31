@@ -2,6 +2,7 @@
 
 - paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 主页实时视频
 - paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
+- paths.cam5 ← PTZ_VIDEO_DEVICE_ID（默认 cam_ptz / 104）→ Pad 球机预览
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ _proc: subprocess.Popen | None = None
 _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
 _DEFAULT_LIVE_DEVICE_ID = 'cam_lane'
 _DEFAULT_TALK_DEVICE_ID = 'cam_booking'
+_DEFAULT_PTZ_DEVICE_ID = 'cam_ptz'
 
 
 def _bin_path() -> Path:
@@ -136,6 +138,12 @@ def sync_cam4_source_from_db(device_id: str | None = None) -> str | None:
     return _sync_path_from_device_id('cam4', did)
 
 
+def sync_cam5_source_from_db(device_id: str | None = None) -> str | None:
+    """Pad 球机：device_id → paths.cam5.source（默认 cam_ptz）。"""
+    did = (device_id or os.environ.get('PTZ_VIDEO_DEVICE_ID') or _DEFAULT_PTZ_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam5', did)
+
+
 def _stop_foreign_mediamtx() -> None:
     """启动前清掉已有 MediaMTX，避免端口占用或沿用旧配置。"""
     global _proc
@@ -182,6 +190,11 @@ def start_mediamtx() -> bool:
     except Exception as e:
         print(f'[MediaMTX] 同步 cam4 RTSP 失败: {e}')
 
+    try:
+        sync_cam5_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam5 RTSP 失败: {e}')
+
     if _proc is not None and _proc.poll() is None:
         print('[MediaMTX] 已在运行')
         return True
@@ -217,7 +230,8 @@ def start_mediamtx() -> bool:
         print(
             f'[MediaMTX] 已启动 pid={_proc.pid}  '
             f'WHEP=http://127.0.0.1:8889/cam1/whep  '
-            f'http://127.0.0.1:8889/cam4/whep'
+            f'http://127.0.0.1:8889/cam4/whep  '
+            f'http://127.0.0.1:8889/cam5/whep'
         )
         return True
     except Exception as e:
