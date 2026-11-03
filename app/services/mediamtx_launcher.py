@@ -1,6 +1,8 @@
 """从 devices 表按 device_id 同步 RTSP 到 MediaMTX 配置，并拉起进程。
 
-- paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 主页实时视频
+- paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 图像采集枪机
+- paths.cam2 ← HEAD_VIDEO_DEVICE_ID（默认 cam_head / 102）→ Web 主页面实时视频
+- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe / 105）→ Web 周界相机弹窗
 - paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
 - paths.cam5 ← PTZ_VIDEO_DEVICE_ID（默认 cam_ptz / 104）→ Pad 球机预览
 """
@@ -18,6 +20,8 @@ _proc: subprocess.Popen | None = None
 
 _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
 _DEFAULT_LIVE_DEVICE_ID = 'cam_lane'
+_DEFAULT_HEAD_DEVICE_ID = 'cam_head'
+_DEFAULT_SAFE_DEVICE_ID = 'cam_safe'
 _DEFAULT_TALK_DEVICE_ID = 'cam_booking'
 _DEFAULT_PTZ_DEVICE_ID = 'cam_ptz'
 
@@ -127,9 +131,21 @@ def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
 
 
 def sync_cam1_source_from_db(device_id: str | None = None) -> str | None:
-    """主页实时：device_id → paths.cam1.source（默认 cam_lane）。"""
+    """图像采集枪机：device_id → paths.cam1.source（默认 cam_lane）。"""
     did = (device_id or os.environ.get('LIVE_VIDEO_DEVICE_ID') or _DEFAULT_LIVE_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam1', did)
+
+
+def sync_cam2_source_from_db(device_id: str | None = None) -> str | None:
+    """Web 主页面车头相机：device_id → paths.cam2.source（默认 cam_head）。"""
+    did = (device_id or os.environ.get('HEAD_VIDEO_DEVICE_ID') or _DEFAULT_HEAD_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam2', did)
+
+
+def sync_cam3_source_from_db(device_id: str | None = None) -> str | None:
+    """Web 周界相机 A：device_id → paths.cam3.source（默认 cam_safe）。"""
+    did = (device_id or os.environ.get('SAFE_VIDEO_DEVICE_ID') or _DEFAULT_SAFE_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam3', did)
 
 
 def sync_cam4_source_from_db(device_id: str | None = None) -> str | None:
@@ -186,6 +202,16 @@ def start_mediamtx() -> bool:
         print(f'[MediaMTX] 同步 cam1 RTSP 失败: {e}')
 
     try:
+        sync_cam2_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam2 RTSP 失败: {e}')
+
+    try:
+        sync_cam3_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam3 RTSP 失败: {e}')
+
+    try:
         sync_cam4_source_from_db()
     except Exception as e:
         print(f'[MediaMTX] 同步 cam4 RTSP 失败: {e}')
@@ -230,6 +256,8 @@ def start_mediamtx() -> bool:
         print(
             f'[MediaMTX] 已启动 pid={_proc.pid}  '
             f'WHEP=http://127.0.0.1:8889/cam1/whep  '
+            f'http://127.0.0.1:8889/cam2/whep  '
+            f'http://127.0.0.1:8889/cam3/whep  '
             f'http://127.0.0.1:8889/cam4/whep  '
             f'http://127.0.0.1:8889/cam5/whep'
         )
