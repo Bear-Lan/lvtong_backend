@@ -1,10 +1,11 @@
 """从 devices 表按 device_id 同步 RTSP 到 MediaMTX 配置，并拉起进程。
 
 - paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 图像采集枪机
-- paths.cam2 ← HEAD_VIDEO_DEVICE_ID（默认 cam_head / 102）→ Web 主页面实时视频
-- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe / 105）→ Web 周界相机弹窗
+- paths.cam2 ← HEAD_VIDEO_DEVICE_ID（默认 cam_head / 102）→ Pad 主页面/车头采集
+- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe / 105）→ Pad 周界相机弹窗
 - paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
 - paths.cam5 ← PTZ_VIDEO_DEVICE_ID（默认 cam_ptz / 104）→ Pad 球机预览
+- paths.cam6 ← ROAD_VIDEO_DEVICE_ID（默认 cam_road / 107）→ Pad 车顶采集
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ _DEFAULT_HEAD_DEVICE_ID = 'cam_head'
 _DEFAULT_SAFE_DEVICE_ID = 'cam_safe'
 _DEFAULT_TALK_DEVICE_ID = 'cam_booking'
 _DEFAULT_PTZ_DEVICE_ID = 'cam_ptz'
+_DEFAULT_ROAD_DEVICE_ID = 'cam_road'
 
 
 def _bin_path() -> Path:
@@ -160,6 +162,12 @@ def sync_cam5_source_from_db(device_id: str | None = None) -> str | None:
     return _sync_path_from_device_id('cam5', did)
 
 
+def sync_cam6_source_from_db(device_id: str | None = None) -> str | None:
+    """Pad 车顶相机：device_id → paths.cam6.source（默认 cam_road）。"""
+    did = (device_id or os.environ.get('ROAD_VIDEO_DEVICE_ID') or _DEFAULT_ROAD_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam6', did)
+
+
 def _stop_foreign_mediamtx() -> None:
     """启动前清掉已有 MediaMTX，避免端口占用或沿用旧配置。"""
     global _proc
@@ -221,6 +229,11 @@ def start_mediamtx() -> bool:
     except Exception as e:
         print(f'[MediaMTX] 同步 cam5 RTSP 失败: {e}')
 
+    try:
+        sync_cam6_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam6 RTSP 失败: {e}')
+
     if _proc is not None and _proc.poll() is None:
         print('[MediaMTX] 已在运行')
         return True
@@ -259,7 +272,8 @@ def start_mediamtx() -> bool:
             f'http://127.0.0.1:8889/cam2/whep  '
             f'http://127.0.0.1:8889/cam3/whep  '
             f'http://127.0.0.1:8889/cam4/whep  '
-            f'http://127.0.0.1:8889/cam5/whep'
+            f'http://127.0.0.1:8889/cam5/whep  '
+            f'http://127.0.0.1:8889/cam6/whep'
         )
         return True
     except Exception as e:

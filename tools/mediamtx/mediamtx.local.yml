@@ -29,19 +29,19 @@ pathDefaults:
   sourceOnDemandCloseAfter: 30s
 
 paths:
-  # 前端: /mtx/cam1/whep — 主页实时视频
+  # Pad 图像采集: /mtx/cam1/whep — 车尾枪机
   # source 由 Flask 从 devices.device_id=cam_lane（可用 LIVE_VIDEO_DEVICE_ID 覆盖）写入
   cam1:
     source: rtsp://admin:whds%402025@192.168.188.103:554/Streaming/Channels/101
     rtspTransport: tcp
 
-  # Web 主页面: /mtx/cam2/whep — 独立车头相机
+  # Pad 主页面/图像采集: /mtx/cam2/whep — 独立车头相机
   # source 由 Flask 从 devices.device_id=cam_head 写入
   cam2:
     source: rtsp://admin:whds%402025@192.168.188.102:554/Streaming/Channels/101
     rtspTransport: tcp
 
-  # Web 左下「拍照」: /mtx/cam3/whep — 周界相机 A
+  # Pad 左下「拍照」: /mtx/cam3/whep — 周界相机 A
   # source 由 Flask 从 devices.device_id=cam_safe 写入
   cam3:
     source: rtsp://admin:whds%402025@192.168.188.105:554/Streaming/Channels/101
@@ -57,4 +57,10 @@ paths:
   # 独立于 Web 正在使用的 cam1/cam4；source 由 Flask 从 cam_ptz 写入
   cam5:
     source: rtsp://admin:whds%402025@192.168.188.104:554/Streaming/Channels/101
+    rtspTransport: tcp
+
+  # Pad 图像采集: /mtx/cam6/whep — 车顶相机
+  # source 由 Flask 从 devices.device_id=cam_road（可用 ROAD_VIDEO_DEVICE_ID 覆盖）写入
+  cam6:
+    source: rtsp://admin:whds%402025@192.168.188.107:554/Streaming/Channels/101
     rtspTransport: tcp
