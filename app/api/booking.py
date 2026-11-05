@@ -5,6 +5,7 @@
 """
 import threading
 import time
+import config as device_config
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from flask import Blueprint, request, jsonify, current_app
 
@@ -225,7 +226,8 @@ def fetch_radar_image():
 
     GET /api/booking/radar-image
 
-    中间件 :5001/geom/image 响应头（现场）：
+    默认读取 :5001/geom/laz，在后端解压并生成等比例正交预览。
+    配置旧图像接口时仍支持以下响应头：
     - Vehicle-Height: 车高（米）
     - Vehicle-SX: 车头距图片起始位置（米）
     - Image-Resolution: 米/像素（如 0.01 → 1px=0.01m）
@@ -247,6 +249,7 @@ def fetch_radar_image():
     orig_height = 0
     content_origin_x = 0
     last_error = ''
+    radar_metadata = {}
 
     # gevent 下 greenlet 直连 requests 偶发卡读超时；改真实线程池拉取
     max_attempts = 3
@@ -254,16 +257,24 @@ def fetch_radar_image():
 
     for attempt in range(1, max_attempts + 1):
         try:
-            from app.services.middleware_http import middleware_get
+            from app.services.middleware_http import middleware_get_payload
+            from app.services.radar_point_cloud import decode_radar_payload_in_pool
 
             t0 = time.monotonic()
-            resp = middleware_get(radar_head_url, timeout=per_timeout)
+            resp = middleware_get_payload(radar_head_url, timeout=per_timeout)
             elapsed = time.monotonic() - t0
             if resp.status_code == 200 and resp.content:
-                orig_width, orig_height = _image_size_from_bytes(resp.content)
+                settings = {name: current_app.config.get(name, getattr(device_config, name))
+                            for name in ('RADAR_LAZ_AXES', 'RADAR_LAZ_METERS_PER_UNIT', 'RADAR_LAZ_RESOLUTION')}
+                frame = decode_radar_payload_in_pool(resp.content, resp.headers, settings)
+                radar_metadata = frame.metadata
+                image_data = frame.image
+                resp.headers = frame.headers
+                orig_width, orig_height = _image_size_from_bytes(image_data)
 
                 from app.services.image_preview import put_temp_preview_url
-                image_url = put_temp_preview_url(resp.content, radar_head_url)
+                # 同一个接口每次返回新的采集结果，不能按 URL 复用上一辆车的图。
+                image_url = put_temp_preview_url(image_data)
                 # preview 字节数仅用于日志
                 from app.services.temp_image_cache import get as temp_get, parse_temp_id
                 prev_entry = temp_get(parse_temp_id(image_url))
@@ -302,9 +313,9 @@ def fetch_radar_image():
                     content_origin_x <= 0
                     and not image_envelope
                     and not vehicle_header_envelope
-                    and resp.content
+                    and image_data
                 ):
-                    content_origin_x = _leftmost_content_x(resp.content)
+                    content_origin_x = _leftmost_content_x(image_data)
                     vehicle_header_envelope = f'{content_origin_x},0'
 
                 vh_str = resp.headers.get('Vehicle-Height', '')
@@ -375,6 +386,7 @@ def fetch_radar_image():
         'originalImageWidth': orig_width,
         'originalImageHeight': orig_height,
         'contentOriginX': content_origin_x,
+        'pointCloud': radar_metadata,
     }, '雷达图像获取成功')
 
 

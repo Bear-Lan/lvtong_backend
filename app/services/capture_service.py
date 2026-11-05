@@ -1,6 +1,6 @@
 """图像采集服务
 
-车头/车尾/车顶：从海康摄像头 RTSP 抽帧（默认 cam_lane / 103）
+车头/车尾/车顶：分别从 cam_head / cam_lane / cam_road 的 RTSP 抽帧
   - 车道枪机抓拍：ISAPI /picture 走 4K 抓拍通道常全黑；码流预览正常
   - 因此统一用视频流截帧，不取 4K 抓拍静图
   - 自动拍与手动拍一致：WS 推 /api/temp-images/<id>（避免巨型 base64 堵链路），
@@ -22,8 +22,7 @@ import requests
 
 logger = logging.getLogger('capture_service')
 
-# 与 vue_frontend/src/config/hikvision.ts 一致：车身三类共用车道枪机 cam_lane
-BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')
+# 与 Pad 的 hikvision.ts 对应；每类允许独立覆盖，不再共用一个车身相机。
 # RTSP 通道：默认 101（通道1主码流）；抓拍机上 1/101、2/102 均可
 HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL', '101')
 JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '85'))
@@ -32,9 +31,9 @@ _capture_lock = threading.Lock()
 _RTSP_WARMUP_FRAMES = int(os.environ.get('CAPTURE_RTSP_WARMUP_FRAMES', '2'))
 
 CATEGORY_DEVICE_MAP = {
-    'head': BODY_CAPTURE_DEVICE_ID,
-    'tail': BODY_CAPTURE_DEVICE_ID,
-    'top': BODY_CAPTURE_DEVICE_ID,
+    'head': os.environ.get('HEAD_CAPTURE_DEVICE_ID', 'cam_head'),
+    'tail': os.environ.get('TAIL_CAPTURE_DEVICE_ID', 'cam_lane'),
+    'top': os.environ.get('TOP_CAPTURE_DEVICE_ID', 'cam_road'),
 }
 
 
@@ -158,10 +157,8 @@ def capture_category(category: str) -> dict:
         device_id = CATEGORY_DEVICE_MAP[category]
         # 允许设备 config 覆盖：head_device_id 等
         row = _load_camera_row(device_id)
-        if row and isinstance(row.get('config'), dict):
-            override = row['config'].get(f'{category}_device_id') or row['config'].get(
-                'body_capture_device_id'
-            )
+        if row:
+            override = _cfg_dict(row).get(f'{category}_device_id')
             if override:
                 device_id = str(override)
         print(

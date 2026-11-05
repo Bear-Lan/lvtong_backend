@@ -13,3 +13,4 @@ gevent
 cryptography
 imageio-ffmpeg>=0.6,<0.7
 PyYAML>=6,<7
+laspy[lazrs]>=2.7,<3

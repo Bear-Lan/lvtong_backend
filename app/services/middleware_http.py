@@ -8,6 +8,7 @@ Flask 使用 gevent monkey.patch_all() 后，greenlet 里 requests 偶发卡读�
 from __future__ import annotations
 
 import threading
+import json
 from typing import Any
 from urllib.parse import urlparse
 
@@ -65,6 +66,57 @@ def middleware_get(
 
     def _call():
         return requests.get(url, timeout=timeout, headers=headers, **kwargs)
+
+    if _is_middleware_host(url):
+        with _middleware_lock:
+            return _run_in_pool(_call)
+    return _run_in_pool(_call)
+
+
+def middleware_get_payload(
+    url: str, *, max_bytes: int = 128 * 1024 * 1024,
+    timeout: float | tuple[float, float] = (3.0, 10.0),
+) -> requests.Response:
+    """限量读取雷达文件；仅容忍现场已确认的完整无数据 JSON 长度错误。
+
+    二进制文件少一字节也拒绝，不能把截断的 LAZ 作为成功数据交给解码器。
+    读取和请求在同一线程中完成，避免 gevent 主线程解压/等待大文件。
+    """
+    def _call():
+        with requests.get(url, timeout=timeout, stream=True, headers={
+            'Connection': 'close', 'Cache-Control': 'no-cache',
+            'Accept-Encoding': 'identity',
+        }) as response:
+            declared = response.headers.get('Content-Length')
+            expected = int(declared) if declared is not None else None
+            if expected is not None and (expected < 0 or expected > max_bytes):
+                raise ValueError('雷达响应文件长度超出限制')
+            # urllib3 默认会在拿到完整错误 JSON 后仍因现场多报14字节而抛异常。
+            response.raw.enforce_content_length = False
+            chunks, size = [], 0
+            while True:
+                chunk = response.raw.read(min(65536, max_bytes + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError('雷达响应文件过大')
+            data = b''.join(chunks)
+            if expected is not None and len(data) != expected:
+                try:
+                    obj = json.loads(data)
+                except (ValueError, UnicodeError):
+                    obj = None
+                known_empty_response = (
+                    expected - len(data) == 14 and isinstance(obj, dict)
+                    and obj.get('status') in (False, 'false')
+                )
+                if not known_empty_response:
+                    raise ValueError(f'雷达文件不完整：应收 {expected} 字节，实收 {len(data)}')
+            response._content = data
+            response._content_consumed = True
+            return response
 
     if _is_middleware_host(url):
         with _middleware_lock:

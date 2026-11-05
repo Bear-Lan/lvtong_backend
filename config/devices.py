@@ -27,8 +27,12 @@ USE_PLACEHOLDER_IMAGES = os.environ.get('USE_PLACEHOLDER_IMAGES', 'true').lower(
 
 # ---- 预约雷达图（appt / 几何图）----
 RADAR_HEAD_URL = os.environ.get(
-    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/geom/image'
+    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/geom/laz'
 )
+# LAZ 正交预览：水平/垂直坐标轴及坐标单位。现场文件到达后核对安装方向。
+RADAR_LAZ_AXES = os.environ.get('RADAR_LAZ_AXES', 'xz')
+RADAR_LAZ_METERS_PER_UNIT = float(os.environ.get('RADAR_LAZ_METERS_PER_UNIT', '1'))
+RADAR_LAZ_RESOLUTION = float(os.environ.get('RADAR_LAZ_RESOLUTION', '0.01'))
 
 # 现场组播（$VMRMC 距离 / $NTRMC 状态），默认启用
 RADAR_TRANSPORT = os.environ.get('RADAR_TRANSPORT', 'multicast').lower()
@@ -69,7 +73,9 @@ BODY_CAMERA_IMAGE_URL = os.environ.get(
 BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', BODY_CAMERA_IMAGE_URL)
 BODY_TOP_IMAGE_URL = os.environ.get('BODY_TOP_IMAGE_URL', image_fetch_url('vtop'))
 BODY_SIDE_IMAGE_URL = os.environ.get('BODY_SIDE_IMAGE_URL', image_fetch_url('vside'))
-BODY_CAPTURE_DEVICE_ID = os.environ.get('BODY_CAPTURE_DEVICE_ID', 'cam_lane')
+HEAD_CAPTURE_DEVICE_ID = os.environ.get('HEAD_CAPTURE_DEVICE_ID', 'cam_head')
+TAIL_CAPTURE_DEVICE_ID = os.environ.get('TAIL_CAPTURE_DEVICE_ID', 'cam_lane')
+TOP_CAPTURE_DEVICE_ID = os.environ.get('TOP_CAPTURE_DEVICE_ID', 'cam_road')
 
 # ---- 透视：200=:5003/xray/image；160/拼接暂不接 ----
 XRAY_IMAGE_URL = os.environ.get(
