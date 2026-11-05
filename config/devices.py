@@ -37,6 +37,8 @@ MCAST_PORT = int(os.environ.get('MCAST_PORT', '9000'))
 # 空=自动猜网卡（优先与 192.168.0.188 同网段）。VPN 抢走路由时可强制：
 #   set MCAST_IFACE_IP=192.168.0.138
 MCAST_IFACE_IP = os.environ.get('MCAST_IFACE_IP', '')
+# 收包与发令可经过不同网卡；未配置时沿用发令网卡，兼容现有部署。
+MCAST_RECV_IFACE_IP = os.environ.get('MCAST_RECV_IFACE_IP', '')
 
 # ---- X 光机启扫（组播）----
 # $MDRMC,1,xraycap=true&{车头长}&{small|large}；拉图仍走 :5003/xray/image

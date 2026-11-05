@@ -24,6 +24,9 @@ tools/mediamtx/mediamtx
 tools/mediamtx/mediamtx.zip
 tools/mediamtx/_extract/
 tools/mediamtx/mediamtx.default.yml
+tools/mediamtx/mediamtx.runtime.yml
+tools/mediamtx/mediamtx.runtime.tmp
+logs/
 tools/mediamtx/auto.crt
 tools/mediamtx/auto.key
 

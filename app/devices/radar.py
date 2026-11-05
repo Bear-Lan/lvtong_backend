@@ -109,10 +109,11 @@ class RadarReader(DeviceBase):
                 MCAST_GROUP,
                 MCAST_PORT,
                 MCAST_IFACE_IP,
+                MCAST_RECV_IFACE_IP,
             )
         except ImportError:
-            RADAR_TRANSPORT, MCAST_GROUP, MCAST_PORT, MCAST_IFACE_IP = (
-                'multicast', '224.0.0.100', 9000, ''
+            RADAR_TRANSPORT, MCAST_GROUP, MCAST_PORT, MCAST_IFACE_IP, MCAST_RECV_IFACE_IP = (
+                'multicast', '224.0.0.100', 9000, '', ''
             )
 
         self._transport = (
@@ -134,7 +135,7 @@ class RadarReader(DeviceBase):
                 or MCAST_PORT
                 or 9000
             )
-            iface = MCAST_IFACE_IP or ''
+            iface = MCAST_RECV_IFACE_IP or MCAST_IFACE_IP or ''
             self._iface_ip = _guess_mcast_iface(iface)
             ok = self._start_multicast_listen(group, port, self._iface_ip)
             if ok:
@@ -194,7 +195,7 @@ class RadarReader(DeviceBase):
     def parse_dev_bits(value: int) -> dict:
         """新协议 DEVICE 位表（bit0 起，与中间件 ST_* 一致）→ plc_status。
 
-        ST_RED_LIGHT=0 … ST_SOUND_ALARM=15。
+        ST_RED_LIGHT=0 … ST_BACK_VOICE_ANNOUNCE=17。
         本表无伺服状态位；xraymotorreset 仅作控制键，反馈字段置 False。
         """
         return {
@@ -223,6 +224,8 @@ class RadarReader(DeviceBase):
             'interlock200Cmd': _bit(value, 13),  # ST_INTERLOCK_200
             'interlock160Cmd': _bit(value, 14),  # ST_INTERLOCK_160
             'soundalarmCmd': _bit(value, 15),    # ST_SOUND_ALARM
+            'frontVoiceAnnounceStatus': _bit(value, 16),  # ST_FRONT_VOICE_ANNOUNCE
+            'backVoiceAnnounceStatus': _bit(value, 17),   # ST_BACK_VOICE_ANNOUNCE
             'gateMotor200Status': False,
             'gateMotor160Status': False,
             'xrayMotorRest200Cmd': False,
@@ -234,7 +237,8 @@ class RadarReader(DeviceBase):
         """解析 $NTRMC,DEVICE,<cmdHex>,<statusHex>
 
         例：`$NTRMC,DEVICE,00000110,0000ffff`
-        （前段 cmd，后段 status；status 低 16 位为 0xFFFF 时只信 cmd）。
+        （前段 cmd，后段 status；status 低 16 位为 0xFFFF 时，低位回退 cmd。
+        现场 VOICE1 联调确认前段 bit16/17 随播放开始/结束变化，后段恒全1。）
         """
         try:
             parts = [p.strip() for p in text.strip().split(',')]
@@ -278,6 +282,9 @@ class RadarReader(DeviceBase):
                         'stickDownStatus',
                     ):
                         parsed[k] = cmd_parsed[k]
+                # 实测回读字段，不从本机发送结果推算。后字段001fffff会假报双播报。
+                for k in ('frontVoiceAnnounceStatus', 'backVoiceAnnounceStatus'):
+                    parsed[k] = cmd_parsed[k]
             return parsed
         except (ValueError, IndexError):
             return None

@@ -5,6 +5,7 @@
 """
 import threading
 import time
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from flask import Blueprint, request, jsonify, current_app
 
 from config import RADAR_HEAD_URL
@@ -23,10 +24,9 @@ def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
 
 
-# 并发 /open 只播一次 step2，其余请求等待同一轮结束
+# 同一轮预约键和 /open 共用一次命令派发，包括串行到达的请求。
 _open_announce_lock = threading.Lock()
-_open_announce_inflight = False
-_open_announce_waiters: list[threading.Event] = []
+_step2_dispatch: Future[bool] | None = None
 
 
 # ---- 全局状态（后续迁移到 Redis 或 scheduler 模块） ----
@@ -70,6 +70,9 @@ def _now_iso() -> str:
 
 def mark_book_button() -> str:
     """司机按键：置「有预约」并记录最后点击时间（覆盖写，车道只等一辆车）。"""
+    global _step2_dispatch
+    with _open_announce_lock:
+        _step2_dispatch = None
     now = _now_iso()
     _booking_state['btn_prebook_state'] = True
     _booking_state['last_btn_click_time'] = now
@@ -87,6 +90,9 @@ def take_book_button_for_accept() -> str:
 
 def clear_book_button() -> None:
     """驳回时清空待受理预约（提交/重置不调用，保留下一辆已按键）。"""
+    global _step2_dispatch
+    with _open_announce_lock:
+        _step2_dispatch = None
     _booking_state['btn_prebook_state'] = False
     _booking_state['last_btn_click_time'] = ''
 
@@ -101,72 +107,59 @@ def open_booking_session():
     红灯/落杆/step2 已在预约按键时下发；此处只：
     1. 设备健康检查
     2. 标记弹窗已开
-    3. 等待同一轮 step2 播完并释放 TwoWayAudio，供前端对讲
+    3. 同一轮 step2 只派发一次命令，人工对讲独立使用海康通道
     """
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
 
     _booking_state['booking_dialog_shown'] = True
-    ensure_step2_announce_once()
+    announce_sent = ensure_step2_announce_once()
 
     return ok({
         'devicesReady': devices_ready,
         'videoStreamUrl': None,
         'state': _booking_state,
         'announceStep': 2,
-        'announceDone': True,
+        'announceDone': False,  # UDP 没有播放完成回执
+        'announceCommandSent': announce_sent,
     }, '会话初始化成功')
 
 
-def ensure_step2_announce_once() -> None:
-    """预约键与 /open 共用：只播一轮 step2（LED+语音），其它调用方等待同轮结束。"""
-    global _open_announce_inflight
-
-    waiter: threading.Event | None = None
+def ensure_step2_announce_once() -> bool:
+    """预约键与 /open 只派发一轮 step2；结果仅表示 UDP 提交。"""
+    global _step2_dispatch
     with _open_announce_lock:
-        if _open_announce_inflight:
-            waiter = threading.Event()
-            _open_announce_waiters.append(waiter)
-        else:
-            _open_announce_inflight = True
+        first = _step2_dispatch is None
+        if first:
+            _step2_dispatch = Future()
+        dispatch = _step2_dispatch
 
-    if waiter is not None:
-        print('[BOOKING] step2：已有播报进行中，等待同轮结束', flush=True)
-        waiter.wait(timeout=60)
-        return
+    if not first:
+        try:
+            return dispatch.result(timeout=10)
+        except FutureTimeoutError:
+            return False
 
+    sent = False
     try:
         from app.services.device_action import execute_device_action
         from app.services.lane_announce import get_lane_announce
-        from app.services.booking_camera_tts import (
-            release_voice_channel,
-            speak_step,
-        )
+        from app.services.command_announce import speak_step
 
         get_lane_announce().stop_idle_loop()
         try:
             execute_device_action('led_001', 'set_step2')
         except Exception as e:
             print(f'[BOOKING] LED step2 失败: {e}', flush=True)
-        print('[BOOKING] step2：长连接接播（对讲仍未开）', flush=True)
-        speak_step(2, interrupt=True, blocking=True)
-        release_voice_channel()
-        print('[BOOKING] step2：结束且 TwoWayAudio 已释放，前端可开对讲', flush=True)
+        sent = speak_step(2, interrupt=True, blocking=True)
+        if not sent:
+            raise RuntimeError('step2 语音命令未发送成功')
+        print('[BOOKING] step2：UDP 命令已提交（非播放完成回执），人工对讲独立', flush=True)
     except Exception as e:
         print(f'[BOOKING] step2 播报失败: {e}', flush=True)
-        try:
-            from app.services.booking_camera_tts import release_voice_channel
-
-            release_voice_channel()
-        except Exception:
-            pass
     finally:
-        with _open_announce_lock:
-            _open_announce_inflight = False
-            waiters = list(_open_announce_waiters)
-            _open_announce_waiters.clear()
-        for ev in waiters:
-            ev.set()
+        dispatch.set_result(sent)
+    return sent
 
 
 def _parse_image_resolution(header: str) -> tuple[int, int]:
@@ -559,11 +552,10 @@ def reject_booking():
         'booking_dialog_shown': False,
     })
     try:
-        from app.services.booking_camera_tts import release_voice_channel, stop_speak
+        from app.services.command_announce import stop_speak
         from app.services.lane_announce import get_lane_announce
 
         stop_speak()
-        release_voice_channel()
         get_lane_announce().on_reset_to_idle()
     except Exception as e:
         print(f'[BOOKING] 复位播报状态失败: {e}')
@@ -663,11 +655,10 @@ def _perform_booking_reset(user: dict) -> dict:
         print(f'[BOOKING] 重置 xraycap=false 失败: {e}')
 
     try:
-        from app.services.booking_camera_tts import release_voice_channel, stop_speak
+        from app.services.command_announce import stop_speak
         from app.services.lane_announce import get_lane_announce
 
         stop_speak()
-        release_voice_channel()
         get_lane_announce().on_reset_to_idle()
     except Exception as e:
         print(f'[BOOKING] 复位播报状态失败: {e}')

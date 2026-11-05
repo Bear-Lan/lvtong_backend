@@ -1,0 +1,15 @@
+{
+  "targets": ["front", "back"],
+  "steps": {
+    "1": "VOICE1",
+    "2": "VOICE2",
+    "3": "VOICE3",
+    "4": "VOICE4",
+    "5": "VOICE5",
+    "6": "VOICE6",
+    "7": "VOICE7",
+    "8": "VOICE8",
+    "9": "VOICE9"
+  },
+  "repeat_interval_sec": 10
+}

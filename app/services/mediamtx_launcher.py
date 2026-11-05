@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import signal
 from pathlib import Path
 from urllib.parse import quote
 
@@ -36,6 +37,31 @@ def _bin_path() -> Path:
 
 def _cfg_path() -> Path:
     return _MTX_DIR / 'mediamtx.local.yml'
+
+
+def _runtime_cfg_path() -> Path:
+    """模板保留相机源；运行文件使用 H.265 → H.264 按需转码。"""
+    import yaml
+    from app.services.video_transcode import build_transcode_config, choose_encoder, ffmpeg_path
+
+    base = yaml.safe_load(_cfg_path().read_text(encoding='utf8'))
+    ffmpeg = ffmpeg_path()
+    encoder = choose_encoder(ffmpeg)
+    generated = build_transcode_config(
+        base, ffmpeg, encoder,
+        width=int(os.environ.get('VIDEO_MAX_WIDTH', '1280')),
+        fps=int(os.environ.get('VIDEO_FPS', '15')),
+    )
+    # 多网卡 + Tailscale 时，避免公网 IPv6 与隧道地址组成不可传媒体的候选对。
+    # 各现场显式提供 LAN/Tailscale IPv4，未配置时沿用模板的候选设置。
+    from app.services.video_transcode import configure_webrtc_hosts
+    configure_webrtc_hosts(generated, os.environ.get('VIDEO_WEBRTC_HOSTS', ''))
+    target = _MTX_DIR / 'mediamtx.runtime.yml'
+    temporary = target.with_suffix('.tmp')
+    temporary.write_text(yaml.safe_dump(generated, allow_unicode=True, sort_keys=False), encoding='utf8')
+    temporary.replace(target)
+    print(f'[MediaMTX] 按需 H.264 转码 encoder={encoder}，无人观看10秒后释放')
+    return target
 
 
 def is_enabled() -> bool:
@@ -252,19 +278,24 @@ def start_mediamtx() -> bool:
         )
         return False
 
-    _stop_foreign_mediamtx()
-
     try:
+        cfg = _runtime_cfg_path()
+        _stop_foreign_mediamtx()
         creationflags = 0
         if sys.platform.startswith('win'):
-            creationflags = getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
-        _proc = subprocess.Popen(
-            [str(bin_path), str(cfg)],
-            cwd=str(_MTX_DIR),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
+            creationflags = (getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+                             | getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        log_dir = _MTX_DIR.parents[1] / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / 'mediamtx.log'
+        if log_path.exists() and log_path.stat().st_size > 5 * 1024 * 1024:
+            log_path.replace(log_path.with_suffix('.log.1'))
+        with log_path.open('ab') as log:
+            _proc = subprocess.Popen(
+                [str(bin_path), str(cfg)], cwd=str(_MTX_DIR),
+                stdout=log, stderr=subprocess.STDOUT, creationflags=creationflags,
+                start_new_session=not sys.platform.startswith('win'),
+            )
         atexit.register(stop_mediamtx)
         print(
             f'[MediaMTX] 已启动 pid={_proc.pid}  '
@@ -288,7 +319,14 @@ def stop_mediamtx() -> None:
         return
     try:
         if _proc.poll() is None:
-            _proc.terminate()
+            if sys.platform.startswith('win'):
+                # 只清理本次启动的 MediaMTX 进程树，包含其按需 FFmpeg 子进程。
+                subprocess.run(['taskkill', '/PID', str(_proc.pid), '/T', '/F'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=8, check=False,
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            else:
+                os.killpg(_proc.pid, signal.SIGTERM)
             try:
                 _proc.wait(timeout=5)
             except Exception:

@@ -1,8 +1,8 @@
 """车道语音/LED 播报编排（对齐现场规则）
 
-语音：预置 wav→μ-law → 预约机 TwoWayAudio；LED 同步 set_step → $MDRMC leddisplay=。
+语音：MDRMC → 中间件串口播报；LED 同步 set_step → $MDRMC leddisplay=。
 
-1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；长连接循环推流
+1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；按配置间隔发命令
 2. 预约键（任意时刻）→ 红灯+落杆 + step2 语音/LED；空闲才通知前端弹窗
 3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
@@ -20,8 +20,6 @@ def _ts() -> str:
 
 
 class LaneAnnounceService:
-    IDLE_INTERVAL_SEC = 3.0
-
     _instance: Optional['LaneAnnounceService'] = None
     _inst_lock = threading.Lock()
 
@@ -132,7 +130,7 @@ class LaneAnnounceService:
                 print(f'[{_ts()}] [ANNOUNCE] 推送 book_button 失败: {e}', flush=True)
 
     def on_accepted(self) -> None:
-        """受理 → 异步播 step3；抬杆 step4 可用打断模式覆盖。"""
+        """受理 → 异步提交 step3；不再释放海康对讲会话。"""
         self.stop_idle_loop()
         with self._lock:
             self._release_pending = True
@@ -140,20 +138,13 @@ class LaneAnnounceService:
             self._said_session.discard(5)
 
         def _run() -> None:
-            try:
-                from app.services.booking_camera_tts import release_voice_channel
-
-                # 前端刚停对讲时相机常仍 403，先 close+短暂冷却再播
-                release_voice_channel(settle_sec=0.45)
-            except Exception as e:
-                print(f'[{_ts()}] [ANNOUNCE] 受理前释放通道失败: {e}', flush=True)
             if self._announce_session_once(3):
                 print(f'[{_ts()}] [ANNOUNCE] 受理 → step3', flush=True)
 
         threading.Thread(target=_run, daemon=True, name='announce-step3').start()
 
     def on_gate_open(self) -> None:
-        """抬杆放行 → step4（interrupt，可跳过未播完的 step3）。"""
+        """抬杆放行 → 提交 step4；设备如何抢占播放由中间件决定。"""
         with self._lock:
             pending = self._release_pending
             if pending:
@@ -174,14 +165,11 @@ class LaneAnnounceService:
                 pass
 
     def on_reset_to_idle(self) -> None:
-        from app.services.booking_camera_tts import abort_keepalive
-
         with self._lock:
             self._release_pending = False
             self._said_session.clear()
             target = self._radar_target
             idle = self._is_system_idle_unlocked()
-        abort_keepalive(timeout=3.0)
         self._stop_idle_loop()
         if target and idle:
             self._ensure_idle_loop()
@@ -224,14 +212,18 @@ class LaneAnnounceService:
             if step in self._said_session:
                 return False
             self._said_session.add(step)
+        # 业务事件只处理一次，语音失败不能阻止光幕时间等状态记录。
         self._play(step, interrupt=True)
         return True
 
-    def _play(self, step: int, *, interrupt: bool = False, blocking: bool = False) -> None:
+    def _play(self, step: int, *, interrupt: bool = False, blocking: bool = False) -> bool:
+        sent = False
         try:
-            from app.services.booking_camera_tts import speak_step
+            from app.services.command_announce import speak_step
 
-            speak_step(step, interrupt=interrupt, blocking=blocking)
+            sent = speak_step(step, interrupt=interrupt, blocking=blocking)
+            if not sent:
+                print(f'[{_ts()}] [ANNOUNCE] step{step} 语音命令未发送成功', flush=True)
         except Exception as e:
             print(f'[{_ts()}] [ANNOUNCE] 播报失败 step{step}: {e}', flush=True)
 
@@ -244,6 +236,7 @@ class LaneAnnounceService:
                 print(f'[{_ts()}] [ANNOUNCE] LED step{step} 失败: {e}', flush=True)
 
         threading.Thread(target=_led, daemon=True, name=f'announce-led-{step}').start()
+        return sent
 
     def _ensure_idle_loop(self) -> None:
         with self._lock:
@@ -251,9 +244,7 @@ class LaneAnnounceService:
                 return
             t = self._idle_thread
             if t is not None and t.is_alive():
-                # 预约键只是暂停招揽，长连接还在：恢复循环即可
-                self._idle_looping = True
-                print(f'[{_ts()}] [ANNOUNCE] 复用招揽长连接', flush=True)
+                # 旧线程收到取消后即将退出；后续雷达事件会启动下一轮。
                 return
             self._idle_looping = True
             t = threading.Thread(
@@ -270,10 +261,13 @@ class LaneAnnounceService:
             was = self._idle_looping
             self._idle_looping = False
         if was:
-            print(f'[{_ts()}] [ANNOUNCE] 空闲招揽已暂停（长连接保持）', flush=True)
+            from app.services.command_announce import stop_speak
+
+            stop_speak()
+            print(f'[{_ts()}] [ANNOUNCE] 空闲语音命令已暂停', flush=True)
 
     def _idle_worker(self) -> None:
-        """空闲招揽：一条 TwoWayAudio 长连接循环播 step1，句间写静音。"""
+        """空闲招揽：定时发送语音命令，不占用海康音频通道。"""
         def should_continue() -> bool:
             with self._lock:
                 return (
@@ -294,17 +288,16 @@ class LaneAnnounceService:
             threading.Thread(target=_led, daemon=True, name='announce-led-1').start()
 
         try:
-            print(f'[{_ts()}] [ANNOUNCE] 空闲招揽长连接开始', flush=True)
-            from app.services.booking_camera_tts import run_idle_keepalive
+            print(f'[{_ts()}] [ANNOUNCE] 空闲语音命令循环开始', flush=True)
+            from app.services.command_announce import run_idle_announcements
 
-            run_idle_keepalive(
+            run_idle_announcements(
                 1,
-                self.IDLE_INTERVAL_SEC,
                 should_continue,
                 on_clip=on_clip,
             )
         except Exception as e:
-            print(f'[{_ts()}] [ANNOUNCE] 招揽长连接失败: {e}', flush=True)
+            print(f'[{_ts()}] [ANNOUNCE] 空闲语音命令失败: {e}', flush=True)
         finally:
             with self._lock:
                 self._idle_looping = False
