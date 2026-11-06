@@ -26,7 +26,8 @@
 
 ## LAZ
 
-RADAR_HEAD_URL 默认 `http://192.168.88.201:5001/geom/laz`。
+RADAR_HEAD_URL 默认 `http://192.168.88.201:5001/appt/image`，用于预约界面来车图（2026-11-06 用户提供）。校验真实图像后沿用上游测量响应头，生成同源临时预览 URL。
+`http://192.168.88.201:5001/geom/laz` 是独立的原始点云接口，需要时可显式配置；保留以下 LAS/LAZ 解码能力。
 用 laspy 2.7 + lazrs 解压实际 LAS/LAZ 二进制，先应用 LAS header 中各轴 scales/offsets，再按选定两轴等比例投影为 PNG。
 沿用 `/api/booking/radar-image` 返回 temp 图片 URL；pointCloud 字段附带文件格式、点数、投影轴、单位比例和米制包络。
 既有图像接口可显式覆盖 RADAR_HEAD_URL；响应必须能解码，错误 JSON/HTML 不作为图片缓存。

@@ -27,7 +27,7 @@ USE_PLACEHOLDER_IMAGES = os.environ.get('USE_PLACEHOLDER_IMAGES', 'true').lower(
 
 # ---- 预约雷达图（appt / 几何图）----
 RADAR_HEAD_URL = os.environ.get(
-    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/geom/laz'
+    'RADAR_HEAD_URL', 'http://192.168.88.201:5001/appt/image'
 )
 # LAZ 正交预览：水平/垂直坐标轴及坐标单位。现场文件到达后核对安装方向。
 RADAR_LAZ_AXES = os.environ.get('RADAR_LAZ_AXES', 'xz')

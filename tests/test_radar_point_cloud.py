@@ -169,6 +169,51 @@ class BookingRadarTest(unittest.TestCase):
         self.assertEqual(result.json['data']['imageUrl'], '')
         self.assertIn('尚未生成有效点云', result.json['message'])
 
+    def test_appointment_image_preserves_measurement_headers(self):
+        image = np.full((240, 800, 3), 255, np.uint8)
+        image[40:220, 100:650] = (120, 160, 200)
+        encoded, png = cv2.imencode('.png', image)
+        self.assertTrue(encoded)
+        response = self.response(png.tobytes())
+        response.headers.update({'Content-Type': 'image/png', 'Vehicle-Height': '3.73',
+                                 'Vehicle-SX': '1.08', 'Image-Resolution': '0.01'})
+        url = 'http://192.168.88.201:5001/appt/image'
+        self.app.config['RADAR_HEAD_URL'] = url
+        with patch.object(middleware_http, 'middleware_get_payload', return_value=response) as fetch, \
+             patch('app.services.radar_point_cloud.decode_radar_payload_in_pool', side_effect=decode_radar_payload), \
+             patch('socket.socket', side_effect=AssertionError('network forbidden')):
+            result = self.client.get('/api/booking/radar-image', headers=self.auth)
+        self.assertEqual(fetch.call_args.args[0], url)
+        self.assertEqual(result.status_code, 200)
+        data = result.json['data']
+        self.assertEqual((data['originalImageWidth'], data['originalImageHeight']), (800, 240))
+        self.assertEqual(data['vehicleHeight'], 3.73)
+        self.assertEqual(data['vehicleSx'], 1.08)
+        self.assertEqual(data['metersPerPixel'], .01)
+        self.assertEqual(data['contentOriginX'], 108)
+        self.assertEqual(data['pointCloud']['sourceFormat'], 'image')
+        preview = temp_image_cache.get(temp_image_cache.parse_temp_id(data['imageUrl']))
+        self.assertIsNotNone(preview)
+
+    def test_invalid_measurements_do_not_replace_existing_height(self):
+        encoded, png = cv2.imencode('.png', np.full((240, 800, 3), 255, np.uint8))
+        self.assertTrue(encoded)
+        booking.get_booking_state()['car_height'] = 3.2
+        for height, sx, resolution in [('-7.06e-311', '6.25e-310', '.01'),
+                                        ('nan', 'inf', 'nan'), ('inf', '-1', 'inf'),
+                                        ('0', '9', '.01')]:
+            with self.subTest(height=height, sx=sx):
+                response = self.response(png.tobytes())
+                response.headers.update({'Vehicle-Height': height, 'Vehicle-SX': sx,
+                                         'Image-Resolution': resolution})
+                with patch.object(middleware_http, 'middleware_get_payload', return_value=response), \
+                     patch('app.services.radar_point_cloud.decode_radar_payload_in_pool', side_effect=decode_radar_payload):
+                    result = self.client.get('/api/booking/radar-image', headers=self.auth)
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(result.json['data']['vehicleHeight'], 3.2)
+                self.assertIsNone(result.json['data']['vehicleSx'])
+                self.assertEqual(result.json['data']['metersPerPixel'], .01)
+
 
 if __name__ == '__main__':
     unittest.main()

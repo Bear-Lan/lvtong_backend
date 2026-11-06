@@ -5,6 +5,8 @@
 """
 import threading
 import time
+import math
+import sys
 import config as device_config
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from flask import Blueprint, request, jsonify, current_app
@@ -226,8 +228,8 @@ def fetch_radar_image():
 
     GET /api/booking/radar-image
 
-    默认读取 :5001/geom/laz，在后端解压并生成等比例正交预览。
-    配置旧图像接口时仍支持以下响应头：
+    默认读取 :5001/appt/image，校验图像并提供同源预览；配置 LAZ 接口时解压为正交预览。
+    支持以下测量响应头：
     - Vehicle-Height: 车高（米）
     - Vehicle-SX: 车头距图片起始位置（米）
     - Image-Resolution: 米/像素（如 0.01 → 1px=0.01m）
@@ -286,7 +288,7 @@ def fetch_radar_image():
 
                 try:
                     meters_per_pixel = float(image_resolution) if image_resolution else 0.01
-                    if meters_per_pixel <= 0:
+                    if not math.isfinite(meters_per_pixel) or meters_per_pixel < sys.float_info.min:
                         meters_per_pixel = 0.01
                 except ValueError:
                     meters_per_pixel = 0.01
@@ -295,6 +297,10 @@ def fetch_radar_image():
                 if sx_str:
                     try:
                         vehicle_sx = float(sx_str)
+                        if (not math.isfinite(vehicle_sx) or vehicle_sx < 0
+                                or 0 < vehicle_sx < sys.float_info.min
+                                or vehicle_sx / meters_per_pixel >= orig_width):
+                            vehicle_sx = None
                     except ValueError:
                         vehicle_sx = None
 
@@ -321,8 +327,10 @@ def fetch_radar_image():
                 vh_str = resp.headers.get('Vehicle-Height', '')
                 if vh_str:
                     try:
-                        vehicle_height = float(vh_str)
-                        _booking_state['car_height'] = vehicle_height
+                        measured_height = float(vh_str)
+                        if math.isfinite(measured_height) and measured_height >= sys.float_info.min:
+                            vehicle_height = measured_height
+                            _booking_state['car_height'] = vehicle_height
                     except ValueError:
                         pass
 
