@@ -1,6 +1,6 @@
 """预约机双工语音通道独占锁。
 
-摄像头 TwoWayAudio 供前端海康插件人工对讲使用。
+摄像头 TwoWayAudio 供浏览器经后端桥接人工对讲使用。
 自动语音通过 MDRMC 交给中间件，不再申请或抢占此锁。
 announce 标识仅保留给旧客户端兼容。
 
@@ -55,6 +55,7 @@ class VoiceChannelLock:
         wait: bool = False,
         timeout: float = 30.0,
         steal: bool = False,
+        reentrant: bool = True,
     ) -> dict[str, Any]:
         owner = (owner or '').strip()
         if owner not in self.OWNERS:
@@ -83,7 +84,7 @@ class VoiceChannelLock:
                         out['stolenFrom'] = stolen_from
                     return out
 
-                if self._owner == owner:
+                if self._owner == owner and reentrant:
                     # 同占用方重入：复用现有 token
                     out = self._status_unlocked()
                     out['ok'] = True
@@ -141,7 +142,7 @@ class VoiceChannelLock:
             allowed = force
             if not allowed and token and token == self._token:
                 allowed = True
-            if not allowed and owner and owner == self._owner:
+            if not allowed and not token and owner and owner == self._owner:
                 allowed = True
 
             if not allowed:

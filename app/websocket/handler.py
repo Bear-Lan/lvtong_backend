@@ -33,6 +33,8 @@ def init_socketio(app):
         ping_interval=25,
     )
     register_handlers()
+    from app.services.browser_talk import register_talk_handlers
+    app.extensions['browser_talk'] = register_talk_handlers(socketio)
     return socketio
 
 
