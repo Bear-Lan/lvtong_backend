@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import io
 import json
 import math
+import base64
 
 import cv2
 import laspy
@@ -149,6 +150,11 @@ def decode_radar_payload_in_pool(data: bytes, headers=None, settings=None) -> Ra
 
 def decode_body_projection_pair(data: bytes, settings=None) -> dict[str, RadarFrame]:
     """同一份LAS/LAZ只解压一次，XY俯视、XZ侧视；两图保持相同米/像素。"""
+    return decode_body_radar_data(data, settings)[0]
+
+
+def decode_body_radar_data(data: bytes, settings=None):
+    """一次解压返回投影与三维坐标，测量包络基于全部有效点、独立于显示采样。"""
     if not data.startswith(b'LASF'):
         # 复用无数据/错误JSON的明确错误信息，不把图像接口误当成点云。
         decode_radar_payload(data)
@@ -158,5 +164,17 @@ def decode_body_projection_pair(data: bytes, settings=None) -> dict[str, RadarFr
     resolution = _positive(settings.get('RADAR_LAZ_RESOLUTION', .01), '点云分辨率')
     cloud, lows, highs, count, compressed = _read_las(data, unit)
     resolution = max(resolution, float(max(highs - lows)) / (MAX_EDGE - 1))
-    return {view: _project_las(cloud, lows, highs, count, compressed, CaseInsensitiveDict(), axes, unit, resolution)
-            for view, axes in [('top', 'xy'), ('side', 'xz')]}
+    frames = {view: _project_las(cloud, lows, highs, count, compressed, CaseInsensitiveDict(), axes, unit, resolution)
+              for view, axes in [('top', 'xy'), ('side', 'xz')]}
+    # 中心化后转float32，避免大地坐标量级导致浏览器显示抖动；真实包络仍用float64。
+    origin = (lows + highs) / 2
+    positions = np.asarray(cloud - origin, dtype='<f4')
+    if not np.isfinite(positions).all():
+        raise ValueError('三维坐标超出显示范围')
+    geometry = {'encoding': 'float32-le-base64', 'positions': base64.b64encode(positions.tobytes()).decode('ascii'),
+                'pointCount': len(cloud), 'totalPointCount': count, 'originMeters': origin.tolist(),
+                'boundsMeters': {'min': lows.tolist(), 'max': highs.tolist()},
+                'dimensionsMeters': {'length': float(highs[0] - lows[0]),
+                                     'width': float(highs[1] - lows[1]),
+                                     'height': float(highs[2] - lows[2])}}
+    return frames, geometry

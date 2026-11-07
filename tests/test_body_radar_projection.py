@@ -1,5 +1,6 @@
 """同帧车顶/车侧投影、实时优先及示范来源回归；不连接设备。"""
 from pathlib import Path
+import base64
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +48,26 @@ class BodyProjectionTest(unittest.TestCase):
         for frame in frames.values():
             image = cv2.imdecode(np.frombuffer(frame.image, np.uint8), cv2.IMREAD_COLOR)
             self.assertLessEqual(max(image.shape), 4096)
+
+    def test_three_dimensional_coordinates_keep_exact_full_measurements(self):
+        _, geometry = radar_point_cloud.decode_body_radar_data(service.SAMPLE_PATH.read_bytes())
+        self.assertEqual(geometry['pointCount'], 48852)
+        self.assertAlmostEqual(geometry['dimensionsMeters']['length'], 4.404)
+        self.assertAlmostEqual(geometry['dimensionsMeters']['width'], 1.992)
+        self.assertAlmostEqual(geometry['dimensionsMeters']['height'], 1.810)
+        xyz = np.frombuffer(base64.b64decode(geometry['positions']), dtype='<f4').reshape(-1, 3)
+        self.assertTrue(np.isfinite(xyz).all())
+        np.testing.assert_allclose(xyz.min(axis=0) + geometry['originMeters'], geometry['boundsMeters']['min'], atol=1e-6)
+        np.testing.assert_allclose(xyz.max(axis=0) + geometry['originMeters'], geometry['boundsMeters']['max'], atol=1e-6)
+
+    def test_display_sampling_preserves_dimensions_and_large_coordinate_precision(self):
+        with patch.object(radar_point_cloud, 'MAX_RENDER_POINTS', 2):
+            _, geometry = radar_point_cloud.decode_body_radar_data(cloud_bytes())
+        self.assertEqual(geometry['pointCount'], 2)
+        self.assertEqual(geometry['totalPointCount'], 4)
+        self.assertEqual(geometry['dimensionsMeters'], {'length': 4., 'width': 2., 'height': 2.})
+        xyz = np.frombuffer(base64.b64decode(geometry['positions']), dtype='<f4').reshape(-1, 3)
+        self.assertLessEqual(abs(xyz).max(), 2.)
 
     def test_live_cloud_is_used_instead_of_sample(self):
         with patch.object(service, 'middleware_get_payload', return_value=self.response(cloud_bytes())) as fetch, \
