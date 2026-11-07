@@ -3,7 +3,7 @@
 提供设备状态查询、设备控制、重连等接口。
 对齐 Qt DeviceManager。
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 
 from app.devices.manager import DeviceManager
 from app.extensions.auth import login_required
@@ -339,14 +339,17 @@ def body_radar_image():
     if view not in ('top', 'side'):
         return fail(400, 'view 须为 top 或 side')
 
-    from app.services.progressive_image_fetch import fetch_body_radar_image
-
-    image_url = fetch_body_radar_image(view)
-    if not image_url:
-        return fail(502, f'{view} 雷达图拉取失败')
-
+    import config as device_config
+    from app.services.body_radar_projection import fetch_body_projections
+    names = ('RADAR_POINT_CLOUD_URL', 'RADAR_POINT_CLOUD_SAMPLE_FALLBACK',
+             'RADAR_LAZ_METERS_PER_UNIT', 'RADAR_LAZ_RESOLUTION')
+    settings = {name: current_app.config.get(name, getattr(device_config, name)) for name in names}
+    try:
+        result = fetch_body_projections(settings)
+    except Exception as error:
+        return fail(502, f'车顶车侧点云投影失败：{error}')
     slot = '2' if view == 'top' else '3'
-    return ok({'imageUrl': image_url, 'view': view, 'slot': slot})
+    return ok({**result, 'imageUrl': result['views'][view]['imageUrl'], 'view': view, 'slot': slot})
 
 
 @device_api.route('/reconnect', methods=['POST'])

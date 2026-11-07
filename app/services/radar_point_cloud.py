@@ -62,6 +62,11 @@ def _decode_las(data: bytes, headers, settings) -> RadarFrame:
         raise ValueError('RADAR_LAZ_AXES 必须为两个不同的 xyz 坐标轴')
     unit = _positive(settings.get('RADAR_LAZ_METERS_PER_UNIT', 1), '点云单位比例')
     resolution = _positive(settings.get('RADAR_LAZ_RESOLUTION', .01), '点云分辨率')
+    cloud, lows, highs, count, compressed = _read_las(data, unit)
+    return _project_las(cloud, lows, highs, count, compressed, headers, axes, unit, resolution)
+
+
+def _read_las(data: bytes, unit: float):
     lows = np.full(3, np.inf)
     highs = np.full(3, -np.inf)
     samples = []
@@ -103,6 +108,11 @@ def _decode_las(data: bytes, headers, settings) -> RadarFrame:
         raise ValueError(f'LAS/LAZ 解码失败：{error}') from error
 
     cloud = np.concatenate(samples)
+    return cloud, lows, highs, count, compressed
+
+
+def _project_las(cloud, lows, highs, count, compressed, headers, axes, unit, resolution):
+    headers = headers.copy()
     horizontal, vertical = ('xyz'.index(a) for a in axes)
     span = highs - lows
     if not np.isfinite(span).all():
@@ -135,3 +145,18 @@ def decode_radar_payload_in_pool(data: bytes, headers=None, settings=None) -> Ra
     # lazrs/numpy/cv2 的 CPU 工作放到真实线程，避免占用距离 WS 的 greenlet。
     from app.services.middleware_http import _run_in_pool
     return _run_in_pool(lambda: decode_radar_payload(data, headers, settings))
+
+
+def decode_body_projection_pair(data: bytes, settings=None) -> dict[str, RadarFrame]:
+    """同一份LAS/LAZ只解压一次，XY俯视、XZ侧视；两图保持相同米/像素。"""
+    if not data.startswith(b'LASF'):
+        # 复用无数据/错误JSON的明确错误信息，不把图像接口误当成点云。
+        decode_radar_payload(data)
+        raise ValueError('车顶车侧投影需要 LAS/LAZ 点云文件')
+    settings = settings or {}
+    unit = _positive(settings.get('RADAR_LAZ_METERS_PER_UNIT', 1), '点云单位比例')
+    resolution = _positive(settings.get('RADAR_LAZ_RESOLUTION', .01), '点云分辨率')
+    cloud, lows, highs, count, compressed = _read_las(data, unit)
+    resolution = max(resolution, float(max(highs - lows)) / (MAX_EDGE - 1))
+    return {view: _project_las(cloud, lows, highs, count, compressed, CaseInsensitiveDict(), axes, unit, resolution)
+            for view, axes in [('top', 'xy'), ('side', 'xz')]}
