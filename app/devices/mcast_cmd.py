@@ -74,6 +74,11 @@ def send_camcap(enabled: bool) -> bool:
     return send_mdrmc(f'camcap={flag}')
 
 
+def send_geomcap(enabled: bool) -> bool:
+    """车辆几何信息采集开关；与只读LAZ接口独立。"""
+    return send_mdrmc(f'geomcap={"true" if enabled else "false"}')
+
+
 def format_xraycap_command(
     enabled: bool,
     car_length: float,

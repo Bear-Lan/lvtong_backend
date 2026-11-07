@@ -449,8 +449,11 @@ def accept_booking():
     else:
         print('[BOOKING] 无待受理预约时间，btn_prebook_time 留空（未按键直接受理）')
 
+    from app.services.geometry_capture import prepare_geometry_capture
+    geometry_generation = prepare_geometry_capture()
     _booking_state.update({
         'car_height': vehicle_height,
+        'geometry_generation': geometry_generation,
         'car_length': car_head_length,
         'vehicle_type': vehicle_type,
         'is_check_xray': xray_enabled,
@@ -562,6 +565,13 @@ def reject_booking():
     user = request.gc_user
     print(f'[BOOKING] 用户 {user["username"]} 驳回预约')
 
+    try:
+        from app.services.geometry_capture import stop_geometry_capture
+        if not stop_geometry_capture():
+            print('[BOOKING] 驳回 geomcap=false 发送失败', flush=True)
+    except Exception as error:
+        print(f'[BOOKING] 驳回停止几何采集失败: {error}', flush=True)
+
     from app.services.device_action import execute_device_action
 
     # 恢复状态（先清播报放行标记，避免随后开闸误播 step4）
@@ -627,6 +637,13 @@ def reject_booking():
 def _perform_booking_reset(user: dict) -> dict:
     """重置预约状态机 — 底部「重置」专用。"""
     from app.services.device_action import execute_device_action
+
+    try:
+        from app.services.geometry_capture import stop_geometry_capture
+        if not stop_geometry_capture():
+            print('[BOOKING] 重置 geomcap=false 发送失败', flush=True)
+    except Exception as error:
+        print(f'[BOOKING] 重置停止几何采集失败: {error}', flush=True)
 
     pending = bool(_booking_state.get('btn_prebook_state'))
     pending_time = _booking_state.get('last_btn_click_time', '')
@@ -707,7 +724,7 @@ def _perform_booking_reset(user: dict) -> dict:
 @booking_api.route('/urgent-stop', methods=['POST'])
 @login_required
 def urgent_stop():
-    """顶部 STOP — 仅停光机 + 停止透视轮询拉图。
+    """顶部 STOP — 仅停止 X 光采集，其余设备和调度继续运行。
 
     POST /api/booking/urgent-stop
     """
@@ -715,18 +732,14 @@ def urgent_stop():
     print(f'[BOOKING] 用户 {user["username"]} 执行 STOP')
 
     try:
-        from app.services.progressive_image_fetch import stop_progressive_panel_fetch
-        stop_progressive_panel_fetch()
-    except Exception as e:
-        print(f'[BOOKING] STOP 停止透视轮询失败: {e}')
-
-    try:
         from app.devices.xray import close_xray_capture
-        close_xray_capture()
+        if not close_xray_capture():
+            return fail(503, '停止X光采集命令发送失败，请重试')
     except Exception as e:
         print(f'[BOOKING] STOP xraycap=false 失败: {e}')
+        return fail(503, '停止X光采集命令发送失败，请重试')
 
-    return ok(message='已停止光机及透视拉图')
+    return ok({'commandSent': True}, message='停止X光采集命令已发送')
 
 
 @booking_api.route('/stop-reset', methods=['POST'])
@@ -750,20 +763,14 @@ def stop_reset():
 
     try:
         from app.devices.xray import close_xray_capture
-        close_xray_capture()
+        if not close_xray_capture():
+            return fail(503, '停止X光采集命令发送失败，请重试')
     except Exception as e:
         print(f'[BOOKING] 急停复位 xraycap=false 失败: {e}')
+        return fail(503, '停止X光采集命令发送失败，请重试')
 
-    socketio.emit('message', {
-        'type': 'plc_status',
-        'timestamp': int(time.time() * 1000),
-        'data': {
-            'urgentstop': False,
-            'operator': user['real_name'],
-        },
-    })
-
-    return ok(message='急停复位已执行')
+    # 急停位是否清零由随后真实DEVICE反馈确认，不伪造plc_status。
+    return ok({'commandSent': True}, message='急停复位及停止X光命令已发送')
 
 
 @booking_api.route('/stop-video', methods=['POST'])

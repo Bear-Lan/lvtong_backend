@@ -54,7 +54,8 @@ class VoiceStatusBitsTest(unittest.TestCase):
                 status = voice | 0xffff
                 with self.subTest(cmd=cmd, status=status):
                     parsed = RadarReader.parse_ntrmc_dev(f'$NTRMC,DEVICE,{cmd:08x},{status:08x}')
-                    self.assertTrue(parsed['statusUnreliable'])
+                    self.assertNotIn('statusUnreliable', parsed)
+                    self.assertEqual(parsed['onlineRaw'], status)
                     self.assertIs(parsed['frontVoiceAnnounceStatus'], bool(cmd & 0x10000))
                     self.assertIs(parsed['backVoiceAnnounceStatus'], bool(cmd & 0x20000))
                     self.assertFalse(parsed['urgentStopStatus'])

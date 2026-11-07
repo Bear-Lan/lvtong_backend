@@ -55,6 +55,10 @@ def params_to_mdrmc_cmds(params: dict) -> list[str]:
         tok = _bool_token(raw_val)
         if tok is None:
             continue
+        if key == 'urgentstop' and tok == 'true':
+            # 急停只停X光采集，不通过旧整机急停键联动其他设备。
+            cmds.append('xraycap=false')
+            continue
         cmds.append(f'{key}={tok}')
     return cmds
 
@@ -78,6 +82,7 @@ class PLCController(DeviceBase):
         return False
 
     def _set_plc(self, **kwargs) -> bool:
+        kwargs = {str(key).strip().lower(): value for key, value in kwargs.items()}
         cmds = params_to_mdrmc_cmds(kwargs)
         if not cmds:
             return True

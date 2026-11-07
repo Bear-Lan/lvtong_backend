@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import struct
 import threading
+import time
 from typing import Any, Callable
 
 from app.devices.base import DeviceBase, DeviceStatus
@@ -74,7 +76,9 @@ class RadarReader(DeviceBase):
         self._plc_status_callback = None
         self._xray_callback: Callable[[str, float, float, float], Any] | None = None
         self._dm_callback: Callable[[list[float]], Any] | None = None
+        self._radiometer_callback: Callable[[float], Any] | None = None
         self._last_plc_sig: tuple | None = None
+        self._last_plc_emit_time = 0.0
         self._transport = 'multicast'
         self._iface_ip = '0.0.0.0'
 
@@ -100,6 +104,10 @@ class RadarReader(DeviceBase):
     def set_dm_temp_callback(self, cb):
         """cb(temps: list[float])"""
         self._dm_callback = cb
+
+    def set_radiometer_callback(self, cb):
+        """cb(原始读数)：协议未明确单位时不推断单位或阈值。"""
+        self._radiometer_callback = cb
 
     def initialize(self) -> bool:
         # 组播参数只读 config.devices / 环境变量（不读 DB）
@@ -195,7 +203,7 @@ class RadarReader(DeviceBase):
     def parse_dev_bits(value: int) -> dict:
         """新协议 DEVICE 位表（bit0 起，与中间件 ST_* 一致）→ plc_status。
 
-        ST_RED_LIGHT=0 … ST_BACK_VOICE_ANNOUNCE=17。
+        ST_RED_LIGHT=0 … ST_BACK_LED_DISPLAY=19；bit20暂不解释。
         本表无伺服状态位；xraymotorreset 仅作控制键，反馈字段置 False。
         """
         return {
@@ -226,6 +234,8 @@ class RadarReader(DeviceBase):
             'soundalarmCmd': _bit(value, 15),    # ST_SOUND_ALARM
             'frontVoiceAnnounceStatus': _bit(value, 16),  # ST_FRONT_VOICE_ANNOUNCE
             'backVoiceAnnounceStatus': _bit(value, 17),   # ST_BACK_VOICE_ANNOUNCE
+            'frontLedDisplayStatus': _bit(value, 18),    # ST_FRONT_LED_DISPLAY
+            'backLedDisplayStatus': _bit(value, 19),     # ST_BACK_LED_DISPLAY
             'gateMotor200Status': False,
             'gateMotor160Status': False,
             'xrayMotorRest200Cmd': False,
@@ -234,57 +244,47 @@ class RadarReader(DeviceBase):
 
     @classmethod
     def parse_ntrmc_dev(cls, text: str) -> dict | None:
-        """解析 $NTRMC,DEVICE,<cmdHex>,<statusHex>
-
-        例：`$NTRMC,DEVICE,00000110,0000ffff`
-        （前段 cmd，后段 status；status 低 16 位为 0xFFFF 时，低位回退 cmd。
-        现场 VOICE1 联调确认前段 bit16/17 随播放开始/结束变化，后段恒全1。）
-        """
+        """DEVICE前段为动作状态，后段为独立在线位；单段报文无在线信息。"""
         try:
             parts = [p.strip() for p in text.strip().split(',')]
-            if len(parts) < 3:
+            if len(parts) not in (3, 4) or parts[0].upper() != '$NTRMC' or parts[1].upper() != 'DEVICE':
                 return None
-            kind = parts[1].upper()
-            if kind != 'DEVICE':
+            words = [int(word, 16) for word in parts[2:]]
+            if any(word < 0 or word > 0xffffffff for word in words):
                 return None
-            hexes: list[int] = []
-            for raw in parts[2:]:
-                h = raw.split('\r')[0].split('\n')[0].strip()
-                if not h:
-                    continue
-                hexes.append(int(h, 16))
-            if not hexes:
-                return None
-            status_bits = hexes[-1]
-            parsed = cls.parse_dev_bits(status_bits)
-            parsed['ntrmcKind'] = kind
-            # 两段时：前段 cmd、后段 status
-            if len(hexes) >= 2:
-                cmd_val = hexes[0]
-                parsed['cmdRaw'] = cmd_val
-                cmd_parsed = cls.parse_dev_bits(cmd_val)
-                # 现场中间件常把 status 打成 0xFFFF（无效），若仍按 status 解：
-                # bit4/bit5 全 1 → 误触发急停弹窗、预约播报「申请已接收…」
-                if (status_bits & 0xFFFF) == 0xFFFF:
-                    parsed = cls.parse_dev_bits(cmd_val)
-                    parsed['ntrmcKind'] = kind
-                    parsed['cmdRaw'] = cmd_val
-                    parsed['raw'] = status_bits
-                    parsed['statusUnreliable'] = True
-                else:
-                    for k in (
-                        'redLightCmd', 'yellowLightCmd', 'greenLightCmd',
-                        'createLightCmd', 'urgentStopCmd', 'urgentStopStatus',
-                        'bookingStatus', 'soundalarmCmd',
-                        'interlock160Cmd', 'interlock200Cmd',
-                        'xrayGate200Cmd', 'xrayGate160Cmd',
-                        # 栏杆在 cmd bit6（如 6040↔6000）
-                        'stickDownStatus',
-                    ):
-                        parsed[k] = cmd_parsed[k]
-                # 实测回读字段，不从本机发送结果推算。后字段001fffff会假报双播报。
-                for k in ('frontVoiceAnnounceStatus', 'backVoiceAnnounceStatus'):
-                    parsed[k] = cmd_parsed[k]
+            state = words[0]
+            online = words[1] if len(words) == 2 else None
+            parsed = cls.parse_dev_bits(state)
+            parsed.update(ntrmcKind='DEVICE', stateRaw=state, cmdRaw=state,
+                          onlineRaw=online, raw=online if online is not None else state)
+            # bit20含义暂未确认，保留原始字而不参与业务/设备在线判定。
+            channels = (
+                ('red_light', '红灯', 'redLightCmd'),
+                ('yellow_light', '黄灯', 'yellowLightCmd'),
+                ('green_light', '绿灯', 'greenLightCmd'),
+                ('fill_light', '补光灯', 'createLightCmd'),
+                ('urgent_stop', '急停', 'urgentStopStatus'),
+                ('appointment', '预约按钮', 'bookingStatus'),
+                ('boom_barrier', '栏杆机', 'stickDownStatus'),
+                ('loop_detector', '地感', 'groundSensorStatus'),
+                ('light_curtain', '光幕', 'lightScreenStatus'),
+                ('xray_source_200', '200光源', 'lightSource200Status'),
+                ('xray_source_160', '160光源', 'lightSource160Status'),
+                ('xray_gate_200', '200光闸', 'lightGate200Status'),
+                ('xray_gate_160', '160光闸', 'lightGate160Status'),
+                ('xray_inlock_200', '200内锁', 'interlock200Cmd'),
+                ('xray_inlock_160', '160内锁', 'interlock160Cmd'),
+                ('sound_alarm', '声音报警', 'soundalarmCmd'),
+                ('front_voice', '前语音', 'frontVoiceAnnounceStatus'),
+                ('back_voice', '后语音', 'backVoiceAnnounceStatus'),
+                ('front_led', '前显示屏', 'frontLedDisplayStatus'),
+                ('back_led', '后显示屏', 'backLedDisplayStatus'),
+            )
+            parsed['sensors'] = [
+                {'deviceId': 'middleware_' + key, 'deviceName': name, 'bit': bit,
+                 'state': parsed[field], 'online': _bit(online, bit) if online is not None else None}
+                for bit, (key, name, field) in enumerate(channels)
+            ]
             return parsed
         except (ValueError, IndexError):
             return None
@@ -339,8 +339,10 @@ class RadarReader(DeviceBase):
             return
         # DEVICE 心跳很密：相同寄存器不重复推 WS
         sig = (parsed.get('protocol'), parsed.get('raw'), parsed.get('cmdRaw'))
-        if sig == self._last_plc_sig:
+        now = time.monotonic()
+        if sig == self._last_plc_sig and now - self._last_plc_emit_time < 1.0:
             return
+        self._last_plc_emit_time = now
         first = self._last_plc_sig is None
         self._last_plc_sig = sig
         if first:
@@ -350,6 +352,18 @@ class RadarReader(DeviceBase):
                 f"cmdRaw={parsed.get('cmdRaw')}"
             )
         self._plc_status_callback(parsed)
+
+    @staticmethod
+    def parse_radiometer(text: str) -> float | None:
+        """解析已观测的 $NTRMC,RADIOMETER,<数值>；不转换或补造单位。"""
+        try:
+            parts = [part.strip() for part in text.strip().split(',')]
+            if len(parts) != 3 or parts[0].upper() != '$NTRMC' or parts[1].upper() != 'RADIOMETER':
+                return None
+            value = float(parts[2])
+            return value if math.isfinite(value) else None
+        except (ValueError, IndexError):
+            return None
 
     def _dispatch(self, text: str) -> None:
         if text.startswith('$VMRMC'):
@@ -366,6 +380,11 @@ class RadarReader(DeviceBase):
             return
 
         upper = text.upper()
+        if upper.startswith('$NTRMC,RADIOMETER,'):
+            value = self.parse_radiometer(text)
+            if value is not None and self._radiometer_callback:
+                self._radiometer_callback(value)
+            return
         if upper.startswith('$NTRMC,DEVICE,'):
             parsed = self.parse_ntrmc_dev(text)
             if parsed is not None:

@@ -243,7 +243,7 @@ if __name__ == '__main__':
     mgr.set_ws_push(push_device_status)
 
     # 3.5 注入组播状态推送（PLC/DEV + X光 + DM 温度）
-    from app.websocket.handler import push_dm_temp, push_plc_status, push_xray_status
+    from app.websocket.handler import push_dm_temp, push_plc_status, push_xray_status, push_radiometer_status
 
     def _on_plc_status(parsed: dict):
         """$NTRMC,DEVICE → WS plc_status"""
@@ -284,6 +284,7 @@ if __name__ == '__main__':
         radar.set_plc_status_callback(_on_plc_status)
         radar.set_xray_status_callback(_on_xray_status)
         radar.set_dm_temp_callback(_on_dm_temp)
+        radar.set_radiometer_callback(push_radiometer_status)
         print(f'[设备]   {radar.device_id}: 组播状态推送已注入（PLC/DEV/XRAY/DM）')
 
     # 3.6 初始化距离调度器，将雷达距离数据接入调度引擎

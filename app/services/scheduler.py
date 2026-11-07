@@ -215,6 +215,7 @@ class DistanceScheduler:
                 opengate_time=_now_iso(),
             )
             print('[SCHEDULER] 车道正常累计达标 → 绿灯抬杆放行', flush=True)
+            geometry_generation = st.get('geometry_generation')
 
             def _do_release() -> None:
                 from app.services.device_action import execute_device_action
@@ -229,7 +230,13 @@ class DistanceScheduler:
                     execute_device_action('gate_001', 'open')
                 except Exception as e:
                     print(f'[SCHEDULER] 放行开闸失败: {e}', flush=True)
-                # 抬杆：camcap=true + xraycap 启扫（车身/200 透视轮询在雷达 25–28m）
+                try:
+                    from app.services.geometry_capture import start_geometry_capture
+                    if not start_geometry_capture(geometry_generation):
+                        print('[SCHEDULER] 几何采集未启动（已取消或发送失败）', flush=True)
+                except Exception as error:
+                    print(f'[SCHEDULER] 几何采集启动失败: {error}', flush=True)
+                # 抬杆：geomcap、camcap，透视启用时再xraycap。
                 try:
                     from app.services.body_camera_fetch import (
                         trigger_body_camera_capture,

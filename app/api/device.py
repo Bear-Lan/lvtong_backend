@@ -91,8 +91,23 @@ def all_device_status():
     """
     mgr = DeviceManager()
     devices = mgr.get_all_status()
+    from app.websocket.handler import get_last_plc_status
+    from app.devices.radar import RadarReader
+    feedback = get_last_plc_status()
+    fresh = bool(feedback and feedback.get('fresh'))
+    channels = (feedback or RadarReader.parse_ntrmc_dev('$NTRMC,DEVICE,0')).get('sensors', [])
+    sensors = []
+    for channel in channels:
+        online = channel['online'] if fresh else None
+        status = ('在线' if online else '离线') if online is not None else (
+            '反馈超时' if feedback and not fresh else '待反馈')
+        sensors.append({**channel, 'online': online, 'state': channel['state'] if fresh else None,
+                        'connected': online is True, 'status': status})
     return ok({
         'devices': devices,
+        'sensors': sensors,
+        'feedbackFresh': fresh,
+        'feedbackReceivedAt': feedback.get('receivedAt') if feedback else None,
         'total': len(devices),
         'onlineCount': mgr.online_count(),
         'offlineCount': mgr.offline_count(),
@@ -296,7 +311,7 @@ def gate_status():
     """
     mgr = DeviceManager()
     ctrl = mgr.get_device('gate_001')
-    connected = bool(ctrl and ctrl.is_online)
+    connected = False
     last_error = (ctrl.last_error if ctrl else '') or ''
 
     gate_open = None
@@ -308,9 +323,8 @@ def gate_status():
         if plc is not None and 'stickdown' in plc:
             stickdown = bool(plc.get('stickdown'))
             gate_open = stickdown
-            # 有组播反馈则认为栏杆链路可用（中间件在推 DEVICE）
-            if not connected and plc.get('raw') is not None:
-                connected = True
+            channel = next((row for row in plc.get('sensors', []) if row['bit'] == 6), None)
+            connected = bool(plc.get('fresh') and channel and channel['online'] is True)
     except Exception:
         pass
 
@@ -409,6 +423,14 @@ def plc_status():
     if data is None:
         return ok(None, message='尚无 PLC 状态')
     return ok(data)
+
+
+@device_api.route('/radiometer-status', methods=['GET'])
+@login_required
+def radiometer_status():
+    """最近一条辐射计数值及收包时间；单位未确认，不生成阈值判断。"""
+    from app.websocket.handler import get_last_radiometer_status
+    return ok(get_last_radiometer_status())
 
 
 @device_api.route('/plc-control', methods=['POST'])

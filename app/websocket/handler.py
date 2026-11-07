@@ -60,12 +60,16 @@ def register_handlers():
             'data': {'message': '连接成功'},
         })
         # DEVICE 状态常只推一次：新连接补发最近一次，避免面板全灰
-        if _last_plc_data:
+        plc = get_last_plc_status()
+        if plc:
             emit('message', {
                 'type': 'plc_status',
                 'timestamp': int(time.time() * 1000),
-                'data': dict(_last_plc_data),
+                'data': plc,
             })
+        radiometer = get_last_radiometer_status()
+        if radiometer:
+            emit('message', {'type': 'radiometer_status', 'timestamp': int(time.time() * 1000), 'data': radiometer})
 
     @socketio.on('disconnect')
     def handle_disconnect():
@@ -120,6 +124,29 @@ def register_handlers():
 # 最近一次 PLC/DEVICE 状态（供晚连客户端 / 面板打开时回放）
 _last_plc_data: dict | None = None
 _last_plc_lock = threading.Lock()
+_last_plc_time = 0.0
+_last_radiometer_data: dict | None = None
+_last_radiometer_time = 0.0
+_radiometer_lock = threading.Lock()
+
+
+def get_last_radiometer_status() -> dict | None:
+    with _radiometer_lock:
+        if _last_radiometer_data is None:
+            return None
+        age = max(0.0, time.monotonic() - _last_radiometer_time)
+        # fresh只表示数值报文新鲜程度，不替代DEVICE设备在线位。
+        return {**_last_radiometer_data, 'ageSeconds': round(age, 2), 'fresh': age <= 10.0}
+
+
+def push_radiometer_status(value: float):
+    global _last_radiometer_data, _last_radiometer_time
+    data = {'value': value, 'unit': None, 'receivedAt': int(time.time() * 1000)}
+    with _radiometer_lock:
+        _last_radiometer_data = data
+        _last_radiometer_time = time.monotonic()
+    socketio.emit('message', {'type': 'radiometer_status', 'timestamp': data['receivedAt'],
+                            'data': {**data, 'ageSeconds': 0, 'fresh': True}})
 
 # 雷达距离推送节流：硬件常 ~10Hz；过密会压 gevent + 前端重绘
 _RADAR_MIN_INTERVAL_SEC = 0.08  # ≈12.5 Hz 上限
@@ -131,7 +158,10 @@ _radar_push_lock = threading.Lock()
 def get_last_plc_status() -> dict | None:
     """返回缓存的最近一次 plc_status data（无则 None）"""
     with _last_plc_lock:
-        return dict(_last_plc_data) if _last_plc_data else None
+        if not _last_plc_data:
+            return None
+        age = max(0.0, time.monotonic() - _last_plc_time)
+        return {**_last_plc_data, 'ageSeconds': round(age, 2), 'fresh': age <= 5.0}
 
 
 def push_radar_distance(
@@ -275,9 +305,11 @@ def push_plc_status(red: bool = False, yellow: bool = False, green: bool = False
             'gatemotor200': parsed.get('gateMotor200Status', gatemotor200),
             'gatemotor160': parsed.get('gateMotor160Status', gatemotor160),
         })
-    global _last_plc_data
+    data.update(receivedAt=int(time.time() * 1000), fresh=True, ageSeconds=0)
+    global _last_plc_data, _last_plc_time
     with _last_plc_lock:
         _last_plc_data = dict(data)
+        _last_plc_time = time.monotonic()
     socketio.emit('message', {
         'type': 'plc_status',
         'timestamp': int(time.time() * 1000),
