@@ -598,8 +598,8 @@ def reject_booking():
     # 2. 开闸
     execute_device_action('gate_001', 'open')
 
-    # 3. LED：申请已取消，请通行
-    execute_device_action('led_001', 'set_display', {'code': 'SQYQX_QTX'})
+    # 3. 驳回后恢复空闲提示：前后屏均显示“绿通车辆，按键检测”。
+    execute_device_action('led_001', 'set_step1')
 
     # 4. 停止调度器 + 渐进拉图
     try:

@@ -1,7 +1,7 @@
 """LED 前后屏经 MDRMC 新协议显示，编号依据用户提供的 LED 表。
 
 DISPLAY1 按键检测、2 已接收等待、3 已受理等待、4 请通行、5 检测中勿跟车、
-6 系统运维暂停使用。业务 step6 原为检测中，仍用 DISPLAY5；完成/取消用4。
+6 系统运维暂停使用。业务 step6 原为检测中，仍用 DISPLAY5；完成用4，驳回回到1。
 """
 from __future__ import annotations
 

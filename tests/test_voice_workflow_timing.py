@@ -13,6 +13,7 @@ from app.devices import mcast_cmd
 from app.devices.radar import RadarReader
 from app.services import command_announce as voice
 from app.services import lane_announce
+from app.websocket.handler import push_booking_event
 
 
 class VoiceWorkflowTimingTest(unittest.TestCase):
@@ -172,6 +173,31 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.wait_messages(4)
         self.lane.on_gate_open()
         self.assertEqual(self.messages, self.expected(3, 4))
+
+    def test_bit5_press_emits_page_booking_event_release_only_rearms_next_press(self):
+        radar = RadarReader('appointment-test')
+        radar.set_plc_status_callback(self.lane.on_plc_status)
+        self.ws.side_effect = push_booking_event
+        with patch('app.websocket.handler.socketio.emit') as emit:
+            for word in (0, 0x20, 0x20, 0x10020, 0x40020):
+                radar._dispatch(f'$NTRMC,DEVICE,{word:08x},001fffff')
+            self.wait_messages(2)
+            emit.assert_called_once()
+            event = emit.call_args.args[1]
+            self.assertEqual(event['type'], 'booking')
+            self.assertEqual(event['data']['action'], 'book_button')
+            self.assertTrue(event['data']['openDialog'])
+            self.assertTrue(event['data']['btnPrebookState'])
+            self.assertEqual(event['data']['btnPressTime'], booking.get_booking_state()['last_btn_click_time'])
+            radar._dispatch('$NTRMC,DEVICE,00000000,001fffff')
+            self.assertEqual(emit.call_count, 1)
+            # 线上在线字bit5变化不是按键，不得产生预约。
+            radar._dispatch('$NTRMC,DEVICE,00000000,001fffdf')
+            self.assertEqual(emit.call_count, 1)
+            radar._dispatch('$NTRMC,DEVICE,00000020,001fffff')
+            self.wait_messages(4)
+            self.assertEqual(emit.call_count, 2)
+        self.assertEqual(self.messages, self.expected(2, 2))
 
     def test_gate_event_without_accepted_release_does_not_announce(self):
         self.lane.on_gate_open()
