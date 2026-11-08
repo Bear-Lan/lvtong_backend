@@ -58,6 +58,7 @@ class DistanceScheduler:
         self._lane_occupied_streak = 0
         self._lane_clear_streak = 0
         self._lane_state_debounce_frames = 3
+        self._capture_generation = 0
         # 车尾拍照：光幕下沿记距 x，待雷达 < x-5 再拍
         self._prev_light_screen = False
         self._tail_anchor_x: float | None = None
@@ -79,6 +80,7 @@ class DistanceScheduler:
 
     def stop(self):
         self._is_running = False
+        self._capture_generation += 1
 
     def _reset_threshold_status(self):
         for t in self._distance_thresholds:
@@ -104,6 +106,17 @@ class DistanceScheduler:
     @property
     def current_distance(self) -> float:
         return self._current_distance
+
+    @property
+    def capture_blocked(self) -> bool:
+        # 页面占用提示仍连续3帧确认；首个占用帧就拦截拍照，避免防抖期间先拍。
+        return self._is_running and (
+            self._lane_occupied_active or self._lane_occupied_streak > 0
+        )
+
+    @property
+    def capture_generation(self) -> int:
+        return self._capture_generation
 
     # ---- 雷达数据处理 ----
 
@@ -265,6 +278,7 @@ class DistanceScheduler:
             print(f'[SCHEDULER] 放行判定异常: {e}', flush=True)
 
     def _reset_lane_occupied_state(self) -> None:
+        self._capture_generation += 1
         self._lane_occupied_active = False
         self._lane_occupied_streak = 0
         self._lane_clear_streak = 0
@@ -278,6 +292,8 @@ class DistanceScheduler:
 
         required = max(1, int(self._lane_state_debounce_frames or 1))
         if occupied:
+            if not self._lane_occupied_active and self._lane_occupied_streak == 0:
+                self._capture_generation += 1
             self._lane_occupied_streak += 1
             self._lane_clear_streak = 0
             if self._lane_occupied_active or self._lane_occupied_streak < required:
@@ -334,7 +350,7 @@ class DistanceScheduler:
 
     def _try_tail_capture(self, distance: float) -> None:
         """光幕下沿记 x 后，雷达距离 < x-5 时拍车尾（每轮检测一次）。"""
-        if self._tail_captured or self._tail_anchor_x is None:
+        if self.capture_blocked or self._tail_captured or self._tail_anchor_x is None:
             return
         trigger_at = self._tail_anchor_x - 5.0
         if distance >= trigger_at:
@@ -388,6 +404,12 @@ class DistanceScheduler:
 
     def _should_activate(self, threshold: DistanceThreshold, distance: float) -> bool:
         """判断是否应激活设备（每条阈值整轮检测只执行一次）。"""
+        captures = threshold.id == 'xray_capture_trigger' or any(
+            config.action == 'capture' for config in threshold.device_actions.values()
+        )
+        if captures and self.capture_blocked:
+            # 不消耗本轮拍照标记；占用解除且仍命中距离区间时可正常触发。
+            return False
         if threshold.status:
             return False
         return True

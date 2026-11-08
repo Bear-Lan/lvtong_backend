@@ -10,6 +10,8 @@ import logging
 import threading
 import time
 
+from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
+
 logger = logging.getLogger('body_camera_fetch')
 
 POLL_INTERVAL_SEC = 0.2
@@ -62,6 +64,10 @@ class BodyCameraFetcher:
 
     def start_poll(self) -> None:
         """雷达距离 25–28m 时调用：后台持续拉 image。"""
+        try:
+            ensure_capture_allowed()
+        except CaptureBlockedError:
+            return
         with self._guard:
             if self._started:
                 print('[BODY-CAM] 已在拉图，忽略重复启动', flush=True)
@@ -86,6 +92,10 @@ class BodyCameraFetcher:
         self._worker.start()
 
     def _trigger_capture(self) -> bool:
+        try:
+            ensure_capture_allowed()
+        except CaptureBlockedError:
+            return False
         ok = _send_camcap(True)
         if ok:
             print('[BODY-CAM] camcap=true 组播已发', flush=True)
@@ -119,7 +129,17 @@ class BodyCameraFetcher:
                     break
 
                 try:
+                    generation = ensure_capture_allowed()
+                except CaptureBlockedError:
+                    if self._stop.wait(POLL_INTERVAL_SEC):
+                        break
+                    continue
+
+                try:
                     resp = middleware_get(url, timeout=POLL_TIMEOUT)
+                    ensure_capture_allowed(generation)
+                except CaptureBlockedError:
+                    continue
                 except Exception as e:
                     print(f'[BODY-CAM] image GET 失败: {e}', flush=True)
                     if self._stop.wait(POLL_INTERVAL_SEC):
@@ -131,7 +151,7 @@ class BodyCameraFetcher:
                     if _looks_like_image(resp):
                         self._push_frame(
                             resp.content, temp_image_cache, jpeg_preview_bytes,
-                            push_image_ready_group,
+                            push_image_ready_group, generation,
                         )
                     print(
                         f'[BODY-CAM] 采集结束 reason={reason} '
@@ -143,7 +163,7 @@ class BodyCameraFetcher:
                 if resp.status_code == 200 and _looks_like_image(resp):
                     self._push_frame(
                         resp.content, temp_image_cache, jpeg_preview_bytes,
-                        push_image_ready_group,
+                        push_image_ready_group, generation,
                     )
                 elif resp.status_code != 200:
                     print(
@@ -156,9 +176,11 @@ class BodyCameraFetcher:
         finally:
             _send_camcap(False)
 
-    def _push_frame(self, raw: bytes, cache, jpeg_preview_bytes, push_fn) -> None:
+    def _push_frame(self, raw: bytes, cache, jpeg_preview_bytes, push_fn, generation=None) -> None:
         try:
+            ensure_capture_allowed(generation)
             preview = jpeg_preview_bytes(raw)
+            ensure_capture_allowed(generation)
             temp_url = cache.put_preview_with_original(raw, preview)
             self._frame_count += 1
             push_fn('body', {'1': temp_url}, group=1)

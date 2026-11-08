@@ -20,6 +20,8 @@ from urllib.parse import quote
 import cv2
 import requests
 
+from app.services.capture_guard import ensure_capture_allowed
+
 logger = logging.getLogger('capture_service')
 
 # 与 Pad 的 hikvision.ts 对应；每类允许独立覆盖，不再共用一个车身相机。
@@ -107,6 +109,7 @@ def snapshot_from_camera(device_id: str) -> bytes:
     os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
 
     with _capture_lock:
+        ensure_capture_allowed()
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             raise RuntimeError(f'摄像头 RTSP 打开失败 ({device_id} {safe_url})')
@@ -151,6 +154,7 @@ def fetch_url_bytes(url: str) -> bytes:
 
 def capture_category(category: str) -> dict:
     """按类别采集一帧，推 temp URL 到前端；不落盘（提交时 persist）。"""
+    generation = ensure_capture_allowed()
     category = (category or '').strip() or 'head'
 
     if category in CATEGORY_DEVICE_MAP:
@@ -181,6 +185,8 @@ def capture_category(category: str) -> dict:
         print(f'[CAPTURE] {category} ← HTTP {url}（仅预览，提交再落盘）', flush=True)
         data = fetch_url_bytes(url)
 
+    # RTSP/HTTP期间可能收到占用报文；即使之后已恢复，也不接受跨占用周期的迟到图。
+    ensure_capture_allowed(generation)
     # 非 JPEG 时仍按 jpeg mime 推（前端 <img> 多数可显示；提交时按 dataUrl mime 写盘）
     mime = 'image/jpeg' if data.startswith(b'\xff\xd8') else 'image/jpeg'
     if data.startswith(b'\x89PNG'):

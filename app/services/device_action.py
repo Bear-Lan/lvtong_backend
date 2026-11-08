@@ -87,9 +87,15 @@ def _execute_capture(params: dict) -> bool:
 
     必须异步：调度器跑在雷达收包线程里，同步 OpenCV/RTSP 会堵住
     on_radar_data → 距离推送中断 → 前端小车卡住。
-    手动 /api/capture/* 仍同步调用 capture_category，不受影响。
+    与手动 /api/capture/* 共用车道占用检查。
     """
     category = str(params.get('category') or 'head').strip() or 'head'
+    from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
+    try:
+        ensure_capture_allowed()
+    except CaptureBlockedError as error:
+        logger.info('[CAPTURE] %s 跳过: %s', category, error)
+        return False
     print(f'[DEVICE-ACTION] → capture_service category={category} (async)', flush=True)
 
     def _run() -> None:

@@ -6,6 +6,7 @@
 from flask import Blueprint, request, jsonify
 
 from app.services.capture_service import capture_category
+from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
 from app.extensions.auth import login_required
 
 capture_api = Blueprint('capture', __name__, url_prefix='/api/capture')
@@ -23,6 +24,8 @@ def _capture_one(category: str, success_msg: str):
     try:
         result = capture_category(category)
         return ok(result, success_msg)
+    except CaptureBlockedError as e:
+        return fail(409, str(e))
     except Exception as e:
         return fail(500, f'{success_msg.replace("成功", "失败")}: {e}')
 
@@ -67,6 +70,10 @@ def capture_evidence():
 @login_required
 def capture_bulk():
     """批量采集（对齐 Qt auto-capture 阶段）"""
+    try:
+        ensure_capture_allowed()
+    except CaptureBlockedError as e:
+        return fail(409, str(e))
     body = request.get_json(silent=True) or {}
     categories = body.get('categories', ['head', 'tail', 'top'])
     results = {}
