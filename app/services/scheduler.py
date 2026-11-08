@@ -52,8 +52,12 @@ class DistanceScheduler:
         # 对齐 Qt：受理后 check_step=1，车道正常累计 >4 次再抬杆
         self._release_clear_count = 0
         self._gate_released = False
-        # 抬杆放行：物体个数=1 时须 distance >= minClearDistance
+        # 车道占用采用距离 + 连续帧防抖；物体数只表示是否存在有效目标。
         self._gate_release_min_distance = 25.0
+        self._lane_occupied_active = False
+        self._lane_occupied_streak = 0
+        self._lane_clear_streak = 0
+        self._lane_state_debounce_frames = 3
         # 车尾拍照：光幕下沿记距 x，待雷达 < x-5 再拍
         self._prev_light_screen = False
         self._tail_anchor_x: float | None = None
@@ -67,6 +71,7 @@ class DistanceScheduler:
         self._radar_push_count = 0
         self._release_clear_count = 0
         self._gate_released = False
+        self._reset_lane_occupied_state()
         self._prev_light_screen = False
         self._tail_anchor_x = None
         self._tail_captured = False
@@ -87,6 +92,7 @@ class DistanceScheduler:
         if is_detection:
             self._release_clear_count = 0
             self._gate_released = False
+            self._reset_lane_occupied_state()
             self._prev_light_screen = False
             self._tail_anchor_x = None
             self._tail_captured = False
@@ -112,7 +118,7 @@ class DistanceScheduler:
         """接收雷达距离数据。
 
         仅在受理预约后 scheduler.start() 时处理；未受理则忽略，不做阈值动作。
-        intrusion：可选；未传时按物体个数==1 判正常。
+        intrusion：仅用于带明确占用标志的兼容协议；VMRMC 不由物体数推造占用。
         """
         if not self._is_running:
             return
@@ -132,10 +138,7 @@ class DistanceScheduler:
                 flush=True,
             )
 
-        # 对齐 Qt onRadarMonitor check_step==1：车道正常累计后抬杆
-        # VMRMC：物体个数==1 为正常；否则占用/无车，不累计
-        if intrusion is None:
-            intrusion = count != 1
+        # 现场 VMRMC 的物体数会在 0/1/2 间抖动，不能用 count != 1 判断占用。
         self._try_release_after_accept(count, distance, intrusion=intrusion)
 
         # 车尾拍照：光幕下沿记 x，雷达 < x-5 时触发
@@ -153,9 +156,11 @@ class DistanceScheduler:
     ) -> None:
         """受理后未放行：车道正常累计 >4 次 → 绿灯 + 开闸（Qt m_radarCount > 4）。
 
-        现场约定：
-          - $VMRMC 物体个数 == 1 → 正常；其它 → 占用/异常
-          - 物体个数 == 1 且距离 < gateRelease.minClearDistance → 车道占用，不抬杆
+        判定规则：
+          - 有有效目标且距离低于阈值 → 占用
+          - 有有效目标且距离达到阈值 → 正常，不要求物体数严格等于 1
+          - 物体数为 0 → 状态未知，不放行，也不凭空产生或清除占用
+          - 占用和恢复均需连续多帧确认
         """
         if self._gate_released or not self._is_detection:
             return
@@ -166,16 +171,16 @@ class DistanceScheduler:
             if int(st.get('check_step') or 0) != 1:
                 return
 
-            occupied = bool(intrusion) if intrusion is not None else (object_count != 1)
             min_clear = float(self._gate_release_min_distance or 0)
-            too_close = (
-                not occupied
-                and object_count == 1
-                and min_clear > 0
-                and float(distance) < min_clear
-            )
-            if too_close:
-                occupied = True
+            has_target = object_count > 0 and float(distance) > 0
+            too_close = has_target and min_clear > 0 and float(distance) < min_clear
+            occupied = (bool(intrusion) or too_close) if intrusion is not None else too_close
+
+            if not has_target and intrusion is None:
+                self._update_lane_occupied_state(None)
+                self._release_clear_count = 0
+                set_booking_state(radar_count=0)
+                return
 
             if occupied:
                 if self._release_clear_count:
@@ -190,12 +195,10 @@ class DistanceScheduler:
                     )
                 self._release_clear_count = 0
                 set_booking_state(radar_count=0)
-                try:
-                    push_lane_occupied(True)
-                except Exception:
-                    pass
+                self._update_lane_occupied_state(True)
                 return
 
+            self._update_lane_occupied_state(False)
             self._release_clear_count += 1
             set_booking_state(radar_count=self._release_clear_count)
             if self._release_clear_count <= 4:
@@ -251,6 +254,7 @@ class DistanceScheduler:
                 try:
                     push_detection_step(2, '放行中', gate_released=True)
                     push_lane_occupied(False)
+                    self._lane_occupied_active = False
                 except Exception:
                     pass
 
@@ -259,6 +263,35 @@ class DistanceScheduler:
             ).start()
         except Exception as e:
             print(f'[SCHEDULER] 放行判定异常: {e}', flush=True)
+
+    def _reset_lane_occupied_state(self) -> None:
+        self._lane_occupied_active = False
+        self._lane_occupied_streak = 0
+        self._lane_clear_streak = 0
+
+    def _update_lane_occupied_state(self, occupied: bool | None) -> None:
+        """连续帧确认后仅在状态变化时推送；None 表示本帧无法判断。"""
+        if occupied is None:
+            self._lane_occupied_streak = 0
+            self._lane_clear_streak = 0
+            return
+
+        required = max(1, int(self._lane_state_debounce_frames or 1))
+        if occupied:
+            self._lane_occupied_streak += 1
+            self._lane_clear_streak = 0
+            if self._lane_occupied_active or self._lane_occupied_streak < required:
+                return
+            self._lane_occupied_active = True
+            push_lane_occupied(True)
+            return
+
+        self._lane_clear_streak += 1
+        self._lane_occupied_streak = 0
+        if not self._lane_occupied_active or self._lane_clear_streak < required:
+            return
+        self._lane_occupied_active = False
+        push_lane_occupied(False)
 
     def _trigger_xray_start_scan(self) -> None:
         """抬杆时组播 $MDRMC,1,xraycap=true&{车头长}&{车型}（与 camcap 同时）。"""
