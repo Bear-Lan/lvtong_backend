@@ -88,34 +88,30 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
     def test_idle_target_sends_voice1_to_both_sides_and_stops_when_target_leaves(self):
         self.lane.on_radar(30, 1)
         self.wait_messages(2)
-        for thread in list(self.threads):
-            if thread.name == 'announce-idle-led':
-                thread.join(1)
-        self.actions.assert_any_call('led_001', 'set_step1')
         self.lane.on_radar(0, 0)
         for thread in self.threads:
             thread.join(1)
         self.assertEqual(self.messages, self.expected(1))
 
-    def test_idle_radar_refreshes_stale_led_only_once_per_idle_period(self):
-        self.lane.on_radar(30, 1)
-        self.lane.on_radar(29, 1)
-        self.wait_messages(2)
+    def test_idle_led_follows_each_voice_dispatch_not_each_radar_packet(self):
+        # 运行真实重复播报器，但立即到达下一周期，避免测试等待十秒。
+        self.lane._idle_looping = True
+        self.lane._radar_target = True
+        self.lane._is_system_idle_unlocked = lambda: len(self.messages) < 4
+        with patch.object(voice.time, 'monotonic', side_effect=range(0, 1000, 20)):
+            self.lane._idle_worker()
         for thread in list(self.threads):
-            if thread.name == 'announce-idle-led':
-                thread.join(1)
-        idle_calls = [call for call in self.actions.call_args_list
-                      if call.args == ('led_001', 'set_step1')]
-        self.assertEqual(len(idle_calls), 1)
+            thread.join(1)
+        self.assertEqual(self.messages, self.expected(1, 1))
+        self.assertEqual([c.args for c in self.actions.call_args_list], [
+            ('led_001', 'set_step1'), ('led_001', 'set_step1')])
 
-        self.lane.on_radar(0, 0)
-        self.lane.on_radar(30, 1)
-        for thread in list(self.threads):
-            if thread.name == 'announce-idle-led':
-                thread.join(1)
-        idle_calls = [call for call in self.actions.call_args_list
-                      if call.args == ('led_001', 'set_step1')]
-        self.assertEqual(len(idle_calls), 2)
+    def test_radar_does_not_send_led_before_voice_dispatch(self):
+        with patch.object(self.lane, '_ensure_idle_loop'):
+            self.lane.on_radar(30, 1)
+            self.lane.on_radar(29, 1)
+        self.actions.assert_not_called()
+        self.assertEqual(self.messages, [])
 
     def test_no_idle_announcement_without_target_or_during_detection(self):
         self.lane.on_radar(0, 0)

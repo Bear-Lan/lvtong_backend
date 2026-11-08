@@ -32,7 +32,6 @@ class LaneAnnounceService:
         self._prev_light = False
         self._said_session: set[int] = set()
         self._release_pending = False
-        self._idle_led_initialized = False
 
     @classmethod
     def instance(cls) -> 'LaneAnnounceService':
@@ -49,10 +48,7 @@ class LaneAnnounceService:
         with self._lock:
             self._radar_target = target
             idle = self._is_system_idle_unlocked()
-            if not target or not idle:
-                self._idle_led_initialized = False
         if target and idle:
-            self._set_idle_led_once()
             self._ensure_idle_loop()
         else:
             self._stop_idle_loop()
@@ -172,12 +168,10 @@ class LaneAnnounceService:
         with self._lock:
             self._release_pending = False
             self._said_session.clear()
-            self._idle_led_initialized = False
             target = self._radar_target
             idle = self._is_system_idle_unlocked()
         self._stop_idle_loop()
         if target and idle:
-            self._set_idle_led_once()
             self._ensure_idle_loop()
         print(f'[{_ts()}] [ANNOUNCE] 已复位，可恢复空闲播报', flush=True)
 
@@ -244,25 +238,6 @@ class LaneAnnounceService:
         threading.Thread(target=_led, daemon=True, name=f'announce-led-{step}').start()
         return sent
 
-    def _set_idle_led_once(self) -> None:
-        """进入空闲有车状态时立即刷新 LED，覆盖设备保留的上一轮画面。"""
-        with self._lock:
-            if self._idle_led_initialized:
-                return
-            self._idle_led_initialized = True
-
-        def _led() -> None:
-            try:
-                from app.services.device_action import execute_device_action
-
-                execute_device_action('led_001', 'set_step1')
-            except Exception as e:
-                with self._lock:
-                    self._idle_led_initialized = False
-                print(f'[{_ts()}] [ANNOUNCE] 空闲 LED step1 失败: {e}', flush=True)
-
-        threading.Thread(target=_led, daemon=True, name='announce-idle-led').start()
-
     def _ensure_idle_loop(self) -> None:
         with self._lock:
             if self._idle_looping:
@@ -302,7 +277,15 @@ class LaneAnnounceService:
                 )
 
         def on_clip() -> None:
-            self._set_idle_led_once()
+            def _led() -> None:
+                try:
+                    from app.services.device_action import execute_device_action
+
+                    execute_device_action('led_001', 'set_step1')
+                except Exception as e:
+                    print(f'[{_ts()}] [ANNOUNCE] LED step1 失败: {e}', flush=True)
+
+            threading.Thread(target=_led, daemon=True, name='announce-led-1').start()
 
         try:
             print(f'[{_ts()}] [ANNOUNCE] 空闲语音命令循环开始', flush=True)

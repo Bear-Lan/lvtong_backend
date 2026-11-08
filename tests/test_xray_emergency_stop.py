@@ -1,6 +1,6 @@
 """急停只提交停止X光命令；不触发其他设备或停止其他业务。"""
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from flask import Flask
 
@@ -68,20 +68,19 @@ class XrayEmergencyStopTest(unittest.TestCase):
         send.assert_called_once_with('$MDRMC,1,xraycap=false')
         emit.assert_not_called()
 
-    def test_manual_gate_open_restores_idle_led(self):
-        booking.set_booking_state(is_detection=False, check_step=0)
-        with patch('app.services.device_action.execute_device_action', return_value=True) as action:
-            self.assertTrue(device.restore_idle_led_after_manual_gate())
-        action.assert_called_once_with('led_001', 'set_step1')
-
-    def test_manual_gate_open_does_not_override_active_booking_led(self):
-        for state in (
-            {'is_detection': True, 'check_step': 1},
-            {'is_detection': False, 'check_step': 1},
-        ):
-            with self.subTest(state=state):
-                booking.set_booking_state(**state)
-                with patch('app.services.device_action.execute_device_action') as action:
-                    self.assertFalse(device.restore_idle_led_after_manual_gate())
-                action.assert_not_called()
+    def test_manual_gate_open_does_not_independently_change_led(self):
+        app = Flask(__name__)
+        app.register_blueprint(device.device_api)
+        gate = Mock(status=1, device_type='gate', is_opened=True, last_boom_result={})
+        gate.execute_action.return_value = True
+        with patch.object(device, 'DeviceManager') as manager, \
+             patch('app.services.device_action.execute_device_action') as action, \
+             patch('app.devices.xray.close_xray_capture', return_value=True) as stop:
+            manager.return_value.get_device.return_value = gate
+            response = app.test_client().post('/api/device/gate_001/control',
+                                            json={'action': 'open'}, headers=self.headers)
+        self.assertEqual(response.status_code, 200)
+        gate.execute_action.assert_called_once_with('open', {})
+        stop.assert_called_once()
+        action.assert_not_called()
 
