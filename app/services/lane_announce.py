@@ -2,7 +2,7 @@
 
 语音：MDRMC → 中间件串口播报；LED 同步 set_step → $MDRMC leddisplay=。
 
-1. 系统空闲 + 雷达有目标 → 「绿通车辆，按键检测」；按配置间隔发命令
+1. 系统空闲 + 雷达有目标且距离≥20米 → 「绿通车辆，按键检测」；按配置间隔发命令
 2. 预约键（任意时刻）→ 红灯+落杆 + step2 语音/LED；空闲才通知前端弹窗
 3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
@@ -10,9 +10,12 @@
 """
 from __future__ import annotations
 
+import math
 import threading
 from datetime import datetime
 from typing import Optional
+
+IDLE_ANNOUNCE_MIN_DISTANCE_M = 20.0
 
 
 def _ts() -> str:
@@ -42,9 +45,13 @@ class LaneAnnounceService:
 
     # ---------- 对外：雷达 / PLC ----------
 
-    def on_radar(self, _distance: float, mode: int) -> None:
-        """有车(mode>0 / 物体个数>0)且空闲 → 维持招揽线程；非空闲立刻停。"""
-        target = int(mode) > 0
+    def on_radar(self, distance: float, mode: int) -> None:
+        """有目标且有效距离≥20米、系统空闲才招揽；不满足则停止后续发送。"""
+        target = (
+            int(mode) > 0
+            and math.isfinite(distance)
+            and distance >= IDLE_ANNOUNCE_MIN_DISTANCE_M
+        )
         with self._lock:
             self._radar_target = target
             idle = self._is_system_idle_unlocked()

@@ -120,6 +120,44 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.assertEqual(self.messages, [])
         self.assertIsNone(self.lane._idle_thread)
 
+    def test_idle_announcement_requires_target_at_least_twenty_meters(self):
+        for distance, mode in ((19.999, 1), (0, 1), (-1, 1), (20, 0),
+                               (float('nan'), 1), (float('inf'), 1)):
+            with self.subTest(distance=distance, mode=mode):
+                self.lane.on_radar(distance, mode)
+                self.lane.on_reset_to_idle()
+                self.assertIsNone(self.lane._idle_thread)
+                self.assertEqual(self.messages, [])
+                self.actions.assert_not_called()
+        self.lane.on_radar(20, 1)
+        self.wait_messages(2)
+        self.lane.on_radar(19.999, 1)
+        for thread in list(self.threads):
+            thread.join(1)
+        self.assertEqual(self.messages, self.expected(1))
+        self.assertEqual([c.args for c in self.actions.call_args_list], [('led_001', 'set_step1')])
+
+    def test_crossing_below_twenty_stops_idle_and_returning_resumes_both_outputs(self):
+        radar = RadarReader('test-radar-distance')
+        radar.set_distance_callback(lambda distance, mode, count: self.lane.on_radar(distance, mode))
+        radar._dispatch('$VMRMC,120000,1,20,0')
+        self.wait_messages(2)
+        radar._dispatch('$VMRMC,120001,1,19.9,0')
+        for thread in list(self.threads):
+            thread.join(1)
+        self.assertFalse(self.lane._idle_looping)
+        self.lane.on_reset_to_idle()
+        self.assertFalse(self.lane._idle_looping)
+        self.assertEqual(self.messages, self.expected(1))
+        radar._dispatch('$VMRMC,120002,2,20.1,0')
+        self.wait_messages(4)
+        radar._dispatch('$VMRMC,120003,0,20.1,0')
+        for thread in list(self.threads):
+            thread.join(1)
+        self.assertEqual(self.messages, self.expected(1, 1))
+        self.assertEqual([c.args for c in self.actions.call_args_list], [
+            ('led_001', 'set_step1'), ('led_001', 'set_step1')])
+
     def test_radar_packet_triggers_voice1_and_no_target_packet_stops_it(self):
         radar = RadarReader('test-radar')
         radar.set_distance_callback(lambda distance, mode, count: self.lane.on_radar(distance, mode))
