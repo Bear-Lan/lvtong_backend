@@ -11,6 +11,19 @@ from app.extensions.auth import login_required
 device_api = Blueprint('device', __name__, url_prefix='/api/device')
 
 
+def restore_idle_led_after_manual_gate() -> bool:
+    """手动抬杆不代表预约放行；流程空闲时覆盖设备自动切换的“请通行”。"""
+    from app.api.booking import get_booking_state
+
+    state = get_booking_state()
+    if state.get('is_detection') or int(state.get('check_step') or 0) > 0:
+        return False
+
+    from app.services.device_action import execute_device_action
+
+    return bool(execute_device_action('led_001', 'set_step1'))
+
+
 def ok(data=None, message='success'):
     return jsonify({'code': 0, 'message': message, 'data': data})
 
@@ -272,6 +285,10 @@ def device_control(device_id):
                 close_xray_capture()
             except Exception as e:
                 print(f'[GATE] 抬杆 xraycap=false 失败: {e}', flush=True)
+            try:
+                restore_idle_led_after_manual_gate()
+            except Exception as e:
+                print(f'[GATE] 空闲手动抬杆恢复 LED step1 失败: {e}', flush=True)
         data = None
         if is_gate:
             boom = getattr(ctrl, 'last_boom_result', {}) or {}

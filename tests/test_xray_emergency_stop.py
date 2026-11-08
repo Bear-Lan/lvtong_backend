@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from flask import Flask
 
-from app.api import booking
+from app.api import booking, device
 from app.extensions.auth import create_token
 from app.devices.plc import params_to_mdrmc_cmds, PLCController
 
@@ -67,4 +67,21 @@ class XrayEmergencyStopTest(unittest.TestCase):
         action.assert_called_once_with('plc_001', 'setPLC', {'urgentstop': False})
         send.assert_called_once_with('$MDRMC,1,xraycap=false')
         emit.assert_not_called()
+
+    def test_manual_gate_open_restores_idle_led(self):
+        booking.set_booking_state(is_detection=False, check_step=0)
+        with patch('app.services.device_action.execute_device_action', return_value=True) as action:
+            self.assertTrue(device.restore_idle_led_after_manual_gate())
+        action.assert_called_once_with('led_001', 'set_step1')
+
+    def test_manual_gate_open_does_not_override_active_booking_led(self):
+        for state in (
+            {'is_detection': True, 'check_step': 1},
+            {'is_detection': False, 'check_step': 1},
+        ):
+            with self.subTest(state=state):
+                booking.set_booking_state(**state)
+                with patch('app.services.device_action.execute_device_action') as action:
+                    self.assertFalse(device.restore_idle_led_after_manual_gate())
+                action.assert_not_called()
 
