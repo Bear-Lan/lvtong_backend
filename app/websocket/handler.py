@@ -14,6 +14,7 @@
 """
 import threading
 import time
+import math
 from flask_socketio import SocketIO, emit
 
 socketio = SocketIO()
@@ -70,6 +71,9 @@ def register_handlers():
         radiometer = get_last_radiometer_status()
         if radiometer:
             emit('message', {'type': 'radiometer_status', 'timestamp': int(time.time() * 1000), 'data': radiometer})
+        radar = get_last_radar_distance()
+        if radar:
+            emit('message', radar)
 
     @socketio.on('disconnect')
     def handle_disconnect():
@@ -98,6 +102,10 @@ def register_handlers():
                 'timestamp': int(time.time() * 1000),
                 'data': {'topics': topics},
             })
+            if not topics or 'radar_distance' in topics or '*' in topics:
+                radar = get_last_radar_distance()
+                if radar:
+                    emit('message', radar)
             if _last_plc_data and (
                 not topics or 'plc_status' in topics or '*' in topics
             ):
@@ -153,6 +161,16 @@ _RADAR_MIN_INTERVAL_SEC = 0.08  # ≈12.5 Hz 上限
 _RADAR_MIN_DELTA_M = 0.05
 _radar_push_state = {'t': 0.0, 'd': None, 'mode': None, 'count': None}
 _radar_push_lock = threading.Lock()
+_last_radar_message: dict | None = None
+_last_radar_time = 0.0
+
+
+def get_last_radar_distance() -> dict | None:
+    """新连接补发5秒内最近的真实雷达位置，不回放断流前的旧位置。"""
+    with _radar_push_lock:
+        if _last_radar_message is None or time.monotonic() - _last_radar_time > 5.0:
+            return None
+        return {**_last_radar_message, 'data': dict(_last_radar_message['data'])}
 
 
 def get_last_plc_status() -> dict | None:
@@ -174,10 +192,20 @@ def push_radar_distance(
 
     Qt 参考: DistanceBasedScheduler::distanceChanged
     """
+    global _last_radar_message, _last_radar_time
+    if not math.isfinite(distance):
+        return
     now = time.monotonic()
     rounded = round(distance, 2)
     count = int(object_count) if object_count is not None else None
+    payload: dict = {'distance': rounded, 'mode': mode}
+    if count is not None:
+        payload['objectCount'] = count
+    message = {'type': 'radar_distance', 'timestamp': int(time.time() * 1000), 'data': payload}
     with _radar_push_lock:
+        # 缓存每个有效原始位置，实时推送仍遵守现有节流。
+        _last_radar_message = message
+        _last_radar_time = now
         last_t = _radar_push_state['t']
         last_d = _radar_push_state['d']
         last_mode = _radar_push_state['mode']
@@ -196,18 +224,7 @@ def push_radar_distance(
         if count is not None:
             _radar_push_state['count'] = count
 
-    payload: dict = {
-        'distance': rounded,
-        'mode': mode,
-    }
-    if count is not None:
-        payload['objectCount'] = count
-
-    socketio.emit('message', {
-        'type': 'radar_distance',
-        'timestamp': int(time.time() * 1000),
-        'data': payload,
-    })
+    socketio.emit('message', message)
 
 
 def push_device_status(device_id: str, status_code: int, status_text: str = ''):

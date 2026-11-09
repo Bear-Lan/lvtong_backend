@@ -11,6 +11,7 @@
 参考 Qt DistanceBasedScheduler (device/distancebasedscheduler.h/.cpp)
 """
 import json
+import math
 import threading
 from app.services.threshold import DistanceThreshold, PlcStateRule, DeviceActionConfig
 from app.websocket.handler import push_radar_distance, push_detection_step, push_lane_occupied
@@ -130,17 +131,19 @@ class DistanceScheduler:
     ):
         """接收雷达距离数据。
 
-        仅在受理预约后 scheduler.start() 时处理；未受理则忽略，不做阈值动作。
+        所有阶段更新距离并推送小车位置；仅受理后 scheduler.start() 才做设备动作。
         intrusion：仅用于带明确占用标志的兼容协议；VMRMC 不由物体数推造占用。
         """
-        if not self._is_running:
+        if not math.isfinite(distance):
             return
 
         self._current_distance = distance
         count = int(object_count) if object_count is not None else (1 if int(mode) > 0 else 0)
 
-        # 推送 WebSocket（仅受理后）— 驱动前端底部小车
+        # 实时显示独立于业务流程；空闲、预约、驳回/重置后同样跟随雷达。
         push_radar_distance(distance, mode, object_count=count)
+        if not self._is_running:
+            return
         # 低频日志，便于确认「受理后有距离 → 小车应移动」
         n = getattr(self, '_radar_push_count', 0) + 1
         self._radar_push_count = n
