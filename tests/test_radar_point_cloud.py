@@ -214,6 +214,27 @@ class BookingRadarTest(unittest.TestCase):
                 self.assertIsNone(result.json['data']['vehicleSx'])
                 self.assertEqual(result.json['data']['metersPerPixel'], .01)
 
+    def test_cropped_appointment_image_converts_world_sx_to_image_coordinates(self):
+        image = np.full((500, 800, 3), 255, np.uint8)
+        image[50:450, 524:540] = (200, 0, 200)
+        _, png = cv2.imencode('.png', image)
+        response = self.response(png.tobytes())
+        response.headers.update({'Vehicle-SX': '9.24', 'Image-Envelope': '4,0,8,5',
+                                 'Image-Resolution': '.01', 'Vehicle-Height': '4.87'})
+        with patch.object(middleware_http, 'middleware_get_payload', return_value=response), \
+             patch('app.services.radar_point_cloud.decode_radar_payload_in_pool', side_effect=decode_radar_payload):
+            result = self.client.get('/api/booking/radar-image', headers=self.auth)
+        data = result.json['data']
+        self.assertAlmostEqual(data['vehicleSx'], 5.24)
+        self.assertEqual(data['contentOriginX'], 524)
+        self.assertEqual(data['imageOriginMeters'], 4)
+        self.assertEqual(data['vehicleSourceSx'], 9.24)
+
+    def test_image_origin_requires_valid_metric_extent_not_an_old_pixel_envelope(self):
+        for envelope in ['100,0,650,240', '4,0,4,5', 'nan,0,8,5', '{"x":4}', '']:
+            self.assertEqual(booking._image_origin_meters(envelope, 800, 500, .01), 0)
+        self.assertEqual(booking._image_origin_meters('-4,0,8,5', 800, 500, .01), -4)
+
 
 if __name__ == '__main__':
     unittest.main()

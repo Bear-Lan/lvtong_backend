@@ -221,6 +221,22 @@ def _leftmost_content_x(data: bytes, white_threshold: int = 245) -> int:
         return 0
 
 
+def _image_origin_meters(envelope: str, width: int, height: int, mpp: float) -> float:
+    """现场包络为 x,y,width,height（米）；仅在宽高与实际图像标定吻合时启用。
+
+    兼容旧的像素包络：不能把未经单位验证的第一个数字直接当米减掉。
+    """
+    try:
+        x, y, w, h = (float(part.strip()) for part in envelope.split(','))
+        if (all(math.isfinite(v) for v in (x, y, w, h)) and w > 0 and h > 0
+                and abs(w - width * mpp) <= 2 * mpp
+                and abs(h - height * mpp) <= 2 * mpp):
+            return x
+    except (ValueError, TypeError):
+        pass
+    return 0.0
+
+
 @booking_api.route('/radar-image', methods=['GET'])
 @login_required
 def fetch_radar_image():
@@ -231,7 +247,7 @@ def fetch_radar_image():
     默认读取 :5001/appt/image，校验图像并提供同源预览；配置 LAZ 接口时解压为正交预览。
     支持以下测量响应头：
     - Vehicle-Height: 车高（米）
-    - Vehicle-SX: 车头距图片起始位置（米）
+    - Vehicle-SX: 中间件坐标系中的车头 X（米），扣除 Image-Envelope 的图像起点
     - Image-Resolution: 米/像素（如 0.01 → 1px=0.01m）
     - Image-Envelope: 可选包络
 
@@ -246,6 +262,8 @@ def fetch_radar_image():
     vehicle_header_envelope = ''
     vehicle_height = _booking_state['car_height']
     vehicle_sx = None  # 车头距图起点（米）；None=未返回 Vehicle-SX
+    image_origin_meters = 0.0
+    vehicle_source_sx = None
     meters_per_pixel = 0.01
     orig_width = 0
     orig_height = 0
@@ -294,9 +312,11 @@ def fetch_radar_image():
                     meters_per_pixel = 0.01
 
                 sx_str = resp.headers.get('Vehicle-SX', '') or ''
+                image_origin_meters = _image_origin_meters(image_envelope, orig_width, orig_height, meters_per_pixel)
                 if sx_str:
                     try:
-                        vehicle_sx = float(sx_str)
+                        vehicle_source_sx = float(sx_str)
+                        vehicle_sx = vehicle_source_sx - image_origin_meters
                         if (not math.isfinite(vehicle_sx) or vehicle_sx < 0
                                 or 0 < vehicle_sx < sys.float_info.min
                                 or vehicle_sx / meters_per_pixel >= orig_width):
@@ -317,7 +337,7 @@ def fetch_radar_image():
 
                 if (
                     content_origin_x <= 0
-                    and not image_envelope
+                    and vehicle_sx is None
                     and not vehicle_header_envelope
                     and image_data
                 ):
@@ -391,6 +411,8 @@ def fetch_radar_image():
         'vehicleHeaderEnvelope': vehicle_header_envelope,
         'vehicleHeight': vehicle_height,
         'vehicleSx': vehicle_sx,
+        'imageOriginMeters': image_origin_meters,
+        'vehicleSourceSx': vehicle_source_sx if vehicle_source_sx is not None and math.isfinite(vehicle_source_sx) else None,
         'originalImageWidth': orig_width,
         'originalImageHeight': orig_height,
         'contentOriginX': content_origin_x,

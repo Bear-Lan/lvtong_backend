@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import http.client
+import logging
 import queue
 import socket
 import threading
@@ -17,6 +18,8 @@ from app.services.voice_channel import get_voice_channel
 
 FRAME_BYTES = 320  # G.711 8kHz mono，40ms；传输与相机写入均有界
 MAX_SECONDS = 600
+UPLINK_PREBUFFER_FRAMES = 3  # 120ms，吸收浏览器/网络分帧抖动，不逐帧追着到达时间播
+logger = logging.getLogger(__name__)
 
 
 class TalkError(RuntimeError):
@@ -149,11 +152,38 @@ class TalkSession:
         self.last_seen = time.monotonic()
         self.tx_bytes = self.rx_bytes = self.dropped = 0
         self.microphone_bytes = 0
+        self.uplink_buffering = True
+        self.uplink_started = False
+        self.uplink_underruns = 0
+        self.uplink_silence_frames = 0
         self.ready = False
         self.pending_down = 0
         self.reason = ''
         self.camera = None
         self.reader = None
+        # Socket.IO 二进制事件有头和附件；不能与另一线程的 stats/ready 交错。
+        self.emit_lock = threading.RLock()
+
+    def _emit(self, *args, **kwargs):
+        with self.emit_lock:
+            self.emit(*args, **kwargs)
+
+    def _next_audio(self, silence):
+        with self.lock:
+            if self.uplink_buffering:
+                if self.input.qsize() < UPLINK_PREBUFFER_FRAMES:
+                    if self.uplink_started:
+                        self.uplink_silence_frames += 1
+                    return silence
+                self.uplink_buffering = False
+                self.uplink_started = True
+            try:
+                return self.input.get_nowait()
+            except queue.Empty:
+                self.uplink_underruns += 1
+                self.uplink_silence_frames += 1
+                self.uplink_buffering = True
+                return silence
 
     def feed(self, data):
         if not isinstance(data, bytes) or len(data) != FRAME_BYTES:
@@ -184,7 +214,7 @@ class TalkSession:
                 self.rx_bytes += len(data)
                 if not self.ready:
                     self.ready = True
-                    self.emit('ready', {'codec': self.camera.codec, 'sampleRate': 8000,
+                    self._emit('ready', {'codec': self.camera.codec, 'sampleRate': 8000,
                                         'frameBytes': FRAME_BYTES, 'deviceId': 'cam_booking'})
                 # 窗口覆盖中继 RTT，最多24帧(960ms)，避免逐帧等ACK造成断续。
                 with self.lock:
@@ -195,7 +225,7 @@ class TalkSession:
                 def ack(*_):
                     with self.lock:
                         self.pending_down = max(0, self.pending_down - 1)
-                self.emit('audio', data, callback=ack)
+                self._emit('audio', data, callback=ack)
             if not self.stop_event.is_set():
                 self.stop('相机音频流已结束')
         except Exception as exc:
@@ -228,16 +258,16 @@ class TalkSession:
                     raise TalkError('对讲连接超时，请重新连接')
                 if now - started > MAX_SECONDS or time.time() >= self.expires:
                     raise TalkError('本次对讲已结束，请重新连接')
-                try:
-                    data = self.input.get_nowait()
-                except queue.Empty:
-                    data = silence
+                data = self._next_audio(silence)
                 self.camera.send(data)
                 self.tx_bytes += len(data)
                 if now - stats_at >= 1:
-                    self.emit('stats', {'sentBytes': self.tx_bytes, 'receivedBytes': self.rx_bytes,
+                    self._emit('stats', {'sentBytes': self.tx_bytes, 'receivedBytes': self.rx_bytes,
                                         'microphoneBytes': self.microphone_bytes,
-                                        'droppedFrames': self.dropped})
+                                        'droppedFrames': self.dropped,
+                                        'uplinkUnderruns': self.uplink_underruns,
+                                        'uplinkSilenceFrames': self.uplink_silence_frames,
+                                        'uplinkQueuedFrames': self.input.qsize()})
                     stats_at = now
                 next_frame = max(next_frame + .04, time.monotonic())
                 self.stop_event.wait(max(0, next_frame - time.monotonic()))
@@ -256,9 +286,14 @@ class TalkSession:
                 if token:
                     get_voice_channel().release(token=token)
                 self.finished(self)
-            self.emit('ended', {'message': self.reason or ('对讲已结束' if close_ok else '连接已结束，相机通道关闭未确认'),
+            logger.info('对讲结束 sid=%s microphoneBytes=%s sentBytes=%s droppedFrames=%s '
+                        'uplinkUnderruns=%s uplinkSilenceFrames=%s', self.sid, self.microphone_bytes,
+                        self.tx_bytes, self.dropped, self.uplink_underruns, self.uplink_silence_frames)
+            self._emit('ended', {'message': self.reason or ('对讲已结束' if close_ok else '连接已结束，相机通道关闭未确认'),
                                 'sentBytes': self.tx_bytes, 'receivedBytes': self.rx_bytes,
                                 'microphoneBytes': self.microphone_bytes,
+                                'uplinkUnderruns': self.uplink_underruns,
+                                'uplinkSilenceFrames': self.uplink_silence_frames,
                                 'cameraClosed': close_ok})
 
 

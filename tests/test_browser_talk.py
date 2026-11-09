@@ -54,7 +54,8 @@ class SessionTests(unittest.TestCase):
         camera = FakeCamera(); events = []; done = threading.Event()
         def emit(event, data, **kw):
             events.append((event, data))
-            if event == 'ready': session.feed(b'\xab'*320)
+            if event == 'ready':
+                for _ in range(talk.UPLINK_PREBUFFER_FRAMES): session.feed(b'\xab'*320)
             if kw.get('callback'): kw['callback']()
         session = talk.TalkSession('a', time.time()+60, emit, lambda s: done.set(), lambda: camera)
         worker = threading.Thread(target=session.run); worker.start()
@@ -65,6 +66,36 @@ class SessionTests(unittest.TestCase):
         self.assertGreater(session.rx_bytes, 0)
         self.assertFalse(self.voice.status()['busy'])
         self.assertTrue(any(e == 'ended' and d['cameraClosed'] for e, d in events))
+
+    def test_microphone_jitter_is_absorbed_before_camera_playout(self):
+        s = talk.TalkSession('a', time.time()+60, lambda *a, **k: None, lambda s: None)
+        s.ready = True
+        silence = b'\xd5' * 320
+        frames = [bytes([n]) * 320 for n in range(100)]
+        # 真实40ms时钟；相邻包到达有±20ms抖动。比较相机输出能否完整连续。
+        arrivals = [(n * .04 + (.02 if n % 2 else 0), frame) for n, frame in enumerate(frames)]
+        cursor = 0; output = []; started = False
+        for tick in range(104):
+            now = tick * .04 + 1e-8
+            while cursor < len(arrivals) and arrivals[cursor][0] <= now:
+                s.feed(arrivals[cursor][1]); cursor += 1
+            data = s._next_audio(silence)
+            if data != silence: started = True; output.append(data)
+            elif started and len(output) < len(frames): self.fail('语音中间插入了静音')
+        self.assertEqual(output, frames)
+        self.assertEqual(s.dropped, 0)
+
+    def test_uplink_starvation_rebuffers_instead_of_chopping_each_new_frame(self):
+        s = talk.TalkSession('a', time.time()+60, lambda *a, **k: None, lambda s: None)
+        s.ready = True; silence = b'\xd5' * 320; speech = b'\xaa' * 320
+        for _ in range(3): s.feed(speech)
+        for _ in range(3): self.assertEqual(s._next_audio(silence), speech)
+        self.assertEqual(s._next_audio(silence), silence)
+        self.assertEqual(s.uplink_underruns, 1)
+        s.feed(speech)
+        self.assertEqual(s._next_audio(silence), silence)
+        s.feed(speech); s.feed(speech)
+        self.assertEqual(s._next_audio(silence), speech)
 
     def test_failure_during_open_still_releases_reserved_session(self):
         camera = FakeCamera(); camera.open = lambda: (_ for _ in ()).throw(OSError())

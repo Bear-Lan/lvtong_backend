@@ -27,6 +27,8 @@
 ## LAZ
 
 RADAR_HEAD_URL 默认 `http://192.168.88.201:5001/appt/image`，用于预约界面来车图（2026-11-06 用户提供）。校验真实图像后沿用上游测量响应头，生成同源临时预览 URL。
+
+2026-11-09预约测距修正：现场800×500图片、Image-Resolution=0.01、Image-Envelope=4,0,8,5，与“图像左起点4米、宽8米、高5米”一致。连续三包Vehicle-SX约9.23～9.27米，而点云在521～540像素；扣除4米后才与图像吻合。后端校验包络宽高与实际图像比例后，输出图片内vehicleSx=(原始SX−图像左起点)，同时保留vehicleSourceSx/imageOriginMeters用于诊断。旧像素包络不满足米制宽高校验时不按米扣除；没有有效SX则用内容最左列。前端默认红线、拖动计长、刷新保留人工长度统一采用同一图片内原点，不重复减全局包络起点。
 `http://192.168.88.201:5001/geom/laz` 是独立的原始点云接口，需要时可显式配置；保留以下 LAS/LAZ 解码能力。
 用 laspy 2.7 + lazrs 解压实际 LAS/LAZ 二进制，先应用 LAS header 中各轴 scales/offsets，再按选定两轴等比例投影为 PNG。
 沿用 `/api/booking/radar-image` 返回 temp 图片 URL；pointCloud 字段附带文件格式、点数、投影轴、单位比例和米制包络。
