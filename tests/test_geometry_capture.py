@@ -16,10 +16,14 @@ class GeometryCaptureTest(unittest.TestCase):
     def setUp(self):
         original = dict(booking.get_booking_state())
         self.addCleanup(lambda: (booking.get_booking_state().clear(), booking.get_booking_state().update(original)))
-        for name, value in (('_generation', 0), ('_armed', False)):
+        for name, value in (('_generation', 0), ('_armed', False), ('_started', False),
+                            ('_poll_started', False), ('_poll_requested', False)):
             item = patch.object(geometry, name, value)
             item.start()
             self.addCleanup(item.stop)
+        item = patch.object(geometry, '_notify')
+        item.start()
+        self.addCleanup(item.stop)
 
     def test_accept_only_arms_release_starts_cancel_stops(self):
         with patch.object(geometry, 'send_geomcap', return_value=True) as send:

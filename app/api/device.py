@@ -344,7 +344,7 @@ def gate_status():
 @device_api.route('/body-radar-image', methods=['POST'])
 @login_required
 def body_radar_image():
-    """切换显示车顶/车侧雷达图时按需拉图。
+    """读取本轮真实 LAZ 的最新三维/投影缓存，不触发采集。
 
     Body: { view: 'top' | 'side' }
     """
@@ -353,17 +353,11 @@ def body_radar_image():
     if view not in ('top', 'side'):
         return fail(400, 'view 须为 top 或 side')
 
-    import config as device_config
-    from app.services.body_radar_projection import fetch_body_projections
-    names = ('RADAR_POINT_CLOUD_URL', 'RADAR_POINT_CLOUD_SAMPLE_FALLBACK',
-             'RADAR_LAZ_METERS_PER_UNIT', 'RADAR_LAZ_RESOLUTION')
-    settings = {name: current_app.config.get(name, getattr(device_config, name)) for name in names}
-    try:
-        result = fetch_body_projections(settings)
-    except Exception as error:
-        return fail(502, f'车顶车侧点云投影失败：{error}')
+    from app.services.geometry_capture import get_geometry_snapshot
+    result = get_geometry_snapshot()
     slot = '2' if view == 'top' else '3'
-    return ok({**result, 'imageUrl': result['views'][view]['imageUrl'], 'view': view, 'slot': slot})
+    image_url = result.get('views', {}).get(view, {}).get('imageUrl', '')
+    return ok({**result, 'imageUrl': image_url, 'view': view, 'slot': slot})
 
 
 @device_api.route('/reconnect', methods=['POST'])

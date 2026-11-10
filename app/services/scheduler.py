@@ -434,9 +434,16 @@ class DistanceScheduler:
         for device_id, _, _ in actions:
             self._device_activation_status[device_id] = True
 
-        # 雷达距离 25–28m：车身 + 200 透视 0.2s 轮询
+        # 雷达距离 25–28m：车身/200 透视 0.2s，LAZ 0.5s 轮询。
         if threshold.id == 'xray_capture_trigger':
+            from app.api.booking import get_booking_state
+            geometry_generation = get_booking_state().get('geometry_generation')
             def _start_25_28m_poll() -> None:
+                try:
+                    from app.services.geometry_capture import start_geometry_poll
+                    start_geometry_poll(geometry_generation)
+                except Exception as e:
+                    print(f'[SCHEDULER] LAZ 轮询启动失败: {e}', flush=True)
                 try:
                     from app.services.body_camera_fetch import start_body_camera_poll
                     start_body_camera_poll()

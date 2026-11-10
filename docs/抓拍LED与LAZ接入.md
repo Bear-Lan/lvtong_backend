@@ -48,7 +48,7 @@ RADAR_HEAD_URL 默认 `http://192.168.88.201:5001/appt/image`，用于预约界�
 
 ## 车身点云投影
 
-2026-11-07：车身影像的车顶/车侧通过 `/api/device/body-radar-image` 从同一份 `/geom/laz` 点云生成XY/XZ投影，不再按该入口拉5006的vtop/vside。实时无有效数据时临时显示用户提供的 `samples/vehicle.laz`，前端标“示范数据”，刷新重新尝试实时源，正式记录排除示范图片。详见 `samples/README.md`。预约图仍独立使用 `/appt/image`。
+2026-11-10：上述演示回退已移除。车身3D使用放行后真实geomcap采集，与车身图同一距离区间开始轮询 `/geom/laz`，以 `Capture-Finish: true` 结束；`/api/device/body-radar-image` 只读取本轮缓存。无数据时显示等待，预约图仍独立使用 `/appt/image`。完整生命周期见《中间件状态及采集协议》。
 
 ## 辐射仪
 

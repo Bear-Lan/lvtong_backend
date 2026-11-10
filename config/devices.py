@@ -35,7 +35,6 @@ RADAR_LAZ_METERS_PER_UNIT = float(os.environ.get('RADAR_LAZ_METERS_PER_UNIT', '1
 RADAR_LAZ_RESOLUTION = float(os.environ.get('RADAR_LAZ_RESOLUTION', '0.01'))
 # 车身影像的车顶/车侧从同一份点云投影，预约图仍使用 RADAR_HEAD_URL。
 RADAR_POINT_CLOUD_URL = os.environ.get('RADAR_POINT_CLOUD_URL', 'http://192.168.88.201:5001/geom/laz')
-RADAR_POINT_CLOUD_SAMPLE_FALLBACK = os.environ.get('RADAR_POINT_CLOUD_SAMPLE_FALLBACK', 'true').lower() == 'true'
 
 # 现场组播（$VMRMC 距离 / $NTRMC 状态），默认启用
 RADAR_TRANSPORT = os.environ.get('RADAR_TRANSPORT', 'multicast').lower()
