@@ -28,6 +28,7 @@ def response(raw=b'', finish=None, status=200):
 class GeometryLazPollTest(unittest.TestCase):
     def setUp(self):
         self.events = []
+        self.poll_interval = capture.POLL_INTERVAL_SEC
         for name, value in (('_generation', 0), ('_armed', False), ('_started', False),
                             ('_poll_requested', False), ('_poll_started', False),
                             ('_result', None), ('_state', 'idle'), ('_error', ''), ('_frame', 0),
@@ -51,16 +52,16 @@ class GeometryLazPollTest(unittest.TestCase):
             capture._poll_laz(generation, capture._stop)
         return fetch
 
-    def test_waits_through_empty_json_status_true_errors_and_timeout_until_header(self):
-        fetch = self.run_responses([response(b'{"status":"false"}'), response(b'{"status":"true"}'),
-                                   TimeoutError('test timeout'), response(b'error', 'true', 503),
+    def test_waits_through_empty_http_error_and_timeout_until_header(self):
+        fetch = self.run_responses([response(), response(b'error', status=503),
+                                   TimeoutError('test timeout'), response(b'not json'),
                                    response(cloud_bytes(), 'false'), response(b'', ' TrUe ')])
         snapshot = capture.get_geometry_snapshot()
         self.assertEqual(fetch.call_count, 6)
         self.assertEqual(snapshot['capture']['state'], 'finished')
         self.assertEqual(snapshot['capture']['frame'], 1)
         self.assertEqual(snapshot['geometry']['totalPointCount'], 4)
-        capture.send_geomcap.assert_called_once_with(True)
+        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
 
     def test_final_laz_is_decoded_before_finish_notification(self):
         self.run_responses([response(cloud_bytes(), 'true')])
@@ -71,10 +72,10 @@ class GeometryLazPollTest(unittest.TestCase):
         self.assertEqual(self.events[-1]['state'], 'finished')
         self.assertEqual(set(result['views']), {'top', 'side'})
 
-    def test_repeated_file_decodes_once_and_only_true_finishes(self):
+    def test_repeated_file_decodes_once_before_finish(self):
         raw = cloud_bytes()
         with patch.object(capture, 'project_body_response', wraps=capture.project_body_response) as decode:
-            fetch = self.run_responses([response(raw, '1'), response(raw, 'false'), response(raw, 'true')])
+            fetch = self.run_responses([response(raw, 'false'), response(raw, 'false'), response(raw, 'true')])
         self.assertEqual(fetch.call_count, 3)
         decode.assert_called_once()
         self.assertEqual(capture.get_geometry_snapshot()['capture']['frame'], 1)
@@ -92,7 +93,7 @@ class GeometryLazPollTest(unittest.TestCase):
         self.assertNotIn('geometry', result)
         self.assertIn('未返回有效点云', result['capture']['error'])
 
-    def test_timeout_preserves_last_cloud_without_sending_stop(self):
+    def test_timeout_preserves_last_cloud_and_sends_stop(self):
         generation = self.arm()
         with patch.object(capture, 'time', SimpleNamespace(monotonic=Mock(side_effect=[0., 0., 181.]))), \
              patch.object(capture, 'middleware_get_payload', return_value=response(cloud_bytes())) as fetch:
@@ -100,7 +101,7 @@ class GeometryLazPollTest(unittest.TestCase):
         fetch.assert_called_once()
         self.assertTrue(capture.get_geometry_snapshot()['capture']['hasData'])
         self.assertEqual(capture.get_geometry_snapshot()['capture']['state'], 'timeout')
-        capture.send_geomcap.assert_called_once_with(True)
+        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
 
     def test_reset_during_get_discards_late_response(self):
         generation = self.arm()
@@ -204,9 +205,48 @@ class GeometryLazPollTest(unittest.TestCase):
             self.assertEqual(result.json['data']['capture']['state'], 'finished')
             self.assertEqual(result.json['data']['geometry']['totalPointCount'], 4)
             self.assertEqual(calls, ['/geom/laz'])
-            capture.send_geomcap.assert_called_once_with(True)
+            self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+    def test_json_and_header_completion_match_body_camera_including_status_false(self):
+        from app.services.body_camera_fetch import _is_capture_finished, POLL_INTERVAL_SEC, POLL_TIMEOUT, MAX_POLL_SEC
+        cases = [response(b'{"status":"false"}'), response(b'{"status":"true"}'),
+                 response(b'[]'), response(b'', 'true'), response(b'', '1'),
+                 response(b'', 'yes'), response(b'', 'on'), response(b'error', status=500)]
+        json_type = response(b'not json');json_type.headers['Content-Type'] = 'application/json'
+        cases.append(json_type)
+        for item in cases:
+            finished, _ = _is_capture_finished(item)
+            if not finished:continue
+            with self.subTest(body=item.content, headers=item.headers):
+                capture.send_geomcap.reset_mock()
+                fetch = self.run_responses([item])
+                fetch.assert_called_once()
+                self.assertEqual(capture.get_geometry_snapshot()['capture']['state'], 'finished')
+                self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
+        self.assertEqual(self.poll_interval, POLL_INTERVAL_SEC)
+        self.assertEqual(capture.POLL_TIMEOUT, POLL_TIMEOUT)
+        self.assertEqual(capture.MAX_POLL_SEC, MAX_POLL_SEC)
+
+    def test_json_completion_preserves_previous_cloud_and_stops(self):
+        self.run_responses([response(cloud_bytes()), response(b'{"status":"false"}')])
+        result = capture.get_geometry_snapshot()
+        self.assertTrue(result['capture']['hasData'])
+        self.assertEqual(result['capture']['state'], 'finished')
+        self.assertEqual(result['geometry']['totalPointCount'], 4)
+
+    def test_stale_poll_finalizer_never_sends_stop_to_new_vehicle(self):
+        generation = self.arm()
+        old_stop = capture._stop
+        def next_vehicle(*args, **kwargs):
+            current = capture.prepare_geometry_capture()
+            capture.start_geometry_capture(current)
+            return response(cloud_bytes(), 'true')
+        with patch.object(capture, 'middleware_get_payload', side_effect=next_vehicle):
+            capture._poll_laz(generation, old_stop)
+        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, True])
+        self.assertEqual(capture.get_geometry_snapshot()['capture']['state'], 'capturing')
 
 
 if __name__ == '__main__': unittest.main()

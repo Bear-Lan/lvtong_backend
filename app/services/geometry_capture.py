@@ -5,14 +5,14 @@ import threading
 import time
 
 from app.devices.mcast_cmd import send_geomcap
-from app.services.body_camera_fetch import _header_capture_finish
+from app.services.body_camera_fetch import (
+    POLL_INTERVAL_SEC, POLL_TIMEOUT, MAX_POLL_SEC, _is_capture_finished,
+)
 from app.services.body_radar_projection import project_body_response
 from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
 from app.services.middleware_http import middleware_get_payload
 
 logger = logging.getLogger(__name__)
-POLL_INTERVAL_SEC = 0.5
-MAX_POLL_SEC = 180.0
 _lock = threading.Lock()
 _generation = 0
 _armed = False
@@ -107,6 +107,18 @@ def stop_geometry_capture() -> bool:
 
 
 def _poll_laz(generation: int, stop: threading.Event) -> None:
+    try:
+        _poll_laz_frames(generation, stop)
+    finally:
+        # 与车身图一致：结束、超时或异常退出都停止采集。
+        # 取消/新一轮已单独处理，旧线程不能误停下一辆车。
+        with _lock:
+            if generation == _generation and not stop.is_set() and _started:
+                if not send_geomcap(False):
+                    logger.warning('LAZ 停止采集命令发送失败 generation=%s', generation)
+
+
+def _poll_laz_frames(generation: int, stop: threading.Event) -> None:
     global _result, _state, _error, _frame
     import config
     settings = {name: getattr(config, name) for name in
@@ -121,7 +133,7 @@ def _poll_laz(generation: int, stop: threading.Event) -> None:
             with _lock:
                 if generation == _generation and not stop.is_set():
                     _state = 'timeout'
-                    _error = '三分钟内未收到 Capture-Finish: true' + ('，未获取到有效点云' if not _result else '')
+                    _error = '三分钟内未收到采集结束标志' + ('，未获取到有效点云' if not _result else '')
                     _notify()
             return
         try:
@@ -131,13 +143,12 @@ def _poll_laz(generation: int, stop: threading.Event) -> None:
             continue
         attempts += 1
         try:
-            response = middleware_get_payload(settings['RADAR_POINT_CLOUD_URL'],
-                                              timeout=(min(3., remaining), min(8., remaining)))
+            response = middleware_get_payload(settings['RADAR_POINT_CLOUD_URL'], timeout=POLL_TIMEOUT)
             ensure_capture_allowed(guard_generation)
             if stop.is_set():
                 return
-            # JSON/status=false、空响应和 HTTP 错误都不是采集完成。
-            finished = response.status_code == 200 and _header_capture_finish(response).lower() == 'true'
+            # 与车身图共用结束规则：Capture-Finish 或 JSON 响应。
+            finished, reason = _is_capture_finished(response)
             result, error = None, ''
             if response.status_code == 200 and response.content.startswith(b'LASF'):
                 try:
@@ -165,7 +176,7 @@ def _poll_laz(generation: int, stop: threading.Event) -> None:
                 if result or finished or error:
                     _notify()
             if finished:
-                logger.info('LAZ 采集结束 generation=%s attempts=%s frames=%s', generation, attempts, _frame)
+                logger.info('LAZ 采集结束 generation=%s reason=%s attempts=%s frames=%s', generation, reason, attempts, _frame)
                 return
         except CaptureBlockedError:
             stop.wait(POLL_INTERVAL_SEC)
@@ -173,4 +184,3 @@ def _poll_laz(generation: int, stop: threading.Event) -> None:
         except Exception as exc:
             logger.warning('LAZ 拉取失败，继续等待 generation=%s: %s', generation, exc)
         stop.wait(POLL_INTERVAL_SEC)
-    # 正常结束/超时均不发送 geomcap=false；中间件自行结束，只有取消/重置发送。

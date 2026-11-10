@@ -26,18 +26,20 @@ def fail(code=400, message='error', data=None):
 def list_products():
     """查询农产品列表（支持搜索/分页）
 
-    GET /api/dict/products?product_type=&variety_name=&pinyin=&page=1&page_size=50
+    GET /api/dict/products?product_type=&keyword=&variety_name=&pinyin=&page=1&page_size=50
+    keyword 同时匹配名称、别名、拼音首字母，不区分大小写。
     """
     product_type = request.args.get('product_type', '')
-    variety_name = request.args.get('variety_name', request.args.get('keyword', ''))
+    variety_name = request.args.get('variety_name', '')
+    keyword = request.args.get('keyword', '').strip()
     pinyin = request.args.get('pinyin', '')
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 50))
 
     db = DBProduct()
-    total = db.getProductsCount(product_type, variety_name, pinyin)
+    total = db.getProductsCount(product_type, variety_name, pinyin, keyword=keyword)
     items = db.getProductsWithFilter(product_type, variety_name, pinyin,
-                                     page=page, page_size=page_size)
+                                     page=page, page_size=page_size, keyword=keyword)
     return ok({'items': items, 'total': total, 'page': page, 'page_size': page_size})
 
 
