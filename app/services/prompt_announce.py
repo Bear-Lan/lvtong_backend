@@ -83,10 +83,10 @@ class PromptAnnounceService:
         try:
             while not cancel.is_set():
                 current_revision, blocked = voice.prompt_playback_snapshot()
-                # 正常用播放完成反馈；本条反馈不恢复时预留配置的完整播放时段。
+                # 状态位没有命令编号且现场会滞留为1；本轮按配置时长兜底。
+                # revision变化表示被新业务语音抢占，必须等其保护释放。
                 ready = not blocked or (current_revision == revision
-                    and time.monotonic() - sent_at >= clip_sec
-                    and voice.prompt_clip_fallback_allowed(revision))
+                    and time.monotonic() - sent_at >= clip_sec)
                 if not ready:
                     cancel.wait(0.1)
                     continue

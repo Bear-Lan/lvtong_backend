@@ -174,13 +174,6 @@ def set_prompt_loop_active(active: bool) -> None:
         _playback.prompt_active = active
 
 
-def prompt_clip_fallback_allowed(revision: int) -> bool:
-    with _state_lock:
-        # 观察到本轮起播就必须等真实结束，不能用估计时长截断长语音。
-        return (_playback.revision == revision
-                and not any(started for _, started in _playback.pending.values()))
-
-
 def dispatch_prompt(previous_revision: int | None = None) -> tuple[bool | None, int]:
     """首次人工提示可抢播；后续重复不能覆盖期间新到的业务语音。"""
     with _send_lock:

@@ -115,15 +115,16 @@ class PromptAnnounceTest(unittest.TestCase):
         self.wait_messages(6)
         self.assertTrue(self.messages[4][1].endswith('VOICE9'))
 
-    def test_confirmed_playback_cannot_be_cut_by_estimated_clip_timeout(self):
+    def test_latched_playing_feedback_repeats_after_full_configured_clip_and_gap(self):
         self.assertTrue(self.service.start()[0])
         voice.update_playback_status({'frontVoiceAnnounceStatus': True, 'backVoiceAnnounceStatus': True})
         with self.cv:
-            self.assertFalse(self.cv.wait_for(lambda: len(self.messages)>2, timeout=.65))
-        with voice._state_lock:
-            voice._playback.quiet_until = 0
-        voice.update_playback_status({'frontVoiceAnnounceStatus': False, 'backVoiceAnnounceStatus': False})
+            self.assertFalse(self.cv.wait_for(lambda: len(self.messages)>2, timeout=.25))
         self.wait_messages(4)
+        self.assertGreaterEqual(self.messages[2][0]-self.messages[0][0], .44)
+        self.assertTrue(all(voice._playback.playing.values()))
+        self.service.stop()
+        self.assertFalse(voice.speak_step(1), '提示计时兜底不释放空闲语音的真实播放保护')
 
     def test_stop_waits_for_current_dispatch_and_prevents_any_later_dispatch(self):
         second = threading.Event()
