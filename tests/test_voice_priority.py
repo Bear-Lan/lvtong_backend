@@ -1,4 +1,4 @@
-"""空闲语音优先级：真实调度及DEVICE反馈，隔离所有网络和设备动作。"""
+"""共享三秒播放状态：真实调度及DEVICE反馈，隔离所有网络和设备动作。"""
 import threading
 import unittest
 from unittest.mock import patch
@@ -14,7 +14,7 @@ class VoicePriorityTest(unittest.TestCase):
         self.now = 100.0
         self.config = {'targets': ['front', 'back'],
                        'steps': {str(n): f'VOICE{n}' for n in range(1, 10)},
-                       'repeat_interval_sec': 10, 'idle_resume_guard_sec': 10}
+                       'repeat_interval_sec': 10}
         self.patches = [
             patch.object(voice, '_playback', voice._PlaybackState()),
             patch.object(voice, 'load_config', return_value=self.config),
@@ -42,48 +42,46 @@ class VoicePriorityTest(unittest.TestCase):
         voice.stop_speak()
         self.assertFalse(voice.speak_step(1))
         self.assertEqual(self.sender.call_count, 2)
-        self.now += 9
+        self.now += 2.999
         self.assertFalse(voice.speak_step(1))
-        self.now += 1
-        self.assertFalse(voice.speak_step(1))  # 反馈中断，超时不等于播完。
-        self.feedback(0)
-        self.assertTrue(voice.speak_step(1))  # 保护期后收到两侧的新空闲反馈。
+        self.now = 103
+        self.assertTrue(voice.speak_step(1))  # 无任何反馈，三秒自动恢复。
 
-    def test_both_sides_must_complete_including_staggered_start(self):
+    def test_both_sides_share_one_deadline_ignoring_staggered_feedback(self):
         self.assertTrue(voice.speak_step(6, interrupt=False))
         self.now += 2
         self.feedback(0x10000)
         self.feedback(0)
-        self.assertFalse(voice.speak_step(1))  # 后侧尚未反馈，不能抢播。
+        self.assertFalse(voice.speak_step(1))
         self.feedback(0x20000)
         self.feedback(0)
+        self.now += 1
         self.assertTrue(voice.speak_step(1))
 
-    def test_playing_feedback_blocks_idle_even_after_guard_expires_but_not_other_voice(self):
+    def test_latched_playing_feedback_cannot_block_timed_recovery(self):
         self.assertTrue(voice.speak_step(6, interrupt=False))
         self.feedback(0x30000)
         self.now += 1000
-        self.assertFalse(voice.speak_step(1))
+        self.assertTrue(voice.speak_step(1))
         self.assertTrue(voice.speak_step(7, interrupt=False))
         self.assertTrue(voice.speak_step(8))
-        self.assertEqual(self.sender.call_count, 6)
+        self.assertEqual(self.sender.call_count, 8)
 
-    def test_existing_playback_after_restart_also_blocks_idle(self):
+    def test_system_initially_idle_regardless_of_device_playing_feedback(self):
         self.feedback(0x20000)
-        self.assertFalse(voice.speak_step(1))
-        self.feedback(0)
         self.assertTrue(voice.speak_step(1))
+        self.assertFalse(voice.speak_step(1))  # 空闲播报本身也占用同一状态。
 
     def test_high_priority_immediately_replaces_idle_and_new_voice_extends_guard(self):
         self.assertTrue(voice.speak_step(1))
         self.feedback(0x30000)
         self.assertTrue(voice.speak_step(6, interrupt=False))
-        self.now += 8
+        self.now += 2
         self.assertTrue(voice.speak_step(8, interrupt=False))
         self.feedback(0)  # 没看到新命令起始，不能提前结束保护。
-        self.now += 3
+        self.now += 1
         self.assertFalse(voice.speak_step(1))
-        self.now += 7
+        self.now += 2
         self.feedback(0)
         self.assertTrue(voice.speak_step(1))
         self.assertEqual([c.args[0] for c in self.sender.call_args_list], [
@@ -99,6 +97,29 @@ class VoicePriorityTest(unittest.TestCase):
         self.assertFalse(voice.speak_step(7, interrupt=False))
         self.sender.side_effect = None
         self.assertFalse(voice.speak_step(1))
+        self.now += 3
+        self.assertTrue(voice.speak_step(1))
+
+    def test_failed_send_preserves_existing_deadline_without_extending_it(self):
+        self.assertTrue(voice.speak_step(6, interrupt=False))
+        self.now += 2
+        self.sender.return_value = False
+        self.assertFalse(voice.speak_step(7, interrupt=False))
+        self.sender.return_value = True
+        self.assertFalse(voice.speak_step(1))
+        self.now += 1
+        self.assertTrue(voice.speak_step(1))
+
+    def test_deadline_starts_from_last_successful_direction_send(self):
+        def publish(message):
+            self.now += .5
+            return True
+        self.sender.side_effect = publish
+        self.assertTrue(voice.speak_step(6, interrupt=False))
+        self.now = 103.999
+        self.assertFalse(voice.speak_step(1))
+        self.now = 104
+        self.assertTrue(voice.speak_step(1))
 
     def test_old_idle_playback_falling_edge_does_not_finish_new_business_voice(self):
         self.assertTrue(voice.speak_step(1))
@@ -109,6 +130,8 @@ class VoicePriorityTest(unittest.TestCase):
         self.assertFalse(voice.speak_step(1))
         self.feedback(0x30000)
         self.feedback(0)
+        self.assertFalse(voice.speak_step(1))
+        self.now += 1
         self.assertTrue(voice.speak_step(1))
 
     def test_waiting_idle_dispatch_cannot_slip_after_manual_send(self):
@@ -159,7 +182,7 @@ class VoicePriorityTest(unittest.TestCase):
             self.assertEqual(self.sender.call_count, 2)
             self.assertEqual(clips, [])
             self.feedback(0x30000)
-            self.now += 2
+            self.now += 3
             self.feedback(0)
             self.assertTrue(completed.wait(1))
             worker.join(1)

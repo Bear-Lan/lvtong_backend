@@ -12,7 +12,6 @@
     "9": "VOICE9"
   },
   "repeat_interval_sec": 10,
-  "idle_resume_guard_sec": 10,
   "prompt_clip_sec": 3,
   "prompt_gap_sec": 2
 }

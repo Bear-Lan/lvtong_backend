@@ -63,9 +63,6 @@ class LaneAnnounceService:
 
     def on_plc_status(self, parsed: dict) -> None:
         """DEVICE 位：预约键 / 光幕上升沿。"""
-        from app.services.command_announce import update_playback_status
-
-        update_playback_status(parsed)
         booking = bool(parsed.get('bookingStatus', self._prev_booking))
         light = bool(parsed.get('lightScreenStatus', self._prev_light))
 

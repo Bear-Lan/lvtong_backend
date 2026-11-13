@@ -59,9 +59,7 @@ class VoiceCommandsTest(unittest.TestCase):
                        {'steps': {'1': 'VOICE0'}}, {'steps': {'1': 'VOICE10'}},
                        {'steps': {'1': 'VOICE1,xraysource200=true'}},
                        {'targets': ['front', 'front']}, {'steps': {'10': 'VOICE1'}},
-                       {'repeat_interval_sec': 0}, {'repeat_interval_sec': float('nan')},
-                       {'idle_resume_guard_sec': True}, {'idle_resume_guard_sec': 0},
-                       {'idle_resume_guard_sec': float('nan')}, {'idle_resume_guard_sec': 121}]:
+                       {'repeat_interval_sec': 0}, {'repeat_interval_sec': float('nan')}]:
             with self.subTest(change=change):
                 original = dict(self.config)
                 self.config.update(change)

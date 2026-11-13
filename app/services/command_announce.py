@@ -6,7 +6,7 @@ import math
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -25,6 +25,7 @@ ANNOUNCE_TEXT = {
     9: '前方超限车辆倒车，请注意避让',
 }
 _TARGET_KEYS = {'front': 'frontvoiceannounce', 'back': 'backvoiceannounce'}
+PLAYBACK_DURATION_SEC = 3.0
 _send_lock = threading.RLock()
 _state_lock = threading.Lock()
 _generation = 0
@@ -34,37 +35,17 @@ _wake_idle = threading.Event()
 @dataclass
 class _PlaybackState:
     # 状态由 _state_lock 保护；取消空闲线程不能清除正在播放的保护。
-    playing: dict[str, bool] = field(default_factory=dict)
-    pending: dict[str, tuple[float, bool]] = field(default_factory=dict)
-    quiet_until: float = 0.0
+    # 前后共用一个内部状态：最后一次成功发送后 3 秒自动空闲。
+    # 使用截止时间，避免旧播报的定时器提前释放新播报。
+    busy_until: float = 0.0
     revision: int = 0
     prompt_active: bool = False
 
     def idle_blocked(self, now: float, *, include_prompt: bool = True) -> bool:
-        # 无反馈不能靠超时假定播完；已知仍在播放也不限时避让。
-        return (include_prompt and self.prompt_active) or any(self.playing.values()) or bool(self.pending) or now < self.quiet_until
+        return (include_prompt and self.prompt_active) or now < self.busy_until
 
 
 _playback = _PlaybackState()
-
-
-def update_playback_status(parsed: dict) -> None:
-    """DEVICE 前字段 bit16/17；两侧各自完成后，才允许恢复空闲提示。"""
-    with _state_lock:
-        for side in _TARGET_KEYS:
-            value = parsed.get(f'{side}VoiceAnnounceStatus')
-            if not isinstance(value, bool):
-                continue
-            was_playing = _playback.playing.get(side, False)
-            _playback.playing[side] = value
-            pending = _playback.pending.get(side)
-            if pending is not None:
-                deadline, started = pending
-                if value and not was_playing:
-                    _playback.pending[side] = (deadline, True)
-                elif not value and (started or time.monotonic() >= deadline):
-                    # 漏掉起始沿时，也要保护期后的新空闲反馈；反馈断流不解锁。
-                    del _playback.pending[side]
 
 
 def load_config() -> dict:
@@ -90,11 +71,7 @@ def load_config() -> dict:
         raise ValueError('repeat_interval_sec 必须为数字')
     if not math.isfinite(interval) or not 1 <= interval <= 3600:
         raise ValueError('repeat_interval_sec 必须在 1…3600 秒之间')
-    guard = config.get('idle_resume_guard_sec', 10)
-    if (isinstance(guard, bool) or not isinstance(guard, (int, float))
-            or not math.isfinite(guard) or not 1 <= guard <= 120):
-        raise ValueError('idle_resume_guard_sec 必须在 1…120 秒之间')
-    return {**config, 'repeat_interval_sec': float(interval), 'idle_resume_guard_sec': float(guard)}
+    return {**config, 'repeat_interval_sec': float(interval)}
 
 
 def speak_step(step: int, *, interrupt: bool = True, blocking: bool = False) -> bool:
@@ -134,31 +111,18 @@ def _dispatch_step(step: int, expected_generation: int | None = None) -> bool | 
             now = time.monotonic()
             if step == 1 and _playback.idle_blocked(now):
                 return None
-            old_quiet_until = _playback.quiet_until
         success = True
         any_sent = False
         for target in targets:
-            with _state_lock:
-                previous = _playback.pending.get(target)
-                if step != 1:
-                    # 发包前就保护，覆盖命令发送到播放状态反馈之间的窗口。
-                    _playback.pending[target] = (now + config.get('idle_resume_guard_sec', 10), False)
-                    _playback.quiet_until = max(_playback.quiet_until, now + 1)
             command = f'{_TARGET_KEYS[target]}={code}'
             sent = send_mdrmc(command)
             any_sent = sent or any_sent
-            if not sent and step != 1:
+            if sent:
                 with _state_lock:
-                    if previous is None:
-                        _playback.pending.pop(target, None)
-                    else:
-                        _playback.pending[target] = previous
+                    _playback.busy_until = time.monotonic() + PLAYBACK_DURATION_SEC
             success = sent and success
             print(f'[VOICE-CMD] step{step} {command} udp_sent={sent}', flush=True)
-        if step != 1 and not any_sent:
-            with _state_lock:
-                _playback.quiet_until = old_quiet_until
-        elif step != 1:
+        if step != 1 and any_sent:
             with _state_lock:
                 _playback.revision += 1
         return success

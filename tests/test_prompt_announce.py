@@ -18,8 +18,7 @@ class PromptAnnounceTest(unittest.TestCase):
         self.cv = threading.Condition()
         self.messages = []
         self.config = {'targets': ['front', 'back'],
-                       'steps': {str(n): f'VOICE{n}' for n in range(1, 10)},
-                       'idle_resume_guard_sec': 10}
+                       'steps': {str(n): f'VOICE{n}' for n in range(1, 10)}}
         def publish(message):
             with self.cv:
                 self.messages.append((time.monotonic(), message))
@@ -30,7 +29,8 @@ class PromptAnnounceTest(unittest.TestCase):
                         patch.object(prompt, '_timing', return_value=(0.3, 0.15)),
                         patch.object(prompt, 'get_prompt_announce', return_value=self.service),
                         patch.object(mcast_cmd, 'publish_mdrmc', side_effect=publish),
-                        patch('socket.socket', side_effect=AssertionError('network forbidden'))]
+                        patch('socket.socket', side_effect=AssertionError('network forbidden')),
+                        patch.object(voice, 'PLAYBACK_DURATION_SEC', .3)]
         for item in self.patches:
             value = item.start()
             self.addCleanup(item.stop)
@@ -75,21 +75,16 @@ class PromptAnnounceTest(unittest.TestCase):
             for _ in range(count//2) for side in ('front', 'back')])
         self.assertFalse(voice.speak_step(1), '当前条尚未播完，停止循环不清除空闲保护')
 
-    def test_feedback_completion_then_gap_and_no_idle_during_gap(self):
+    def test_shared_timer_completion_then_gap_and_no_idle_during_gap(self):
         self.patches[2].stop()
-        with patch.object(prompt, '_timing', return_value=(20, .2)):
+        with patch.object(prompt, '_timing', return_value=(.3, .2)):
             self.assertTrue(self.service.start()[0])
-        with voice._state_lock:
-            voice._playback.quiet_until = 0
-        voice.update_playback_status({'frontVoiceAnnounceStatus': True, 'backVoiceAnnounceStatus': True})
-        voice.update_playback_status({'frontVoiceAnnounceStatus': False, 'backVoiceAnnounceStatus': True})
         self.assertFalse(voice.speak_step(1))
         self.assertEqual(len(self.messages), 2)
-        voice.update_playback_status({'frontVoiceAnnounceStatus': False, 'backVoiceAnnounceStatus': False})
-        finished = time.monotonic()
+        deadline = voice._playback.busy_until
         self.assertFalse(voice.speak_step(1), '两轮之间仍由提示循环占用')
         self.wait_messages(4)
-        self.assertGreaterEqual(self.messages[2][0]-finished, .19)
+        self.assertGreaterEqual(self.messages[2][0]-deadline, .19)
 
     def test_duplicate_start_is_idempotent_and_restart_has_new_version(self):
         first = self.service.start()[1]
@@ -105,26 +100,24 @@ class PromptAnnounceTest(unittest.TestCase):
 
     def test_new_business_voice_prevents_repeat_until_it_finishes(self):
         self.assertTrue(self.service.start()[0])
-        self.assertTrue(voice.speak_step(6, interrupt=False))
-        voice.update_playback_status({'frontVoiceAnnounceStatus': True, 'backVoiceAnnounceStatus': True})
+        with patch.object(voice, 'PLAYBACK_DURATION_SEC', 1):
+            self.assertTrue(voice.speak_step(6, interrupt=False))
         with self.cv:
             self.assertFalse(self.cv.wait_for(lambda: len(self.messages)>4, timeout=.65))
-        with voice._state_lock:
-            voice._playback.quiet_until = 0
-        voice.update_playback_status({'frontVoiceAnnounceStatus': False, 'backVoiceAnnounceStatus': False})
         self.wait_messages(6)
         self.assertTrue(self.messages[4][1].endswith('VOICE9'))
+        self.assertGreaterEqual(self.messages[4][0]-self.messages[2][0], 1.14)
 
-    def test_latched_playing_feedback_repeats_after_full_configured_clip_and_gap(self):
-        self.assertTrue(self.service.start()[0])
-        voice.update_playback_status({'frontVoiceAnnounceStatus': True, 'backVoiceAnnounceStatus': True})
+    def test_repeat_uses_full_shared_playback_duration_even_with_shorter_clip_setting(self):
+        self.patches[2].stop()
+        with patch.object(prompt, '_timing', return_value=(.05, .15)):
+            self.assertTrue(self.service.start()[0])
         with self.cv:
             self.assertFalse(self.cv.wait_for(lambda: len(self.messages)>2, timeout=.25))
         self.wait_messages(4)
         self.assertGreaterEqual(self.messages[2][0]-self.messages[0][0], .44)
-        self.assertTrue(all(voice._playback.playing.values()))
         self.service.stop()
-        self.assertFalse(voice.speak_step(1), '提示计时兜底不释放空闲语音的真实播放保护')
+        self.assertFalse(voice.speak_step(1), '停止循环不能提前释放本轮三秒保护')
 
     def test_stop_waits_for_current_dispatch_and_prevents_any_later_dispatch(self):
         second = threading.Event()

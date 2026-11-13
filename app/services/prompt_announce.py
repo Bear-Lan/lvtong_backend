@@ -82,11 +82,9 @@ class PromptAnnounceService:
     def _run(self, token, cancel, revision, sent_at, clip_sec, gap_sec):
         try:
             while not cancel.is_set():
-                current_revision, blocked = voice.prompt_playback_snapshot()
-                # 状态位没有命令编号且现场会滞留为1；本轮按配置时长兜底。
-                # revision变化表示被新业务语音抢占，必须等其保护释放。
-                ready = not blocked or (current_revision == revision
-                    and time.monotonic() - sent_at >= clip_sec)
+                _, blocked = voice.prompt_playback_snapshot()
+                # 共用内部 3 秒播放状态；被业务抢占后也等待其释放。
+                ready = not blocked and time.monotonic() - sent_at >= clip_sec
                 if not ready:
                     cancel.wait(0.1)
                     continue
