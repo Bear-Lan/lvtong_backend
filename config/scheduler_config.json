@@ -1,7 +1,7 @@
 {
   "gateRelease": {
-    "minClearDistance": 21.0,
-    "description": "健康检测：物体个数=1时，距离须>=该值才允许抬杆；小于则车道占用"
+    "minClearDistance": 27.0,
+    "description": "受理后连续5帧距离>=27米或为0（无限远）才解除占用并抬杆；目标数不参与判断，其余情况持续车道占用"
   },
   "thresholds": [
     {

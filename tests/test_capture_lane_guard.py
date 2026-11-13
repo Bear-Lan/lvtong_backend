@@ -25,7 +25,6 @@ class CaptureLaneGuardTest(unittest.TestCase):
         config = json.loads((Path(__file__).parents[1] / 'config/scheduler_config.json').read_text(encoding='utf8'))
         self.scheduler.load_configuration_from_json(config)
         self.scheduler.set_detection_state(True)
-        self.scheduler.start()
         for item in (
             patch('socket.socket', side_effect=AssertionError('network forbidden')),
             patch('app.api.booking.get_booking_state', return_value={'check_step': 1}),
@@ -33,20 +32,26 @@ class CaptureLaneGuardTest(unittest.TestCase):
             patch('app.services.scheduler.push_radar_distance'),
             patch('app.services.scheduler.push_lane_occupied'),
             patch('app.services.scheduler.push_detection_step'),
+            patch('app.services.device_action.execute_device_action', return_value=True),
+            patch('app.services.geometry_capture.start_geometry_capture', return_value=True),
+            patch.object(body, 'trigger_body_camera_capture'),
+            patch.object(self.scheduler, '_trigger_xray_start_scan'),
             patch('app.services.scheduler.threading.Thread', side_effect=lambda target, **kw: SimpleNamespace(start=target)),
         ):
             item.start()
             self.addCleanup(item.stop)
+        self.scheduler.start()
+        self.scheduler._update_lane_occupied_state(False)
 
     def occupy(self):
         for _ in range(3):
             self.scheduler._try_release_after_accept(1, 20.5)
 
-    def test_first_occupied_frame_prevents_top_photo_before_ui_debounce(self):
+    def test_first_occupied_frame_immediately_blocks_top_photo_and_ui(self):
         with patch('app.services.device_action.execute_device_action') as actions:
             self.scheduler.on_radar_data(20.5, object_count=1)
             self.assertTrue(self.scheduler.capture_blocked)
-            self.assertFalse(self.scheduler._lane_occupied_active)
+            self.assertTrue(self.scheduler._lane_occupied_active)
             for _ in range(2):
                 self.scheduler.on_radar_data(20.5, object_count=1)
         self.assertTrue(self.scheduler._lane_occupied_active)
@@ -54,16 +59,17 @@ class CaptureLaneGuardTest(unittest.TestCase):
         top = next(t for t in self.scheduler._distance_thresholds if t.id == 'auto_capture_top')
         self.assertFalse(top.status)
 
-    def test_clear_three_frames_allows_deferred_top_once_at_original_distance(self):
+    def test_five_clear_frames_allow_deferred_top_once_after_gate_release(self):
         self.occupy()
         with patch('app.services.device_action.execute_device_action', return_value=True) as actions:
-            for _ in range(2):
-                self.scheduler.on_radar_data(21.5, object_count=1)
+            for _ in range(4):
+                self.scheduler._try_release_after_accept(1, 27)
             actions.assert_not_called()
+            self.scheduler._try_release_after_accept(1, 27)
             self.scheduler.on_radar_data(21.5, object_count=1)
-            actions.assert_called_once_with('camera_001', 'capture', {'category': 'top'})
             self.scheduler.on_radar_data(21.5, object_count=1)
-            self.assertEqual(actions.call_count, 1)
+            top = [c for c in actions.call_args_list if c.args == ('camera_001', 'capture', {'category': 'top'})]
+            self.assertEqual(len(top), 1)
 
     def test_head_body_and_tail_remain_blocked_until_confirmed_clear(self):
         self.occupy()
@@ -71,22 +77,22 @@ class CaptureLaneGuardTest(unittest.TestCase):
         with patch('app.services.device_action.execute_device_action') as actions, \
              patch.object(body, 'start_body_camera_poll') as poll, \
              patch('app.services.progressive_image_fetch.start_progressive_panel_fetch'):
-            for _ in range(2):
+            for _ in range(4):
                 self.scheduler.on_radar_data(27, object_count=1)
             self.assertFalse(any(c.args[1] == 'capture' for c in actions.call_args_list))
             poll.assert_not_called()
             self.assertFalse(self.scheduler._tail_captured)
             self.scheduler.on_radar_data(27, object_count=1)
+            self.scheduler.on_radar_data(27, object_count=1)
             actions.assert_any_call('camera_001', 'capture', {'category': 'head'})
             actions.assert_any_call('camera_001', 'capture', {'category': 'tail'})
             poll.assert_called_once()
 
-    def test_other_distance_actions_still_run_while_photos_blocked(self):
+    def test_distance_actions_wait_until_lane_clear_and_gate_release(self):
         self.occupy()
         with patch('app.services.device_action.execute_device_action') as actions:
             self.scheduler.on_radar_data(8, object_count=1)
-        actions.assert_called_once_with('plc_001', 'setPLC', {
-            'redlight': False, 'yellowlight': True, 'greenlight': False})
+        actions.assert_not_called()
 
     def test_normal_pass_after_gate_release_still_takes_top_below_21m(self):
         self.scheduler._gate_released = True
@@ -123,8 +129,8 @@ class CaptureLaneGuardTest(unittest.TestCase):
                 self.assertEqual(response.status_code, 409)
                 self.assertIn('车道占用', response.json['message'])
             snapshot.assert_not_called()
-            for _ in range(3):
-                self.scheduler._try_release_after_accept(1, 22)
+            for _ in range(5):
+                self.scheduler._try_release_after_accept(1, 27)
             response = client.post('/api/capture/top', headers=headers)
             self.assertEqual(response.status_code, 200)
             snapshot.assert_called_once_with('cam_road', right_two_thirds=True)
@@ -132,8 +138,8 @@ class CaptureLaneGuardTest(unittest.TestCase):
     def test_inflight_photo_discarded_even_if_occupancy_has_already_cleared(self):
         def late_frame(_device):
             self.occupy()
-            for _ in range(3):
-                self.scheduler._try_release_after_accept(1, 22)
+            for _ in range(5):
+                self.scheduler._try_release_after_accept(1, 27)
             return b'\xff\xd8late'
 
         with patch.object(capture, '_load_camera_row', return_value={'config': {}}), \
@@ -186,8 +192,8 @@ class CaptureLaneGuardTest(unittest.TestCase):
             fetcher._poll_images()
             get.assert_called_once()
             push.assert_not_called()
-        for _ in range(3):
-            self.scheduler._try_release_after_accept(1, 22)
+        for _ in range(5):
+            self.scheduler._try_release_after_accept(1, 27)
         response.headers['Capture-Finish'] = 'true'
         fetcher._stop.is_set.side_effect = [False]
         with patch.object(body, '_send_camcap'), \
@@ -197,14 +203,15 @@ class CaptureLaneGuardTest(unittest.TestCase):
             get.assert_called_once()
             push.assert_called_once()
 
-    def test_unknown_does_not_clear_confirmed_occupancy_and_reset_invalidates_old_frame(self):
+    def test_first_zero_keeps_occupied_and_reset_invalidates_old_frame(self):
         generation = ensure_capture_allowed()
         self.occupy()
         self.scheduler._try_release_after_accept(0, 0)
         self.assertTrue(self.scheduler.capture_blocked)
         self.scheduler.stop()
         self.scheduler.start()
-        self.assertFalse(self.scheduler.capture_blocked)
+        self.assertTrue(self.scheduler.capture_blocked)
+        self.scheduler._update_lane_occupied_state(False)
         with self.assertRaises(CaptureBlockedError):
             ensure_capture_allowed(generation)
 
