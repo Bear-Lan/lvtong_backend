@@ -179,6 +179,7 @@ class ProgressivePanelFetcher:
             flush=True,
         )
 
+        completed = False
         try:
             while not self._stop_flag.is_set():
                 if time.monotonic() - t0 > MAX_POLL_SEC:
@@ -206,6 +207,7 @@ class ProgressivePanelFetcher:
                         f'frames={self._frame_count}',
                         flush=True,
                     )
+                    completed = True
                     break
 
                 if resp.status_code == 200 and _looks_like_image(resp):
@@ -221,7 +223,8 @@ class ProgressivePanelFetcher:
         finally:
             try:
                 from app.devices.xray import send_xray_capture
-                send_xray_capture(False)
+                if not completed:
+                    send_xray_capture(False)
             except Exception as e:
                 print(f'[PROG-IMG] xraycap=false 失败: {e}', flush=True)
 

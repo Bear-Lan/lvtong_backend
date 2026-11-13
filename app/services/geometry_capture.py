@@ -107,18 +107,19 @@ def stop_geometry_capture() -> bool:
 
 
 def _poll_laz(generation: int, stop: threading.Event) -> None:
+    completed = False
     try:
-        _poll_laz_frames(generation, stop)
+        completed = bool(_poll_laz_frames(generation, stop))
     finally:
-        # 与车身图一致：结束、超时或异常退出都停止采集。
+        # 正常结束只退出轮询；超时或异常退出才停止采集。
         # 取消/新一轮已单独处理，旧线程不能误停下一辆车。
         with _lock:
-            if generation == _generation and not stop.is_set() and _started:
+            if not completed and generation == _generation and not stop.is_set() and _started:
                 if not send_geomcap(False):
                     logger.warning('LAZ 停止采集命令发送失败 generation=%s', generation)
 
 
-def _poll_laz_frames(generation: int, stop: threading.Event) -> None:
+def _poll_laz_frames(generation: int, stop: threading.Event) -> bool | None:
     global _result, _state, _error, _frame
     import config
     settings = {name: getattr(config, name) for name in
@@ -177,7 +178,7 @@ def _poll_laz_frames(generation: int, stop: threading.Event) -> None:
                     _notify()
             if finished:
                 logger.info('LAZ 采集结束 generation=%s reason=%s attempts=%s frames=%s', generation, reason, attempts, _frame)
-                return
+                return True
         except CaptureBlockedError:
             stop.wait(POLL_INTERVAL_SEC)
             continue

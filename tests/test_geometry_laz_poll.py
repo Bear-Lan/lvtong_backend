@@ -61,7 +61,7 @@ class GeometryLazPollTest(unittest.TestCase):
         self.assertEqual(snapshot['capture']['state'], 'finished')
         self.assertEqual(snapshot['capture']['frame'], 1)
         self.assertEqual(snapshot['geometry']['totalPointCount'], 4)
-        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
+        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True])
 
     def test_final_laz_is_decoded_before_finish_notification(self):
         self.run_responses([response(cloud_bytes(), 'true')])
@@ -205,7 +205,7 @@ class GeometryLazPollTest(unittest.TestCase):
             self.assertEqual(result.json['data']['capture']['state'], 'finished')
             self.assertEqual(result.json['data']['geometry']['totalPointCount'], 4)
             self.assertEqual(calls, ['/geom/laz'])
-            self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
+            self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True])
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)
 
@@ -224,7 +224,7 @@ class GeometryLazPollTest(unittest.TestCase):
                 fetch = self.run_responses([item])
                 fetch.assert_called_once()
                 self.assertEqual(capture.get_geometry_snapshot()['capture']['state'], 'finished')
-                self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True, False])
+                self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True])
         self.assertEqual(self.poll_interval, POLL_INTERVAL_SEC)
         self.assertEqual(capture.POLL_TIMEOUT, POLL_TIMEOUT)
         self.assertEqual(capture.MAX_POLL_SEC, MAX_POLL_SEC)

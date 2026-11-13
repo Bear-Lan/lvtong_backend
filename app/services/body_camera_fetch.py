@@ -2,7 +2,7 @@
 
   1. 抬杆放行 → 组播 $MDRMC,1,camcap=true（开始采集）
   2. 雷达距离 25–28m → 持续 GET /camera/body/image，每 0.2s 一帧推 WS body.1
-  3. 采集结束 / 停止 → 组播 $MDRMC,1,camcap=false
+  3. 正常拉取结束只退出轮询；超时、异常或手动停止才发送 camcap=false
 """
 from __future__ import annotations
 
@@ -118,6 +118,7 @@ class BodyCameraFetcher:
         t0 = time.monotonic()
         print(f'[BODY-CAM] 开始持续拉图 {url}', flush=True)
 
+        completed = False
         try:
             while not self._stop.is_set():
                 if time.monotonic() - t0 > MAX_POLL_SEC:
@@ -158,6 +159,7 @@ class BodyCameraFetcher:
                         f'frames={self._frame_count}',
                         flush=True,
                     )
+                    completed = True
                     break
 
                 if resp.status_code == 200 and _looks_like_image(resp):
@@ -174,7 +176,8 @@ class BodyCameraFetcher:
                 if self._stop.wait(POLL_INTERVAL_SEC):
                     break
         finally:
-            _send_camcap(False)
+            if not completed:
+                _send_camcap(False)
 
     def _push_frame(self, raw: bytes, cache, jpeg_preview_bytes, push_fn, generation=None) -> None:
         try:
