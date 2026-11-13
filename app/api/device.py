@@ -21,6 +21,23 @@ def fail(code=400, message='error', data=None):
 
 # ---- 双工语音通道锁（TTS / 对讲互斥）----
 
+@device_api.route('/voice/announce', methods=['POST'])
+@login_required
+def announce_capture_voice():
+    """球机拍照提示：仅发送6/7/8号预置语音，不改变检测或设备动作。"""
+    body = request.get_json(silent=True)
+    step = body.get('step') if isinstance(body, dict) else None
+    if type(step) is not int or step not in (6, 7, 8):
+        return fail(400, 'step 须为6、7或8')
+
+    from app.services.command_announce import ANNOUNCE_TEXT, speak_step
+    # 手动一次播报沿用配置的前后方向，不取消既有自动播报流程。
+    sent = speak_step(step, interrupt=False)
+    data = {'step': step, 'text': ANNOUNCE_TEXT[step], 'sent': sent}
+    if not sent:
+        return fail(502, '语音命令发送失败，请重试', data)
+    return ok(data, '语音命令已发送')
+
 @device_api.route('/voice/status', methods=['GET'])
 @login_required
 def voice_channel_status():
