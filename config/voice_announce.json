@@ -11,5 +11,6 @@
     "8": "VOICE8",
     "9": "VOICE9"
   },
-  "repeat_interval_sec": 10
+  "repeat_interval_sec": 10,
+  "idle_resume_guard_sec": 10
 }

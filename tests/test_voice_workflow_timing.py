@@ -18,6 +18,9 @@ from app.websocket.handler import push_booking_event
 
 class VoiceWorkflowTimingTest(unittest.TestCase):
     def setUp(self):
+        playback = patch.object(voice, '_playback', voice._PlaybackState())
+        playback.start()
+        self.addCleanup(playback.stop)
         state = dict(booking.get_booking_state())
         self.addCleanup(lambda: booking.get_booking_state().update(state))
         booking.clear_book_button()

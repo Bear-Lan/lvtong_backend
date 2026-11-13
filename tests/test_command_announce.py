@@ -13,6 +13,9 @@ from app.services import command_announce as voice
 
 class VoiceCommandsTest(unittest.TestCase):
     def setUp(self):
+        self.playback_patch = patch.object(voice, '_playback', voice._PlaybackState())
+        self.playback_patch.start()
+        self.addCleanup(self.playback_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / 'voice.json'
@@ -56,7 +59,9 @@ class VoiceCommandsTest(unittest.TestCase):
                        {'steps': {'1': 'VOICE0'}}, {'steps': {'1': 'VOICE10'}},
                        {'steps': {'1': 'VOICE1,xraysource200=true'}},
                        {'targets': ['front', 'front']}, {'steps': {'10': 'VOICE1'}},
-                       {'repeat_interval_sec': 0}, {'repeat_interval_sec': float('nan')}]:
+                       {'repeat_interval_sec': 0}, {'repeat_interval_sec': float('nan')},
+                       {'idle_resume_guard_sec': True}, {'idle_resume_guard_sec': 0},
+                       {'idle_resume_guard_sec': float('nan')}, {'idle_resume_guard_sec': 121}]:
             with self.subTest(change=change):
                 original = dict(self.config)
                 self.config.update(change)

@@ -12,6 +12,9 @@ from app.services import command_announce as voice
 
 class CaptureVoiceApiTest(unittest.TestCase):
     def setUp(self):
+        playback = patch.object(voice, '_playback', voice._PlaybackState())
+        playback.start()
+        self.addCleanup(playback.stop)
         app = Flask(__name__)
         app.register_blueprint(device_api)
         self.client = app.test_client()
