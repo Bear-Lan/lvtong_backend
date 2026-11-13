@@ -25,7 +25,7 @@ ANNOUNCE_TEXT = {
     9: '前方超限车辆倒车，请注意避让',
 }
 _TARGET_KEYS = {'front': 'frontvoiceannounce', 'back': 'backvoiceannounce'}
-_send_lock = threading.Lock()
+_send_lock = threading.RLock()
 _state_lock = threading.Lock()
 _generation = 0
 _wake_idle = threading.Event()
@@ -37,10 +37,12 @@ class _PlaybackState:
     playing: dict[str, bool] = field(default_factory=dict)
     pending: dict[str, tuple[float, bool]] = field(default_factory=dict)
     quiet_until: float = 0.0
+    revision: int = 0
+    prompt_active: bool = False
 
-    def idle_blocked(self, now: float) -> bool:
+    def idle_blocked(self, now: float, *, include_prompt: bool = True) -> bool:
         # 无反馈不能靠超时假定播完；已知仍在播放也不限时避让。
-        return any(self.playing.values()) or bool(self.pending) or now < self.quiet_until
+        return (include_prompt and self.prompt_active) or any(self.playing.values()) or bool(self.pending) or now < self.quiet_until
 
 
 _playback = _PlaybackState()
@@ -156,7 +158,37 @@ def _dispatch_step(step: int, expected_generation: int | None = None) -> bool | 
         if step != 1 and not any_sent:
             with _state_lock:
                 _playback.quiet_until = old_quiet_until
+        elif step != 1:
+            with _state_lock:
+                _playback.revision += 1
         return success
+
+
+def prompt_playback_snapshot() -> tuple[int, bool]:
+    with _state_lock:
+        return _playback.revision, _playback.idle_blocked(time.monotonic(), include_prompt=False)
+
+
+def set_prompt_loop_active(active: bool) -> None:
+    with _state_lock:
+        _playback.prompt_active = active
+
+
+def prompt_clip_fallback_allowed(revision: int) -> bool:
+    with _state_lock:
+        # 观察到本轮起播就必须等真实结束，不能用估计时长截断长语音。
+        return (_playback.revision == revision
+                and not any(started for _, started in _playback.pending.values()))
+
+
+def dispatch_prompt(previous_revision: int | None = None) -> tuple[bool | None, int]:
+    """首次人工提示可抢播；后续重复不能覆盖期间新到的业务语音。"""
+    with _send_lock:
+        revision, blocked = prompt_playback_snapshot()
+        if previous_revision is not None and revision != previous_revision and blocked:
+            return None, revision
+        result = speak_step(9, interrupt=False)
+        return result, prompt_playback_snapshot()[0]
 
 
 def speak_text(text: str) -> bool:

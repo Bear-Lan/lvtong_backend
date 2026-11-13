@@ -21,6 +21,27 @@ def fail(code=400, message='error', data=None):
 
 # ---- 双工语音通道锁（TTS / 对讲互斥）----
 
+@device_api.route('/voice/prompt', methods=['GET', 'POST'])
+@login_required
+def prompt_voice():
+    """全局提示循环；当前仅提供9号，停止不调用任何设备/业务复位。"""
+    from app.services.prompt_announce import get_prompt_announce
+    service = get_prompt_announce()
+    if request.method == 'GET':
+        return ok(service.status())
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return fail(400, '请输入提示操作')
+    action = body.get('action')
+    if action == 'stop':
+        return ok(service.stop(), '提示循环已停止')
+    if action != 'start' or type(body.get('step')) is not int or body['step'] != 9:
+        return fail(400, '目前仅支持9号提示')
+    sent, state = service.start()
+    if not sent:
+        return fail(502, state['error'] or '提示启动失败', state)
+    return ok(state, '提示循环已启动')
+
 @device_api.route('/voice/announce', methods=['POST'])
 @login_required
 def announce_capture_voice():
