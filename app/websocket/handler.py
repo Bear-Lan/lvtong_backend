@@ -15,7 +15,7 @@
 import threading
 import time
 import math
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 
 socketio = SocketIO()
 
@@ -49,8 +49,11 @@ def register_handlers():
     """注册 WebSocket 事件处理器"""
 
     @socketio.on('connect')
-    def handle_connect():
+    def handle_connect(auth=None):
         global _ws_clients
+        from app.extensions.auth import decode_token
+        if isinstance(auth, dict) and decode_token(str(auth.get('token') or '')):
+            join_room('inspection_sessions')
         with _ws_clients_lock:
             _ws_clients += 1
             n = _ws_clients
@@ -378,6 +381,8 @@ def push_detection_step(step: int, message: str = '', *, gate_released: bool = F
     }
     if gate_released:
         data['gateReleased'] = True
+    from app.services.inspection_session import record_event
+    record_event('detection_step', data)
     socketio.emit('message', {
         'type': 'detection_step',
         'timestamp': int(time.time() * 1000),
@@ -390,6 +395,8 @@ def push_image_ready(image_type: str, url: str):
 
     image_type: body/transparent/head/tail/top/goods/evidence/license
     """
+    from app.services.inspection_session import record_event
+    record_event('image_ready', {'imageType': image_type, 'url': url})
     socketio.emit('message', {
         'type': 'image_ready',
         'timestamp': int(time.time() * 1000),
@@ -407,6 +414,8 @@ def push_image_ready_group(image_type: str, urls: dict, group: int = 1):
     """
     # 键统一成字符串，避免部分客户端把 1 当成数字键读不到
     norm = {str(k): v for k, v in (urls or {}).items() if v}
+    from app.services.inspection_session import record_event
+    record_event('image_ready', {'imageType': image_type, 'urls': norm})
     n = get_socketio_clients_count()
     socketio.emit('message', {
         'type': 'image_ready',
@@ -428,6 +437,8 @@ def push_lane_occupied(occupied: bool):
 
     Qt 参考: LvTongPro::onRadarMonitor() 中 monitorFlag 判定
     """
+    from app.services.inspection_session import record_event
+    record_event('lane_occupied', {'occupied': occupied})
     socketio.emit('message', {
         'type': 'lane_occupied',
         'timestamp': int(time.time() * 1000),
@@ -442,6 +453,8 @@ def push_booking_event(action: str, **kwargs):
 
     action: coming/accepted/rejected/book_button
     """
+    from app.services.inspection_session import record_event
+    record_event('booking_state')
     socketio.emit('message', {
         'type': 'booking',
         'timestamp': int(time.time() * 1000),

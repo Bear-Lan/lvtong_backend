@@ -55,6 +55,8 @@ class DistanceScheduler:
         self._gate_released = False
         # 放行仅按距离：连续5帧 >=27m 或 0（无限远）。
         self._gate_release_min_distance = 27.0
+        self._gate_release_required_frames = 5
+        self._tail_capture_offset_meters = 5.0
         self._lane_occupied_active = False
         self._capture_generation = 0
         # 车尾拍照：光幕下沿记距 x，待雷达 < x-5 再拍
@@ -66,6 +68,9 @@ class DistanceScheduler:
 
     def start(self):
         """启动调度；新一轮检测前清掉阈值已执行标记。"""
+        from app.services.system_config import value
+        configured = value('scheduler.workflow')
+        if configured is not None: self.load_configuration_from_json(configured)
         self._reset_threshold_status()
         self._radar_push_count = 0
         self._release_clear_count = 0
@@ -208,11 +213,11 @@ class DistanceScheduler:
 
             self._release_clear_count += 1
             set_booking_state(radar_count=self._release_clear_count)
-            if self._release_clear_count <= 4:
+            if self._release_clear_count < self._gate_release_required_frames:
                 self._update_lane_occupied_state(True)
-                if self._release_clear_count == 1 or self._release_clear_count == 4:
+                if self._release_clear_count in (1, self._gate_release_required_frames - 1):
                     print(
-                        f'[SCHEDULER] 放行确认中 {self._release_clear_count}/5 '
+                        f'[SCHEDULER] 放行确认中 {self._release_clear_count}/{self._gate_release_required_frames} '
                         f'(objects={object_count} distance={distance:.2f}m '
                         f'min={min_clear:.1f}m)',
                         flush=True,
@@ -327,7 +332,7 @@ class DistanceScheduler:
         """光幕下沿记 x 后，雷达距离 < x-5 时拍车尾（每轮检测一次）。"""
         if self.capture_blocked or self._tail_captured or self._tail_anchor_x is None:
             return
-        trigger_at = self._tail_anchor_x - 5.0
+        trigger_at = self._tail_anchor_x - self._tail_capture_offset_meters
         if distance >= trigger_at:
             return
         self._tail_captured = True
@@ -563,6 +568,8 @@ class DistanceScheduler:
         thresholds_data = config.get('thresholds', [])
         self._distance_thresholds = []
         gate_release = config.get('gateRelease') or {}
+        self._gate_release_required_frames = int(gate_release.get('requiredFrames', 5))
+        self._tail_capture_offset_meters = float(config.get('tailCaptureOffsetMeters', 5.0))
         try:
             self._gate_release_min_distance = float(
                 gate_release.get('minClearDistance', 27.0),
@@ -618,6 +625,8 @@ class DistanceScheduler:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 config = json.load(f)
+            from app.services.system_config import value
+            config = value('scheduler.workflow', config)
             self.load_configuration_from_json(config, car_head_length)
         except FileNotFoundError:
             print(f'[SCHEDULER] 配置文件不存在: {filepath}')

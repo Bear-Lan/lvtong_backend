@@ -31,6 +31,8 @@ from app.api.mobile import mobile_api
 from app.api.file import file_api
 from app.api.debug import debug_api
 from app.api.capture import capture_api
+from app.api.session import session_api
+from app.api.system_config import system_config_api
 
 # WebSocket
 from app.websocket.handler import init_socketio
@@ -39,12 +41,17 @@ from app.websocket.handler import init_socketio
 def create_app() -> Flask:
     """创建并配置 Flask 应用"""
     app = Flask(__name__)
+    from app.db.engine import engine
+    from app.services.system_config import SystemConfigStore, activate
+    parameters = SystemConfigStore(engine)
+    parameters.initialize()
+    activate(parameters)
 
     CORS(
         app,
         origins=CORS_ORIGINS.split(','),
         supports_credentials=True,
-        allow_headers=['Content-Type', 'Authorization'],
+        allow_headers=['Content-Type', 'Authorization', 'X-Inspection-Session', 'X-Inspection-Client'],
     )
 
     app.config['SECRET_KEY'] = 'gcms-jwt-secret-key-2025'
@@ -66,6 +73,16 @@ def create_app() -> Flask:
     app.register_blueprint(mobile_api)
     app.register_blueprint(file_api)
     app.register_blueprint(debug_api)
+    app.register_blueprint(session_api)
+    app.register_blueprint(system_config_api)
+
+    from app.db.engine import engine
+    from config import IMAGE_STORAGE_ROOT
+    from app.services.inspection_session import InspectionSessionStore
+    from app.api.session import init_session_sync
+    shared_session = InspectionSessionStore(engine, IMAGE_STORAGE_ROOT)
+    shared_session.initialize()
+    init_session_sync(app, shared_session)
 
     # 图像文件服务：接收任意本地绝对路径，返回文件内容
     @app.route('/api/image')
@@ -158,6 +175,7 @@ def create_app() -> Flask:
     return app
 
 
+# 此处先启用数据库参数和恢复共享草稿；__main__随后才初始化设备及距离调度器。
 flask_app = create_app()
 socketio = init_socketio(flask_app)
 

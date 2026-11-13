@@ -116,7 +116,9 @@ class RadarReader(DeviceBase):
         self._radiometer_callback = cb
 
     def initialize(self) -> bool:
-        # 组播参数只读 config.devices / 环境变量（不读 DB）
+        # 启动时config表已覆盖默认值；未启用参数库的独立工具仍兼容环境变量。
+        from app.services.system_config import get_store as get_config_store
+        db_configured = get_config_store() is not None
         try:
             from config import (
                 RADAR_TRANSPORT,
@@ -131,7 +133,7 @@ class RadarReader(DeviceBase):
             )
 
         self._transport = (
-            os.environ.get('RADAR_TRANSPORT')
+            (None if db_configured else os.environ.get('RADAR_TRANSPORT'))
             or RADAR_TRANSPORT
             or 'multicast'
         ).lower()
@@ -145,7 +147,7 @@ class RadarReader(DeviceBase):
         else:
             group = MCAST_GROUP
             port = int(
-                os.environ.get('MCAST_PORT')
+                (None if db_configured else os.environ.get('MCAST_PORT'))
                 or MCAST_PORT
                 or 9000
             )

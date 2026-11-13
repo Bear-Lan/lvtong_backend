@@ -27,8 +27,7 @@ _SINGLE_IMAGE_FIELDS = [
     'body_image_path', 'transparent_image_path',
     'license_image_path', 'license_image_path1', 'license_image_path2',
     'pass_code_image_path', 'passcode_image_path',
-    # 雷达三图：车侧/车顶（车身影像）+ 车头（预约）
-    'radar_side_image_path', 'radar_top_image_path', 'radar_head_image_path',
+    'appointment_radar_image_path', 'radar_3d_image_path',
 ]
 _MULTI_IMAGE_FIELDS = ['goods_image_path', 'evidences_image_path']
 
@@ -46,9 +45,8 @@ _IMAGE_CATEGORY = {
     'passcode_image_path': 'passcode',
     'goods_image_path': 'goods',
     'evidences_image_path': 'evidence',
-    'radar_side_image_path': 'radar_side',
-    'radar_top_image_path': 'radar_top',
-    'radar_head_image_path': 'radar_head',
+    'appointment_radar_image_path': 'appointment_radar',
+    'radar_3d_image_path': 'radar_3d',
 }
 
 
@@ -307,6 +305,21 @@ def submit_inspection():
     if not body:
         return fail(400, '请求数据不能为空')
 
+    from app.services.inspection_session import get_store, SessionConflict, broadcast
+    session_store = get_store()
+    session_id = body.get('inspection_session_id')
+    if session_store and session_id:
+        try:
+            session_store.assert_current(session_id)
+        except SessionConflict as error:
+            return fail(409, str(error))
+        snap = session_store.snapshot()
+        if snap.get('submittedId'):
+            return ok({'id': snap['submittedId'], 'deduped': True}, '提交成功（同一检测已提交）')
+
+    for old_field in ('radar_side_image_path', 'radar_top_image_path', 'radar_head_image_path'):
+        body.pop(old_field, None)
+
     user = request.gc_user
     print(f'[INSPECTION] 用户 {user["username"]} 提交检测: plate={body.get("plate_number")} '
           f'goods={body.get("goods_type")} passcode_vehicle={body.get("passcode_vehicle_display_id", "")[:30]}')
@@ -335,7 +348,7 @@ def submit_inspection():
 
     # ---- 2. 防重：同 plate 在 5 秒内视为重复提交 ----
     plate = (body.get('plate_number') or '').strip()
-    if plate:
+    if plate and not session_id:
         try:
             db_dup = DBVehicle()
             dup_id = db_dup.findRecentDuplicateId(plate, within_seconds=5)
@@ -410,6 +423,9 @@ def submit_inspection():
 
     if inspection_id > 0:
         print(f'[INSPECTION] 提交成功, id={inspection_id}, 字段数={len(body)}')
+
+        if session_store and session_id:
+            broadcast(session_store.mark_submitted(session_id, inspection_id))
 
         return ok({'id': inspection_id}, '提交成功')
     else:

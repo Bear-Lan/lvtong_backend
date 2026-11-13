@@ -49,8 +49,14 @@ _playback = _PlaybackState()
 
 
 def load_config() -> dict:
-    """配置错误时拒绝发送，避免把错误编号播到现场；允许现场修正映射后直接生效。"""
-    config = json.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))
+    """读取启动时启用的数据库参数；独立工具未启用参数库时兼容原配置文件。"""
+    from app.services.system_config import value
+    config = value('voice.announce')
+    if config is None: config = json.loads(CONFIG_PATH.read_text(encoding='utf-8-sig'))
+    return validate_config(config)
+
+
+def validate_config(config) -> dict:
     if not isinstance(config, dict):
         raise ValueError('语音配置必须为 JSON 对象')
     targets = config.get('targets')
@@ -71,6 +77,10 @@ def load_config() -> dict:
         raise ValueError('repeat_interval_sec 必须为数字')
     if not math.isfinite(interval) or not 1 <= interval <= 3600:
         raise ValueError('repeat_interval_sec 必须在 1…3600 秒之间')
+    for name, default, lower, upper in (('prompt_clip_sec', 3, 1, 120), ('prompt_gap_sec', 2, .5, 30)):
+        number = config.get(name, default)
+        if type(number) not in (int, float) or not math.isfinite(number) or not lower <= number <= upper:
+            raise ValueError(f'{name}须在{lower}…{upper}秒之间')
     return {**config, 'repeat_interval_sec': float(interval)}
 
 

@@ -40,6 +40,8 @@ def get_geometry_snapshot() -> dict:
 def _notify():
     from app.websocket.handler import socketio
     try:
+        from app.services.inspection_session import record_event
+        record_event('geometry_status', {'capture': _snapshot()['capture']})
         socketio.emit('message', {'type': 'body_radar', 'timestamp': int(time.time() * 1000),
                                  'data': _snapshot()['capture']})
     except Exception:
@@ -169,6 +171,8 @@ def _poll_laz_frames(generation: int, stop: threading.Event) -> bool | None:
                     return
                 if result:
                     _result, _frame = result, _frame + 1
+                    from app.services.inspection_session import record_event
+                    record_event('geometry', _snapshot())
                 _error = error
                 if finished:
                     _state = 'finished'

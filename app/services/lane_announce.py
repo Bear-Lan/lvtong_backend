@@ -3,7 +3,7 @@
 语音：MDRMC → 中间件串口播报；LED 同步 set_step → $MDRMC leddisplay=。
 
 1. 语音空闲 + VARMC持续到达 → 「绿通车辆，按键检测」；按配置间隔发命令
-2. 预约键（任意时刻）→ 红灯+落杆 + step2 语音/LED；空闲才通知前端弹窗
+2. 空闲预约键 → 红灯+落杆 + step2；检测中只提示，不派发设备动作
 3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
 5. 检测中光幕上升沿 → 「检测中，请勿跟车」
@@ -51,7 +51,7 @@ class LaneAnnounceService:
         """合法VARMC独立触发；数值不套用VMRMC目标数或距离阈值。"""
         with self._lock:
             self._last_varmc_at = time.monotonic()
-            idle = self._is_system_idle_unlocked()
+            idle = self._can_voice1_unlocked()
         if idle:
             self._ensure_idle_loop()
         else:
@@ -80,7 +80,7 @@ class LaneAnnounceService:
         if light_rise and detecting:
             self.on_light_curtain()
 
-        if light_fall and not booking_rise:
+        if light_fall and (not booking_rise or detecting):
             # 只重置语音可招揽状态，绝不修改检测状态或调用检测复位/放行。
             with self._lock:
                 self._voice_idle_blocked = False
@@ -92,7 +92,14 @@ class LaneAnnounceService:
     # ---------- 对外：业务事件 ----------
 
     def on_booking_button(self, *, push_ws: bool = True, record: bool = True) -> None:
-        """预约按键（现场 / 操作台）：任意时刻都红灯+落杆+step2；空闲才让前端弹窗。"""
+        """检测中误按预约只提示，不能记下一轮预约或改变当前播报/设备。"""
+        with self._lock:
+            detecting = self._is_detecting_unlocked()
+        if detecting:
+            if push_ws:
+                from app.websocket.handler import push_booking_event
+                push_booking_event('busy', openDialog=False, message='当前处于检测流程中，请提交或重置后再预约')
+            return
         self.stop_idle_loop()
         btn_time = ''
         if record:
@@ -104,7 +111,7 @@ class LaneAnnounceService:
             except Exception as e:
                 print(f'[{_ts()}] [ANNOUNCE] 预约键记时失败: {e}', flush=True)
 
-        # 红灯 + 落杆（与是否空闲无关）
+        # 仅空闲预约进入红灯、落杆和step2。
         def _hold() -> None:
             try:
                 from app.services.device_action import execute_device_action
@@ -215,10 +222,6 @@ class LaneAnnounceService:
             return False
 
     def _is_system_idle_unlocked(self) -> bool:
-        if self._voice_idle_blocked:
-            return False
-        if self._voice_idle_rearmed:
-            return True
         try:
             from app.api.booking import get_booking_state
 
@@ -235,6 +238,12 @@ class LaneAnnounceService:
             return True
         except Exception:
             return True
+
+    def _can_voice1_unlocked(self) -> bool:
+        """招揽语音资格与业务空闲独立；光幕关闭不结束本次检测。"""
+        if self._voice_idle_blocked:
+            return False
+        return self._voice_idle_rearmed or self._is_system_idle_unlocked()
 
     def _announce_session_once(self, step: int) -> bool:
         with self._lock:
@@ -302,7 +311,7 @@ class LaneAnnounceService:
                 return (
                     self._idle_looping
                     and self._has_varmc_unlocked()
-                    and self._is_system_idle_unlocked()
+                    and self._can_voice1_unlocked()
                 )
 
         def on_clip() -> None:

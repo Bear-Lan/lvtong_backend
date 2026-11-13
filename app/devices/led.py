@@ -59,7 +59,8 @@ class LedController(DeviceBase):
         return False
 
     def set_step(self, step: int) -> bool:
-        code = STEP_TO_LEDDISPLAY.get(step)
+        from app.services.system_config import value
+        code = value('led.steps', {}).get(str(step), STEP_TO_LEDDISPLAY.get(step))
         if not code:
             self._last_error = f'未知 LED step={step}'
             return False

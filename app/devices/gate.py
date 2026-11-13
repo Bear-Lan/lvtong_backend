@@ -84,11 +84,11 @@ class GateController(DeviceBase):
             return False
 
     def _mdrmc_set_boom(self, raised: bool) -> bool:
-        from app.devices.mcast_cmd import send_mdrmc
+        from app.devices.mcast_cmd import send_mdrmc, format_message
         from app.websocket.handler import get_last_plc_status
 
         cmd = f'boombarrier={"true" if raised else "false"}'
-        packet = f'$MDRMC,1,{cmd}'
+        packet = format_message([cmd])
         ok = send_mdrmc(cmd)
         plc = get_last_plc_status() or {}
         stick = plc.get('stickdown') if 'stickdown' in plc else None

@@ -112,6 +112,8 @@ def open_booking_session():
     2. 标记弹窗已开
     3. 同一轮 step2 只派发一次命令，人工对讲独立使用海康通道
     """
+    if _booking_state.get('is_detection') or int(_booking_state.get('check_step') or 0) >= 1:
+        return fail(409, '当前处于检测流程中，请提交或重置后再预约')
     mgr = DeviceManager()
     devices_ready = mgr.health_check_all()
 
@@ -539,8 +541,8 @@ def btn_press():
       - source=ui：操作台点击，默认不推 WS（避免弹窗二次打开）
       - 其它：现场按键，默认推 WS book_button
 
-    任意时刻：记时 + 红灯 + 落杆 + step2。
-    空闲时 data.openDialog=true，供前端弹窗拉图/对讲。
+    空闲时：记时 + 红灯 + 落杆 + step2，data.openDialog=true。
+    检测中只返回提示，不记时、不派发设备或语音命令。
     """
     body = request.get_json(silent=True) or {}
     source = str(body.get('source') or '').lower()
@@ -551,6 +553,9 @@ def btn_press():
     detecting = bool(_booking_state.get('is_detection')) or int(
         _booking_state.get('check_step') or 0
     ) >= 1
+    if detecting:
+        return ok({'openDialog': False, 'ignored': True, 'btnPrebookState': bool(_booking_state.get('btn_prebook_state'))},
+                  '当前处于检测流程中，请提交或重置后再预约')
     try:
         from app.services.lane_announce import get_lane_announce
 

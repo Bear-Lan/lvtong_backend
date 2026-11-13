@@ -162,6 +162,8 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.wait_messages(2)
         self.assertTrue(booking.get_booking_state()['is_detection'])
         self.assertEqual(booking.get_booking_state()['check_step'], 1)
+        self.assertFalse(self.lane._is_system_idle_unlocked())
+        self.assertTrue(self.lane._can_voice1_unlocked())
         self.assertTrue(led_sent.wait(1))
         self.assertEqual([c.args for c in self.actions.call_args_list], [('led_001', 'set_step1')])
         # 后续预约/受理沿用原停止入口，不受旧光幕恢复状态影响。
@@ -185,6 +187,22 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.assertEqual(self.messages, [])
         self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
         self.wait_messages(2)
+
+    def test_detection_open_and_press_have_no_actions_even_after_voice_rearms(self):
+        from app.extensions.auth import create_token
+        booking.set_booking_state(is_detection=True, check_step=3)
+        self.lane._voice_idle_rearmed = True
+        with patch.object(booking.DeviceManager, 'health_check_all') as health:
+            response = self.client.post('/api/booking/open', headers={
+                'Authorization': 'Bearer ' + create_token({'username': 'operator'})})
+        self.assertEqual(response.status_code, 409)
+        health.assert_not_called()
+        self.assertTrue(self.client.post('/api/booking/btn-press', json={'source': 'ui'}).json['data']['ignored'])
+        self.lane.on_booking_button()
+        self.assertTrue(self.lane._voice_idle_rearmed)
+        self.assertFalse(booking.get_booking_state()['btn_prebook_state'])
+        self.actions.assert_not_called()
+        self.assertEqual(self.messages, [])
 
     def test_booking_state_stops_voice1_without_another_radar_packet(self):
         self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
@@ -221,13 +239,19 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
                         radar._dispatch('$NTRMC,DEVICE,000380e2,001fffff')
                         radar._dispatch('$NTRMC,DEVICE,000080e2,001fffff')
                         self.ws.assert_called_once()
-                        self.assertEqual(self.ws.call_args.args, ('book_button',))
+                        self.assertEqual(self.ws.call_args.args, ('busy' if detecting else 'book_button',))
                         self.assertIs(self.ws.call_args.kwargs['openDialog'], not detecting)
                     else:
                         response = self.client.post('/api/booking/btn-press', json={'source': 'ui'})
                         self.assertEqual(response.status_code, 200)
                         self.assertIs(response.get_json()['data']['openDialog'], not detecting)
                         self.ws.assert_not_called()
+                    if detecting:
+                        self.assertFalse(booking.get_booking_state()['btn_prebook_state'])
+                        self.assertFalse(booking.get_booking_state()['last_btn_click_time'])
+                        self.assertEqual(self.messages, [])
+                        self.actions.assert_not_called()
+                        continue
                     self.wait_messages(2)
                     for thread in list(self.threads):
                         thread.join(1)

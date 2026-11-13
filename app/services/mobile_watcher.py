@@ -317,6 +317,8 @@ class MobileJsonFolderWatcher:
 
     def _emit_ws(self, payload: dict) -> None:
         try:
+            from app.services.inspection_session import record_event
+            record_event('mobile_upload', payload)
             # 优先用模块级 socketio（生产从 app.websocket.handler 导入；测试可覆盖）
             sio = globals().get('socketio')
             if sio is None:

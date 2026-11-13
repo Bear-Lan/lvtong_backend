@@ -23,8 +23,17 @@ def send_mdrmc(*commands: str) -> bool:
     cmds = [c.strip() for c in commands if c and str(c).strip()]
     if not cmds:
         return False
-    msg = f'$MDRMC,{len(cmds)},' + ','.join(cmds)
+    try:
+        msg = format_message(cmds)
+    except ValueError as error:
+        print(f'[MDRMC] 命令配置无效，未发送：{error}', flush=True)
+        return False
     return publish_mdrmc(msg)
+
+
+def format_message(commands) -> str:
+    from app.services.system_config import value, render_command
+    return f'{value("commands.prefix", "$MDRMC")},{len(commands)},' + ','.join(render_command(c) for c in commands)
 
 
 def publish_mdrmc(message: str) -> bool:
