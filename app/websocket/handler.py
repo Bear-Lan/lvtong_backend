@@ -52,16 +52,17 @@ def register_handlers():
     def handle_connect(auth=None):
         global _ws_clients
         from app.extensions.auth import decode_token
-        if isinstance(auth, dict) and decode_token(str(auth.get('token') or '')):
+        session_authenticated = bool(isinstance(auth, dict) and decode_token(str(auth.get('token') or '')))
+        if session_authenticated:
             join_room('inspection_sessions')
         with _ws_clients_lock:
             _ws_clients += 1
             n = _ws_clients
-        print(f'[WS] 客户端连接 (在线 {n})')
+        print(f'[WS] 客户端连接 (在线 {n}, 检测同步认证={session_authenticated})')
         emit('message', {
             'type': 'connect_ack',
             'timestamp': int(time.time() * 1000),
-            'data': {'message': '连接成功'},
+            'data': {'message': '连接成功', 'sessionSyncAuthenticated': session_authenticated},
         })
         # DEVICE 状态常只推一次：新连接补发最近一次，避免面板全灰
         plc = get_last_plc_status()

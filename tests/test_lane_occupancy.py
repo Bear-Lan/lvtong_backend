@@ -65,6 +65,28 @@ class LaneOccupancyTest(unittest.TestCase):
         for distance in (0,27,40,20):self.frame(distance)
         self.assert_released_once()
 
+    def test_light_closes_and_vehicle_passes_old_near_ranges_without_idle_actions(self):
+        # 即使读到旧版本规则，也不允许7～9m黄灯/近距LED覆盖语音1的显示。
+        old=json.loads((Path(__file__).parents[1]/'config/scheduler_config.json').read_text(encoding='utf8'))
+        old['thresholds'] += [
+            {'id':'led_step5_plc_yellow','minDistance':7,'maxDistance':9,'isActive':True,
+             'deviceActions':{'plc_001':{'action':'setPLC','params':{'yellowlight':True}}}},
+            {'id':'led_step6','minDistance':5,'maxDistance':7,'isActive':True,
+             'deviceActions':{'led_001':{'action':'set_step6'}}},
+            {'id':'led_step7','minDistance':3,'maxDistance':5,'isActive':True,
+             'deviceActions':{'led_001':{'action':'set_step7'}}}]
+        self.scheduler.load_configuration_from_json(old)
+        self.scheduler._gate_released=True
+        self.scheduler._update_lane_occupied_state(False)
+        self.scheduler._current_distance=19.24
+        self.scheduler.on_plc_status({'lightScreenStatus':True})
+        self.scheduler.on_plc_status({'lightScreenStatus':False})
+        for distance in (8.9,8,7.1,6,4):self.scheduler._process_distance_update(distance)
+        self.actions.assert_not_called()
+        self.assertTrue(self.scheduler._is_detection)
+        self.assertTrue(self.scheduler.is_running)
+        self.assertEqual(self.scheduler._tail_anchor_x,19.24)
+
     def test_zero_means_infinite_even_with_zero_objects(self):
         for n in range(1,5):
             self.frame(0,count=0);self.assert_waiting(n)

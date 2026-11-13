@@ -81,6 +81,11 @@ class LaneAnnounceService:
             self.on_light_curtain()
 
         if light_fall and (not booking_rise or detecting):
+            if detecting:
+                from app.api.booking import set_booking_state, _now_iso
+                from app.services.inspection_session import record_event
+                set_booking_state(closelightscreen_time=_now_iso())
+                record_event('booking_state')
             # 只重置语音可招揽状态，绝不修改检测状态或调用检测复位/放行。
             with self._lock:
                 self._voice_idle_blocked = False
@@ -187,6 +192,8 @@ class LaneAnnounceService:
                 from app.api.booking import set_booking_state, _now_iso
 
                 set_booking_state(openlightscreen_time=_now_iso())
+                from app.services.inspection_session import record_event
+                record_event('booking_state')
             except Exception:
                 pass
 

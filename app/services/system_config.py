@@ -28,6 +28,15 @@ config_table = Table('config', metadata,
 _active = {}
 _store = None
 _lock = threading.RLock()
+RETIRED_DISTANCE_RULES = frozenset({'led_step5_plc_yellow', 'led_step6', 'led_step7'})
+
+
+def retire_legacy_distance_rules(workflow):
+    """检测中不再按旧近距阈值切黄灯或覆盖由语音步骤驱动的LED。"""
+    result = copy.deepcopy(workflow)
+    result['thresholds'] = [rule for rule in result.get('thresholds', [])
+                            if rule.get('id') not in RETIRED_DISTANCE_RULES]
+    return result
 
 
 def defaults():
@@ -38,7 +47,7 @@ def defaults():
         if name.isupper() and name != 'IMAGE_STORAGE_ROOT':
             category = 'transport' if name.startswith(('MCAST_', 'RADAR_TRANSPORT')) else 'middleware'
             items[f'{category}.{name}'] = copy.deepcopy(value)
-    scheduler = json.loads((directory / 'scheduler_config.json').read_text(encoding='utf-8-sig'))
+    scheduler = retire_legacy_distance_rules(json.loads((directory / 'scheduler_config.json').read_text(encoding='utf-8-sig')))
     scheduler['gateRelease']['requiredFrames'] = 5
     scheduler['tailCaptureOffsetMeters'] = 5.0
     items['scheduler.workflow'] = scheduler
@@ -76,6 +85,8 @@ def validate(key, value, baseline):
             raise ValueError('车尾拍照偏移距离无效')
         ids = set()
         for threshold in value['thresholds']:
+            if isinstance(threshold, dict) and threshold.get('id') in RETIRED_DISTANCE_RULES:
+                raise ValueError('旧距离灯色/LED规则已停用；检测中不能由距离恢复空闲提示')
             if (not isinstance(threshold, dict) or not isinstance(threshold.get('id'), str) or threshold['id'] in ids
                     or not _finite(threshold.get('minDistance'), -1000, 10000)
                     or not _finite(threshold.get('maxDistance'), -1000, 10000)
@@ -154,6 +165,11 @@ class SystemConfigStore:
                 if key not in existing:
                     conn.execute(config_table.insert().values(key=key, value=value, category=key.split('.')[0],
                         description=key, revision=0, restart_required=True, updated_by='initial'))
+            row = conn.execute(select(config_table).where(config_table.c.key == 'scheduler.workflow').with_for_update()).mappings().one()
+            upgraded = retire_legacy_distance_rules(row['value'])
+            if upgraded != row['value']:
+                conn.execute(update(config_table).where(config_table.c.key == 'scheduler.workflow').values(
+                    value=upgraded, revision=row['revision'] + 1, updated_by='migration:retire-distance-idle'))
 
     def rows(self):
         with self.engine.connect() as conn:

@@ -13,36 +13,6 @@
       "deviceActions": {}
     },
     {
-      "id": "led_step5_plc_yellow",
-      "minDistance": 7.0,
-      "maxDistance": 9.0,
-      "description": "PLC黄灯（step5 改由光幕触发播报）",
-      "isActive": true,
-      "deviceActions": {
-        "plc_001": {"action": "setPLC", "params": {"redlight": false, "yellowlight": true, "greenlight": false}}
-      }
-    },
-    {
-      "id": "led_step6",
-      "minDistance": 5.0,
-      "maxDistance": 7.0,
-      "description": "LED步骤6",
-      "isActive": true,
-      "deviceActions": {
-        "led_001": {"action": "set_step6", "params": {}}
-      }
-    },
-    {
-      "id": "led_step7",
-      "minDistance": 3.0,
-      "maxDistance": 5.0,
-      "description": "LED步骤7 检测完成请通行",
-      "isActive": true,
-      "deviceActions": {
-        "led_001": {"action": "set_step7", "params": {}}
-      }
-    },
-    {
       "id": "gate_close_scan",
       "minDistance": 25,
       "maxDistance": 27,

@@ -10,7 +10,7 @@ temp = tempfile.TemporaryDirectory(prefix='lvtong-session-browser-')
 os.environ['IMAGE_STORAGE_ROOT'] = str(Path(temp.name) / 'images')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flask import Flask, jsonify, request, send_from_directory
-from flask_socketio import SocketIO, join_room
+from flask_socketio import SocketIO, join_room, emit
 from sqlalchemy import create_engine
 from app.api.session import session_api, init_session_sync
 from app.api.inspection import inspection_api
@@ -46,6 +46,12 @@ for name, mock in (
 def connected(auth=None):
     if auth and decode_token(auth.get('token', '')):
         join_room('inspection_sessions')
+    emit('fixture_connection', {'authenticated': bool(auth and decode_token(auth.get('token', '')))})
+
+@app.post('/api/auth/login')
+def login_fixture():
+    return jsonify(code=0, data={'token': create_token({'username': 'sync-test', 'real_name': '同步测试', 'role': 0}),
+                                'user': {'username': 'sync-test', 'realName': '同步测试', 'phone': '13800000000', 'role': 0, 'groupId': 1}})
 
 @app.get('/fixture/token')
 def token():

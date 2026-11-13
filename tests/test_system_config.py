@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from flask import Flask
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, update
 from app.services import system_config as config
 from app.devices.mcast_cmd import send_mdrmc
 from app.extensions.auth import create_token
@@ -44,6 +44,24 @@ class SystemConfigTests(unittest.TestCase):
         self.store.save({'voice.varmcFreshSec': 6}, revisions={'voice.varmcFreshSec': 0})
         with self.assertRaises(config.ConfigConflict):
             self.store.save({'voice.varmcFreshSec': 8}, revisions={'voice.varmcFreshSec': 0})
+
+    def test_existing_workflow_migration_only_removes_retired_distance_rules_once(self):
+        old = copy.deepcopy(self.store.baseline['scheduler.workflow'])
+        old['gateRelease']['minClearDistance'] = 29
+        old['thresholds'][0]['maxDistance'] = 88
+        for name in config.RETIRED_DISTANCE_RULES:
+            old['thresholds'].append({'id': name, 'isActive': True, 'minDistance': 3, 'maxDistance': 9, 'deviceActions': {}})
+        with self.engine.begin() as conn:
+            conn.execute(update(config.config_table).where(config.config_table.c.key == 'scheduler.workflow').values(value=old))
+        self.store.initialize()
+        first = next(row for row in self.store.rows() if row['key'] == 'scheduler.workflow')
+        self.assertEqual(first['value']['gateRelease']['minClearDistance'], 29)
+        self.assertEqual(first['value']['thresholds'][0]['maxDistance'], 88)
+        self.assertFalse(set(t['id'] for t in first['value']['thresholds']) & config.RETIRED_DISTANCE_RULES)
+        self.assertEqual(first['revision'], 1)
+        self.store.initialize()
+        self.assertEqual(first, next(row for row in self.store.rows() if row['key'] == 'scheduler.workflow'))
+        with self.assertRaises(ValueError): self.store.save({'scheduler.workflow': old})
 
     def test_prompt_timing_is_validated_before_saving(self):
         for name, value in (('prompt_clip_sec', .5), ('prompt_gap_sec', 31)):

@@ -313,7 +313,7 @@ class DistanceScheduler:
 
     def on_plc_status(self, parsed: dict) -> None:
         """组播 DEVICE：检测光幕下沿（lightScreen true→false），记当前距离为车尾拍照锚点。"""
-        if not self._is_running or not self._is_detection:
+        if not self._is_running or not self._is_detection or 'lightScreenStatus' not in parsed:
             return
         light = bool(parsed.get('lightScreenStatus'))
         falling = self._prev_light_screen and not light
@@ -462,16 +462,9 @@ class DistanceScheduler:
                 name=f'threshold-{threshold.id}',
             ).start()
 
-        # 打点 4 个时间字段到 _booking_state（Qt m_VehicleInspection 对齐）
-        # threshold.id 与时间字段的对应：
-        #   auto_capture_top   -> cd_photo_time
-        #   led_step5_plc_yellow -> openlightscreen_time（首次进光幕）
-        #   led_step7          -> closelightscreen_time（光幕结束）
-        #   arrived            -> opengate_time（车辆到达，开闸放行）
+        # 光幕时间由真实DEVICE沿记录，不能被距离阈值覆盖。
         _TIME_FIELD_MAP = {
             'auto_capture_top': 'cd_photo_time',
-            'led_step5_plc_yellow': 'openlightscreen_time',
-            'led_step7': 'closelightscreen_time',
             'arrived': 'opengate_time',
         }
         field = _TIME_FIELD_MAP.get(threshold.id)
@@ -515,8 +508,6 @@ class DistanceScheduler:
         """根据阈值推送检测步骤"""
         step_map = {
             'initial_approach': (1, '车辆接近中'),
-            'led_step5_plc_yellow': (2, '闸机关闭，黄灯亮'),
-            'led_step6': (3, 'X光准备'),
             'xray_capture_trigger': (4, 'X光采集中'),
             'auto_capture_head': (5, '拍照中'),
             'auto_capture_tail': (5, '拍照中'),
@@ -565,6 +556,8 @@ class DistanceScheduler:
 
         参考 Qt DistanceBasedScheduler::loadConfiguration()
         """
+        from app.services.system_config import retire_legacy_distance_rules
+        config = retire_legacy_distance_rules(config)
         thresholds_data = config.get('thresholds', [])
         self._distance_thresholds = []
         gate_release = config.get('gateRelease') or {}
