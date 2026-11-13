@@ -62,14 +62,14 @@ XRAY_START_YR_TRANSPARENT_URL = os.environ.get(
 )
 
 # ---- 车身相机（:5002 拉图）----
-# 启停采集：组播 $MDRMC,1,camcap=true|false；轮询 GET /camera/image
+# 启停采集：组播 $MDRMC,1,camcap=true|false；轮询 GET /camera/body/image
 BODY_CAMERA_CAPTURE_URL = os.environ.get(
     'BODY_CAMERA_CAPTURE_URL',
     'http://192.168.88.201:5002/camera/capture',
 )
 BODY_CAMERA_IMAGE_URL = os.environ.get(
     'BODY_CAMERA_IMAGE_URL',
-    'http://192.168.88.201:5002/camera/image',
+    'http://192.168.88.202:5002/camera/body/image',
 )
 # 车身 cam：改为 :5002 持续拉图（vtop/vside 仍走 5006）
 BODY_IMAGE_URL = os.environ.get('BODY_IMAGE_URL', BODY_CAMERA_IMAGE_URL)

@@ -1,7 +1,7 @@
 """车身相机（:5002 拉图）
 
   1. 抬杆放行 → 组播 $MDRMC,1,camcap=true（开始采集）
-  2. 雷达距离 25–28m → 持续 GET /camera/image，每 0.2s 一帧推 WS body.1
+  2. 雷达距离 25–28m → 持续 GET /camera/body/image，每 0.2s 一帧推 WS body.1
   3. 采集结束 / 停止 → 组播 $MDRMC,1,camcap=false
 """
 from __future__ import annotations
