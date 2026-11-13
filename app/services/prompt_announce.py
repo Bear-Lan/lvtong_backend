@@ -11,7 +11,7 @@ from app.services import command_announce as voice
 
 def _timing() -> tuple[float, float]:
     config = voice.load_config()
-    values = (config.get('prompt_clip_sec', 10), config.get('prompt_gap_sec', 2))
+    values = (config.get('prompt_clip_sec', 3), config.get('prompt_gap_sec', 2))
     for value, lower, upper in zip(values, (1, 0.5), (120, 30)):
         if (isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or not lower <= value <= upper):
