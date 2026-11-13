@@ -127,7 +127,7 @@ class CaptureLaneGuardTest(unittest.TestCase):
                 self.scheduler._try_release_after_accept(1, 22)
             response = client.post('/api/capture/top', headers=headers)
             self.assertEqual(response.status_code, 200)
-            snapshot.assert_called_once_with('cam_road')
+            snapshot.assert_called_once_with('cam_road', right_two_thirds=True)
 
     def test_inflight_photo_discarded_even_if_occupancy_has_already_cleared(self):
         def late_frame(_device):

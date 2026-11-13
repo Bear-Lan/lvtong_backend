@@ -95,7 +95,7 @@ def _rtsp_url(row: dict, channel: int) -> str:
     return f'rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{channel}'
 
 
-def snapshot_from_camera(device_id: str) -> bytes:
+def snapshot_from_camera(device_id: str, *, right_two_thirds: bool = False) -> bytes:
     """对指定海康设备做一次 RTSP 抽帧，返回 JPEG bytes。"""
     row = _load_camera_row(device_id)
     if not row:
@@ -127,6 +127,10 @@ def snapshot_from_camera(device_id: str) -> bytes:
 
         if frame is None:
             raise RuntimeError(f'摄像头 RTSP 读帧失败 ({device_id} {safe_url})')
+
+        if right_two_thirds:
+            # 车顶相机横向画面过长；预览推送和最终存图共用这次实际像素裁剪。
+            frame = frame[:, frame.shape[1] // 3:]
 
         ok, encoded = cv2.imencode(
             '.jpg',
@@ -169,7 +173,8 @@ def capture_category(category: str) -> dict:
             f'[CAPTURE] {category} ← RTSP 抽帧 device_id={device_id}（仅预览，提交再落盘）',
             flush=True,
         )
-        data = snapshot_from_camera(device_id)
+        data = (snapshot_from_camera(device_id, right_two_thirds=True)
+                if category == 'top' else snapshot_from_camera(device_id))
     else:
         # goods / license / evidence：若 config 有 URL 则拉，否则报错
         url = ''

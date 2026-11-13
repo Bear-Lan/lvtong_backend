@@ -16,7 +16,10 @@ class CaptureMappingTest(unittest.TestCase):
              patch('socket.socket', side_effect=AssertionError('network forbidden')):
             for category, device in [('head', 'cam_head'), ('tail', 'cam_lane'), ('top', 'cam_road')]:
                 capture.capture_category(category)
-                snapshot.assert_called_with(device)
+                if category == 'top':
+                    snapshot.assert_called_with(device, right_two_thirds=True)
+                else:
+                    snapshot.assert_called_with(device)
                 push.assert_called_with(category, '/test.jpg')
 
     def test_only_category_specific_override_applies_including_json_config(self):
