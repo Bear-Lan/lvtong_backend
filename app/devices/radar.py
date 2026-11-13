@@ -2,6 +2,7 @@
 
 现场组播（默认）:
   - $VMRMC,时间,物体个数,前端位置,前端速度  — 车辆距离
+  - $VARMC,时间,数值                    — 独立空闲播报触发
   - $NTRMC,DEVICE,<cmdHex>,<statusHex>     — 开关状态（ST_* bit0 起；两段 cmd,status）
   - $NTRMC,XRAY160/XRAY200,<电流>,<电压>,<温度>
   - $NTRMC,XRSUP/XRSDOWN,<电流>,<电压>,<温度>  — 现场新代号（上/下光机，等同 200/160）
@@ -73,6 +74,7 @@ class RadarReader(DeviceBase):
         self._thread = None
         self._sock: socket.socket | None = None
         self._distance_callback = None
+        self._idle_announce_callback: Callable[[dict], Any] | None = None
         self._plc_status_callback = None
         self._xray_callback: Callable[[str, float, float, float], Any] | None = None
         self._dm_callback: Callable[[list[float]], Any] | None = None
@@ -92,6 +94,10 @@ class RadarReader(DeviceBase):
 
     def set_distance_callback(self, cb):
         self._distance_callback = cb
+
+    def set_idle_announce_callback(self, cb):
+        """独立VARMC入口，不改写VMRMC距离、目标及采集调度。"""
+        self._idle_announce_callback = cb
 
     def set_plc_status_callback(self, cb):
         """注册 PLC/DEV 状态回调 cb(parsed: dict)"""
@@ -182,6 +188,22 @@ class RadarReader(DeviceBase):
         self._thread = None
 
     # ---- 解析 ----
+
+    @staticmethod
+    def parse_varmc(text: str) -> dict | None:
+        """解析用户指定的 $VARMC,时间,数值；字段尚未定义为距离。"""
+        try:
+            parts = [part.strip() for part in text.strip().split(',')]
+            if len(parts) not in (3, 4) or parts[0] != '$VARMC':
+                return None
+            timestamp, value = float(parts[1]), float(parts[2])
+            if not math.isfinite(timestamp) or not math.isfinite(value):
+                return None
+            if len(parts) == 4 and not math.isfinite(float(parts[3])):
+                return None
+            return {'timestamp': timestamp, 'value': value}
+        except (ValueError, IndexError):
+            return None
 
     @staticmethod
     def parse_vmrmc(text: str) -> dict | None:
@@ -366,6 +388,11 @@ class RadarReader(DeviceBase):
             return None
 
     def _dispatch(self, text: str) -> None:
+        if text.startswith('$VARMC'):
+            parsed = self.parse_varmc(text)
+            if parsed is not None and self._idle_announce_callback:
+                self._idle_announce_callback(parsed)
+            return
         if text.startswith('$VMRMC'):
             parsed = self.parse_vmrmc(text)
             if not parsed:

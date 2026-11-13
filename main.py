@@ -296,7 +296,7 @@ if __name__ == '__main__':
     scheduler.load_configuration_from_file(config_path)
     print(f'[调度器] 配置加载完成: {config_path}')
 
-    # 注册雷达距离回调 → 全流程实时位置 + 空闲播报 + 受理后设备调度
+    # VARMC只负责语音招揽，VMRMC继续实时位置及受理后设备调度。
     for radar in mgr.get_devices_by_type('udpradar'):
         def _make_distance_cb(sched=scheduler):
             def _on_distance(
@@ -306,18 +306,17 @@ if __name__ == '__main__':
                 *,
                 intrusion: bool | None = None,
             ):
-                try:
-                    from app.services.lane_announce import get_lane_announce
-
-                    get_lane_announce().on_radar(distance, mode)
-                except Exception as e:
-                    print(f'[ANNOUNCE] 雷达处理失败: {e}')
                 sched.on_radar_data(
                     distance, mode, object_count, intrusion=intrusion,
                 )
             return _on_distance
         radar.set_distance_callback(_make_distance_cb())
-        print(f'[设备]   {radar.device_id}: 距离回调已注入（全流程实时位置 + 空闲播报 + 受理后调度）')
+        def _on_varmc(parsed):
+            from app.services.lane_announce import get_lane_announce
+
+            get_lane_announce().on_varmc(parsed)
+        radar.set_idle_announce_callback(_on_varmc)
+        print(f'[设备]   {radar.device_id}: VMRMC位置/调度、VARMC空闲播报回调已注入')
 
     # 4. 启动 20 秒定时健康检查 + 自动重连
     mgr.start_health_check()

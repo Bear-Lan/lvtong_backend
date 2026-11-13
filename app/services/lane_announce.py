@@ -2,7 +2,7 @@
 
 语音：MDRMC → 中间件串口播报；LED 同步 set_step → $MDRMC leddisplay=。
 
-1. 系统空闲 + 雷达有目标且距离≥20米 → 「绿通车辆，按键检测」；按配置间隔发命令
+1. 语音空闲 + VARMC持续到达 → 「绿通车辆，按键检测」；按配置间隔发命令
 2. 预约键（任意时刻）→ 红灯+落杆 + step2 语音/LED；空闲才通知前端弹窗
 3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
@@ -10,12 +10,12 @@
 """
 from __future__ import annotations
 
-import math
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
-IDLE_ANNOUNCE_MIN_DISTANCE_M = 20.0
+VARMC_FRESH_SEC = 5.0
 
 
 def _ts() -> str:
@@ -28,7 +28,9 @@ class LaneAnnounceService:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._radar_target = False
+        self._last_varmc_at: float | None = None
+        self._voice_idle_blocked = False
+        self._voice_idle_rearmed = False
         self._idle_looping = False
         self._idle_thread: threading.Thread | None = None
         self._prev_booking = False
@@ -45,32 +47,32 @@ class LaneAnnounceService:
 
     # ---------- 对外：雷达 / PLC ----------
 
-    def on_radar(self, distance: float, mode: int) -> None:
-        """有目标且有效距离≥20米、系统空闲才招揽；不满足则停止后续发送。"""
-        target = (
-            int(mode) > 0
-            and math.isfinite(distance)
-            and distance >= IDLE_ANNOUNCE_MIN_DISTANCE_M
-        )
+    def on_varmc(self, parsed: dict) -> None:
+        """合法VARMC独立触发；数值不套用VMRMC目标数或距离阈值。"""
         with self._lock:
-            self._radar_target = target
+            self._last_varmc_at = time.monotonic()
             idle = self._is_system_idle_unlocked()
-        if target and idle:
+        if idle:
             self._ensure_idle_loop()
         else:
             self._stop_idle_loop()
+
+    def _has_varmc_unlocked(self) -> bool:
+        return (self._last_varmc_at is not None
+                and time.monotonic() - self._last_varmc_at <= VARMC_FRESH_SEC)
 
     def on_plc_status(self, parsed: dict) -> None:
         """DEVICE 位：预约键 / 光幕上升沿。"""
         from app.services.command_announce import update_playback_status
 
         update_playback_status(parsed)
-        booking = bool(parsed.get('bookingStatus'))
-        light = bool(parsed.get('lightScreenStatus'))
+        booking = bool(parsed.get('bookingStatus', self._prev_booking))
+        light = bool(parsed.get('lightScreenStatus', self._prev_light))
 
         with self._lock:
             booking_rise = booking and not self._prev_booking
             light_rise = light and not self._prev_light
+            light_fall = self._prev_light and not light
             self._prev_booking = booking
             self._prev_light = light
             detecting = self._is_detecting_unlocked()
@@ -80,6 +82,15 @@ class LaneAnnounceService:
 
         if light_rise and detecting:
             self.on_light_curtain()
+
+        if light_fall and not booking_rise:
+            # 只重置语音可招揽状态，绝不修改检测状态或调用检测复位/放行。
+            with self._lock:
+                self._voice_idle_blocked = False
+                self._voice_idle_rearmed = True
+                resume = self._has_varmc_unlocked()
+            if resume:
+                self._ensure_idle_loop()
 
     # ---------- 对外：业务事件 ----------
 
@@ -165,6 +176,7 @@ class LaneAnnounceService:
             print(f'[{_ts()}] [ANNOUNCE] 抬杆放行 → step4', flush=True)
 
     def on_light_curtain(self) -> None:
+        self.stop_idle_loop()
         if self._announce_session_once(5):
             print(f'[{_ts()}] [ANNOUNCE] 光幕 → step5', flush=True)
             try:
@@ -176,9 +188,11 @@ class LaneAnnounceService:
 
     def on_reset_to_idle(self) -> None:
         with self._lock:
+            self._voice_idle_blocked = False
+            self._voice_idle_rearmed = False
             self._release_pending = False
             self._said_session.clear()
-            target = self._radar_target
+            target = self._has_varmc_unlocked()
             idle = self._is_system_idle_unlocked()
         self._stop_idle_loop()
         if target and idle:
@@ -186,6 +200,10 @@ class LaneAnnounceService:
         print(f'[{_ts()}] [ANNOUNCE] 已复位，可恢复空闲播报', flush=True)
 
     def stop_idle_loop(self) -> None:
+        # 新预约/受理等原有停止入口，优先于上一轮光幕恢复状态。
+        with self._lock:
+            self._voice_idle_blocked = True
+            self._voice_idle_rearmed = False
         self._stop_idle_loop()
 
     # ---------- 内部 ----------
@@ -200,6 +218,10 @@ class LaneAnnounceService:
             return False
 
     def _is_system_idle_unlocked(self) -> bool:
+        if self._voice_idle_blocked:
+            return False
+        if self._voice_idle_rearmed:
+            return True
         try:
             from app.api.booking import get_booking_state
 
@@ -282,7 +304,7 @@ class LaneAnnounceService:
             with self._lock:
                 return (
                     self._idle_looping
-                    and self._radar_target
+                    and self._has_varmc_unlocked()
                     and self._is_system_idle_unlocked()
                 )
 

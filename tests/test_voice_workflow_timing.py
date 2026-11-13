@@ -88,18 +88,20 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         return [f'$MDRMC,1,{target}voiceannounce=VOICE{step}'
                 for step in steps for target in ['front', 'back']]
 
-    def test_idle_target_sends_voice1_to_both_sides_and_stops_when_target_leaves(self):
-        self.lane.on_radar(30, 1)
+    def test_varmc_triggers_both_sides_and_expired_signal_stops_idle(self):
+        self.lane.on_varmc({'timestamp': 100184.818, 'value': 1.23})
         self.wait_messages(2)
-        self.lane.on_radar(0, 0)
+        with self.lane._lock:
+            self.lane._last_varmc_at -= 6
         for thread in self.threads:
             thread.join(1)
+        self.assertFalse(self.lane._idle_looping)
         self.assertEqual(self.messages, self.expected(1))
 
     def test_idle_led_follows_each_voice_dispatch_not_each_radar_packet(self):
         # 运行真实重复播报器，但立即到达下一周期，避免测试等待十秒。
         self.lane._idle_looping = True
-        self.lane._radar_target = True
+        self.lane._has_varmc_unlocked = lambda: True
         self.lane._is_system_idle_unlocked = lambda: len(self.messages) < 4
         with patch.object(voice.time, 'monotonic', side_effect=range(0, 1000, 20)):
             self.lane._idle_worker()
@@ -111,69 +113,81 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
 
     def test_radar_does_not_send_led_before_voice_dispatch(self):
         with patch.object(self.lane, '_ensure_idle_loop'):
-            self.lane.on_radar(30, 1)
-            self.lane.on_radar(29, 1)
+            self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
+            self.lane.on_varmc({'timestamp': 2, 'value': 1.24})
         self.actions.assert_not_called()
         self.assertEqual(self.messages, [])
 
-    def test_no_idle_announcement_without_target_or_during_detection(self):
-        self.lane.on_radar(0, 0)
+    def test_no_idle_announcement_without_varmc_or_during_detection_before_light_fall(self):
+        self.lane.on_reset_to_idle()
         booking.set_booking_state(is_detection=True, check_step=1)
-        self.lane.on_radar(30, 1)
+        self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
         self.assertEqual(self.messages, [])
         self.assertIsNone(self.lane._idle_thread)
 
-    def test_idle_announcement_requires_target_at_least_twenty_meters(self):
-        for distance, mode in ((19.999, 1), (0, 1), (-1, 1), (20, 0),
-                               (float('nan'), 1), (float('inf'), 1)):
-            with self.subTest(distance=distance, mode=mode):
-                self.lane.on_radar(distance, mode)
-                self.lane.on_reset_to_idle()
-                self.assertIsNone(self.lane._idle_thread)
-                self.assertEqual(self.messages, [])
-                self.actions.assert_not_called()
-        self.lane.on_radar(20, 1)
+    def test_varmc_small_value_does_not_use_old_twenty_meter_threshold(self):
+        radar = RadarReader('varmc-test')
+        radar.set_idle_announce_callback(self.lane.on_varmc)
+        radar._dispatch('$VARMC,100184.818,1.23')
         self.wait_messages(2)
-        self.lane.on_radar(19.999, 1)
+        self.lane.stop_idle_loop()
         for thread in list(self.threads):
             thread.join(1)
         self.assertEqual(self.messages, self.expected(1))
         self.assertEqual([c.args for c in self.actions.call_args_list], [('led_001', 'set_step1')])
 
-    def test_crossing_below_twenty_stops_idle_and_returning_resumes_both_outputs(self):
-        radar = RadarReader('test-radar-distance')
-        radar.set_distance_callback(lambda distance, mode, count: self.lane.on_radar(distance, mode))
-        radar._dispatch('$VMRMC,120000,1,20,0')
-        self.wait_messages(2)
-        radar._dispatch('$VMRMC,120001,1,19.9,0')
-        for thread in list(self.threads):
-            thread.join(1)
-        self.assertFalse(self.lane._idle_looping)
-        self.lane.on_reset_to_idle()
-        self.assertFalse(self.lane._idle_looping)
-        self.assertEqual(self.messages, self.expected(1))
-        radar._dispatch('$VMRMC,120002,2,20.1,0')
-        self.wait_messages(4)
-        radar._dispatch('$VMRMC,120003,0,20.1,0')
-        for thread in list(self.threads):
-            thread.join(1)
-        self.assertEqual(self.messages, self.expected(1, 1))
-        self.assertEqual([c.args for c in self.actions.call_args_list], [
-            ('led_001', 'set_step1'), ('led_001', 'set_step1')])
-
-    def test_radar_packet_triggers_voice1_and_no_target_packet_stops_it(self):
-        radar = RadarReader('test-radar')
-        radar.set_distance_callback(lambda distance, mode, count: self.lane.on_radar(distance, mode))
+    def test_vmrmc_only_updates_distance_and_never_triggers_or_stops_varmc_voice(self):
+        radar = RadarReader('independent-varmc-test')
+        positions = []
+        radar.set_distance_callback(lambda *args: positions.append(args))
+        radar.set_idle_announce_callback(self.lane.on_varmc)
         radar._dispatch('$VMRMC,120000,1,30,0')
+        self.assertEqual(self.messages, [])
+        radar._dispatch('$VARMC,268152.699,3.257,433')
         self.wait_messages(2)
         radar._dispatch('$VMRMC,120001,0,0,0')
-        for thread in self.threads:
-            thread.join(1)
+        self.assertTrue(self.lane._idle_looping)
+        self.assertEqual(positions, [(30.0, 1, 1), (0.0, 0, 0)])
         self.assertEqual(self.messages, self.expected(1))
+
+    def test_light_fall_rearms_voice_without_resetting_detection_or_triggering_devices(self):
+        led_sent = threading.Event()
+        self.actions.side_effect = lambda *args: (led_sent.set() or True)
+        booking.set_booking_state(is_detection=True, check_step=1)
+        # 光幕上升沿已发生；仅模拟真实的下降沿，避免发起任何检测动作。
+        self.lane._prev_light = True
+        self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
+        self.assertEqual(self.messages, [])
+        self.lane.on_plc_status({'lightScreenStatus': False})
+        self.wait_messages(2)
+        self.assertTrue(booking.get_booking_state()['is_detection'])
+        self.assertEqual(booking.get_booking_state()['check_step'], 1)
+        self.assertTrue(led_sent.wait(1))
+        self.assertEqual([c.args for c in self.actions.call_args_list], [('led_001', 'set_step1')])
+        # 后续预约/受理沿用原停止入口，不受旧光幕恢复状态影响。
+        self.lane.stop_idle_loop()
+        self.lane.on_varmc({'timestamp': 2, 'value': 1.24})
         self.assertFalse(self.lane._idle_looping)
 
+    def test_initial_zero_and_missing_light_field_do_not_rearm_detection(self):
+        booking.set_booking_state(is_detection=True, check_step=1)
+        self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
+        self.lane.on_plc_status({'lightScreenStatus': False})
+        self.lane._prev_light = True
+        self.lane.on_plc_status({'frontVoiceAnnounceStatus': False})
+        self.assertFalse(self.lane._voice_idle_rearmed)
+        self.assertEqual(self.messages, [])
+
+    def test_light_fall_without_varmc_waits_for_next_valid_signal(self):
+        booking.set_booking_state(is_detection=True, check_step=1)
+        self.lane._prev_light = True
+        self.lane.on_plc_status({'lightScreenStatus': False})
+        self.assertEqual(self.messages, [])
+        self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
+        self.wait_messages(2)
+
     def test_booking_state_stops_voice1_without_another_radar_packet(self):
-        self.lane.on_radar(30, 1)
+        self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
         self.wait_messages(2)
         booking.set_booking_state(booking_dialog_shown=True)
         thread = self.lane._idle_thread
