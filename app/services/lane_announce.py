@@ -3,7 +3,7 @@
 语音：MDRMC → 中间件串口播报；LED 同步 set_step → $MDRMC leddisplay=。
 
 1. 语音空闲 + VARMC持续到达 → 「绿通车辆，按键检测」；按配置间隔发命令
-2. 空闲预约键 → 红灯+落杆 + step2；检测中只提示，不派发设备动作
+2. 硬件预约键 → 记时、红灯+落杆+step2，检测中也保留；页面预约在API层拦截
 3. 受理成功 → 「申请已受理，请等待放行」
 4. 受理后抬杆放行 → 「待检车辆，请通行」
 5. 检测中光幕上升沿 → 「检测中，请勿跟车」
@@ -97,14 +97,7 @@ class LaneAnnounceService:
     # ---------- 对外：业务事件 ----------
 
     def on_booking_button(self, *, push_ws: bool = True, record: bool = True) -> None:
-        """检测中误按预约只提示，不能记下一轮预约或改变当前播报/设备。"""
-        with self._lock:
-            detecting = self._is_detecting_unlocked()
-        if detecting:
-            if push_ws:
-                from app.websocket.handler import push_booking_event
-                push_booking_event('busy', openDialog=False, message='当前处于检测流程中，请提交或重置后再预约')
-            return
+        """硬件预约沿用原流程；页面检测中预约由UI/API拦截，不进入此处。"""
         self.stop_idle_loop()
         btn_time = ''
         if record:
@@ -116,7 +109,7 @@ class LaneAnnounceService:
             except Exception as e:
                 print(f'[{_ts()}] [ANNOUNCE] 预约键记时失败: {e}', flush=True)
 
-        # 仅空闲预约进入红灯、落杆和step2。
+        # 硬件预约与是否空闲无关；检测中仍保留红灯、落杆和step2。
         def _hold() -> None:
             try:
                 from app.services.device_action import execute_device_action

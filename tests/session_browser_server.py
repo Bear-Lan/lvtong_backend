@@ -96,6 +96,15 @@ def begin():
 def submitted():
     return jsonify(submissions)
 
+@app.post('/fixture/hardware-booking')
+def hardware_booking_fixture():
+    # 仅模拟两种硬件反馈格式，绝不调用真实语音、红灯或闸机。
+    data = {'action': 'book_button', 'btnPrebookState': True}
+    if (request.get_json(silent=True) or {}).get('includeOpenDialog', True):
+        data['openDialog'] = False
+    sio.emit('message', {'type': 'booking', 'data': data})
+    return jsonify(code=0)
+
 @app.post('/fixture/booking')
 def booking_fixture():
     from app.api.booking import get_booking_state

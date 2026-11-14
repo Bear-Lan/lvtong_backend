@@ -542,7 +542,7 @@ def btn_press():
       - 其它：现场按键，默认推 WS book_button
 
     空闲时：记时 + 红灯 + 落杆 + step2，data.openDialog=true。
-    检测中只返回提示，不记时、不派发设备或语音命令。
+    检测中仅拦截 source=ui；硬件预约保留记时、红灯落杆及step2流程。
     """
     body = request.get_json(silent=True) or {}
     source = str(body.get('source') or '').lower()
@@ -553,7 +553,7 @@ def btn_press():
     detecting = bool(_booking_state.get('is_detection')) or int(
         _booking_state.get('check_step') or 0
     ) >= 1
-    if detecting:
+    if detecting and source == 'ui':
         return ok({'openDialog': False, 'ignored': True, 'btnPrebookState': bool(_booking_state.get('btn_prebook_state'))},
                   '当前处于检测流程中，请提交或重置后再预约')
     try:

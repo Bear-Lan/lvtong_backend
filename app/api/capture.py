@@ -3,9 +3,10 @@
 提供检测流程中各类型图像的采集接口。
 实际拉图并推前端预览（dataUrl）；落盘在提交检测单时 persist。
 """
+import base64
 from flask import Blueprint, request, jsonify
 
-from app.services.capture_service import capture_category
+from app.services.capture_service import capture_category, snapshot_from_camera
 from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
 from app.extensions.auth import login_required
 
@@ -18,6 +19,24 @@ def ok(data=None, message='success'):
 
 def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
+
+
+@capture_api.route('/camera/<device_id>', methods=['POST'])
+@login_required
+def capture_camera(device_id):
+    """手动拍照按实际选中的相机取主码流，不广播到其他照片类别。"""
+    if device_id not in ('cam_road', 'cam_head', 'cam_lane', 'cam_ptz', 'cam_booking'):
+        return fail(400, '不支持的拍照相机')
+    try:
+        generation = ensure_capture_allowed()
+        data = snapshot_from_camera(device_id, right_two_thirds=device_id == 'cam_road')
+        ensure_capture_allowed(generation)
+        return ok({'dataUrl': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'),
+                   'deviceId': device_id, 'streamType': 1, 'size': len(data)})
+    except CaptureBlockedError as error:
+        return fail(409, str(error))
+    except Exception:
+        return fail(502, '主码流拍照失败，请检查相机连接后重试')
 
 
 def _capture_one(category: str, success_msg: str):

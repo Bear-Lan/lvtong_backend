@@ -21,13 +21,14 @@ import cv2
 import requests
 
 from app.services.capture_guard import ensure_capture_allowed
+from app.services.camera_stream import rtsp_channel
 
 logger = logging.getLogger('capture_service')
 
 # 与 Pad 的 hikvision.ts 对应；每类允许独立覆盖，不再共用一个车身相机。
 # RTSP 通道：默认 101（通道1主码流）；抓拍机上 1/101、2/102 均可
-HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL', '101')
-JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '85'))
+HIK_RTSP_CHANNEL = os.environ.get('HIK_RTSP_CHANNEL')
+JPEG_QUALITY = int(os.environ.get('CAPTURE_JPEG_QUALITY', '95'))
 # 同机串行抽帧，避免多线程同时 VideoCapture 把 GIL/网络打满导致距离 WS 卡顿
 _capture_lock = threading.Lock()
 _RTSP_WARMUP_FRAMES = int(os.environ.get('CAPTURE_RTSP_WARMUP_FRAMES', '2'))
@@ -60,30 +61,8 @@ def _cfg_dict(row: dict) -> dict:
 
 
 def _resolve_rtsp_channel(row: dict) -> int:
-    """解析 RTSP Channels/{n}。优先 config / 环境变量，否则 channelId*100+streamType。"""
-    cfg = _cfg_dict(row)
-    raw = (
-        cfg.get('rtsp_channel')
-        or cfg.get('rtspChannel')
-        or os.environ.get('HIK_RTSP_CHANNEL')
-        or HIK_RTSP_CHANNEL
-    )
-    if raw not in (None, ''):
-        try:
-            return max(1, int(raw))
-        except (TypeError, ValueError):
-            pass
-    try:
-        channel_id = int(cfg.get('channelId', cfg.get('channel_id', 1)))
-    except (TypeError, ValueError):
-        channel_id = 1
-    try:
-        stream_type = int(cfg.get('streamType', cfg.get('stream_type', 1)))
-    except (TypeError, ValueError):
-        stream_type = 1
-    if stream_type not in (1, 2):
-        stream_type = 1
-    return max(1, channel_id) * 100 + stream_type
+    """拍照始终读取主码流，旧配置仅用于选择视频通道。"""
+    return rtsp_channel(row, 1, os.environ.get('HIK_RTSP_CHANNEL') or HIK_RTSP_CHANNEL)
 
 
 def _rtsp_url(row: dict, channel: int) -> str:

@@ -188,7 +188,7 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.lane.on_varmc({'timestamp': 1, 'value': 1.23})
         self.wait_messages(2)
 
-    def test_detection_open_and_press_have_no_actions_even_after_voice_rearms(self):
+    def test_detection_open_and_ui_press_have_no_actions_even_after_voice_rearms(self):
         from app.extensions.auth import create_token
         booking.set_booking_state(is_detection=True, check_step=3)
         self.lane._voice_idle_rearmed = True
@@ -198,7 +198,6 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         health.assert_not_called()
         self.assertTrue(self.client.post('/api/booking/btn-press', json={'source': 'ui'}).json['data']['ignored'])
-        self.lane.on_booking_button()
         self.assertTrue(self.lane._voice_idle_rearmed)
         self.assertFalse(booking.get_booking_state()['btn_prebook_state'])
         self.actions.assert_not_called()
@@ -221,7 +220,7 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
         self.assertTrue(booking.ensure_step2_announce_once())
         self.assertEqual(self.messages, self.expected(2))
 
-    def test_physical_and_ui_buttons_use_same_booking_actions_and_voice(self):
+    def test_only_ui_button_is_ignored_during_detection_hardware_keeps_original_actions(self):
         for source in ('plc', 'ui'):
             for detecting in (False, True):
                 with self.subTest(source=source, detecting=detecting):
@@ -239,14 +238,14 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
                         radar._dispatch('$NTRMC,DEVICE,000380e2,001fffff')
                         radar._dispatch('$NTRMC,DEVICE,000080e2,001fffff')
                         self.ws.assert_called_once()
-                        self.assertEqual(self.ws.call_args.args, ('busy' if detecting else 'book_button',))
+                        self.assertEqual(self.ws.call_args.args, ('book_button',))
                         self.assertIs(self.ws.call_args.kwargs['openDialog'], not detecting)
                     else:
                         response = self.client.post('/api/booking/btn-press', json={'source': 'ui'})
                         self.assertEqual(response.status_code, 200)
                         self.assertIs(response.get_json()['data']['openDialog'], not detecting)
                         self.ws.assert_not_called()
-                    if detecting:
+                    if detecting and source == 'ui':
                         self.assertFalse(booking.get_booking_state()['btn_prebook_state'])
                         self.assertFalse(booking.get_booking_state()['last_btn_click_time'])
                         self.assertEqual(self.messages, [])
@@ -264,6 +263,19 @@ class VoiceWorkflowTimingTest(unittest.TestCase):
                     self.assertEqual(self.actions.call_count, 3)
                     self.assertTrue(booking.ensure_step2_announce_once())
                     self.assertEqual(self.messages, self.expected(2))
+
+    def test_hardware_rest_button_keeps_actions_during_detection(self):
+        booking.set_booking_state(is_detection=True, check_step=3)
+        response = self.client.post('/api/booking/btn-press', json={'source': 'plc'})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json['data']['openDialog'])
+        self.wait_messages(2)
+        for thread in list(self.threads):
+            thread.join(1)
+        self.assertEqual(self.messages, self.expected(2))
+        self.actions.assert_any_call('gate_001', 'close')
+        self.assertTrue(booking.get_booking_state()['btn_prebook_state'])
+        self.assertTrue(booking.get_booking_state()['is_detection'])
 
     def test_accept_then_gate_release_send_voice3_then_voice4_once(self):
         self.lane.on_accepted()

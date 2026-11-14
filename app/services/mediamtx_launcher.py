@@ -17,6 +17,7 @@ import sys
 import signal
 from pathlib import Path
 from urllib.parse import quote
+from app.services.camera_stream import rtsp_channel
 
 _proc: subprocess.Popen | None = None
 
@@ -95,23 +96,10 @@ def build_hik_rtsp_from_device(row: dict, *, stream_type: int = 1) -> str:
         raise ValueError('设备未配置 IP')
     user = quote((row.get('username') or 'admin').strip(), safe='')
     pwd = quote((row.get('password') or ''), safe='')
-    cfg = row.get('config') or {}
-    if isinstance(cfg, str):
-        import json
-        try:
-            cfg = json.loads(cfg)
-        except Exception:
-            cfg = {}
-    if not isinstance(cfg, dict):
-        cfg = {}
-    try:
-        channel_id = int(cfg.get('channelId', cfg.get('channel_id', 1)))
-    except (TypeError, ValueError):
-        channel_id = 1
     st = int(stream_type)
     if st not in (1, 2):
         st = 1
-    channel_num = max(1, channel_id) * 100 + st
+    channel_num = rtsp_channel(row, st)
     return f'rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{channel_num}'
 
 
@@ -146,7 +134,9 @@ def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
         print(f'[MediaMTX] devices.device_id={device_id} 不存在，跳过 {path_name} 同步')
         return None
 
-    rtsp = build_hik_rtsp_from_device(row, stream_type=_stream_type())
+    # 照片采集的五路相机只传子码流；cam3 周界相机沿用原设置。
+    stream_type = _stream_type() if path_name == 'cam3' else 2
+    rtsp = build_hik_rtsp_from_device(row, stream_type=stream_type)
     if not _write_path_source(path_name, rtsp):
         return None
 
