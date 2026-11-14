@@ -28,6 +28,7 @@ _SINGLE_IMAGE_FIELDS = [
     'license_image_path', 'license_image_path1', 'license_image_path2',
     'pass_code_image_path', 'passcode_image_path',
     'appointment_radar_image_path', 'radar_3d_image_path',
+    'radar_3d_top_image_path', 'radar_3d_side_image_path',
 ]
 _MULTI_IMAGE_FIELDS = ['goods_image_path', 'evidences_image_path']
 
@@ -47,6 +48,8 @@ _IMAGE_CATEGORY = {
     'evidences_image_path': 'evidence',
     'appointment_radar_image_path': 'appointment_radar',
     'radar_3d_image_path': 'radar_3d',
+    'radar_3d_top_image_path': 'radar_3d_top',
+    'radar_3d_side_image_path': 'radar_3d_side',
 }
 
 
@@ -316,6 +319,11 @@ def submit_inspection():
         snap = session_store.snapshot()
         if snap.get('submittedId'):
             return ok({'id': snap['submittedId'], 'deduped': True}, '提交成功（同一检测已提交）')
+        # 新点云帧已由采集服务固化同帧投影，即使终端未打开3D也可随记录保存。
+        for field, draft_field in (('radar_3d_top_image_path', 'radarCloudTopImageUrl'),
+                                   ('radar_3d_side_image_path', 'radarCloudSideImageUrl')):
+            if not body.get(field) and snap.get('draft', {}).get(draft_field):
+                body[field] = snap['draft'][draft_field]
 
     for old_field in ('radar_side_image_path', 'radar_top_image_path', 'radar_head_image_path'):
         body.pop(old_field, None)

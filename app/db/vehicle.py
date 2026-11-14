@@ -13,8 +13,9 @@ class DBVehicle(BaseRepo):
         只 INSERT 表中真实存在的列，不存在的字段自动跳过。
         """
         columns = _get_columns()
-        if not {'appointment_radar_image_path', 'radar_3d_image_path', 'inspection_session_id'}.issubset(columns):
-            raise RuntimeError('检测表尚未升级，请先执行20261113检测同步与雷达图片迁移')
+        if not {'appointment_radar_image_path', 'radar_3d_image_path', 'radar_3d_top_image_path',
+                'radar_3d_side_image_path', 'inspection_session_id'}.issubset(columns):
+            raise RuntimeError('检测表尚未升级，请先执行检测同步及20261114点云顶部侧面图片迁移')
         # 排除只读列
         skip = {'id', 'created_time', 'updated_time'}
 
@@ -29,6 +30,7 @@ class DBVehicle(BaseRepo):
             'goods_image_path': '', 'evidences_image_path': '',
             'license_image_path': '', 'passcode_image_path': '',
             'appointment_radar_image_path': '', 'radar_3d_image_path': '',
+            'radar_3d_top_image_path': '', 'radar_3d_side_image_path': '',
             'operator_name': '', 'inspector_phone': '',
             'reviewer_phone': '', 'group_id': '',
             'btn_prebook_time': None, 'acceptance_time': None,

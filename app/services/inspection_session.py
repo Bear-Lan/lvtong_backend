@@ -111,7 +111,7 @@ class InspectionSessionStore:
             if path[1] not in ('body', 'transparent') or not isinstance(value, dict) or any(k not in ('1', '2', '3') for k in value):
                 raise ValueError('面板图片字段无效')
             return {k: self._share_image(v) for k, v in value.items()}
-        if path[0] in ('captureThumbs', 'licensePaths') or path == ['radarHeadImageUrl'] or path == ['radarCloudImageUrl']:
+        if path[0] in ('captureThumbs', 'licensePaths') or path[0] in ('radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl'):
             return self._share_image(value)
         if path == ['bookingDraft', 'radarImageUrl']:
             return self._share_image(value)
@@ -123,7 +123,7 @@ class InspectionSessionStore:
 
     def patch(self, session_id, base_revision, changes, actor='', client_id=''):
         allowed = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'passcode',
-                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft'}
+                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft'}
         if not isinstance(changes, list) or len(changes) > 100:
             raise ValueError('同步字段数量无效')
         with self.transaction() as doc:
@@ -141,7 +141,7 @@ class InspectionSessionStore:
                 containers = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'bookingDraft', 'panelImages', 'submissionDraft'}
                 if (path[0] in containers) != (len(path) == 2):
                     raise ValueError('同步字段结构无效')
-                if path[0] in ('submitRemark', 'radarHeadImageUrl', 'radarCloudImageUrl') and not isinstance(change.get('value'), str):
+                if path[0] in ('submitRemark', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl') and not isinstance(change.get('value'), str):
                     raise ValueError('文本或图片字段格式无效')
                 current = doc['draft']
                 for k in path:
@@ -199,6 +199,9 @@ class InspectionSessionStore:
                     view['imageUrl'] = self._share_image(view['imageUrl'])
                 doc['geometryUrl'] = self._write_asset(json.dumps(shared, ensure_ascii=False, allow_nan=False).encode(), '.json')
                 doc['draft']['radarCloudImageUrl'] = '' # 新点云不能提交上一帧的3D截图。
+                # 与本帧三维坐标同源的正交视图，不依赖终端当前旋转角度。
+                for view, field in (('top', 'radarCloudTopImageUrl'), ('side', 'radarCloudSideImageUrl')):
+                    doc['draft'][field] = shared.get('views', {}).get(view, {}).get('imageUrl', '')
             elif event == 'geometry_status':
                 doc['geometryCapture'] = data.get('capture')
             elif event == 'mobile_upload':

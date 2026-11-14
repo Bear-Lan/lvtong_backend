@@ -99,6 +99,32 @@ class InspectionSessionTests(unittest.TestCase):
         snapshot = self.store.record('geometry', {'geometry': {'positions': [1, 2, 3]}})
         self.assertEqual(snapshot['draft']['radarCloudImageUrl'], '')
 
+    def test_same_frame_top_side_persist_and_next_frame_replaces_them(self):
+        self.store.record('booking_accepted', {})
+        top = temp_image_cache.put_and_url(PNG)
+        side = temp_image_cache.put_and_url(PNG + b'side')
+        snapshot = self.store.record('geometry', {'geometry': {'positions': [1, 2, 3]},
+            'views': {'top': {'imageUrl': top}, 'side': {'imageUrl': side}}})
+        shared = json.loads((self.store.image_root / snapshot['geometryUrl'].removeprefix('/api/images/')).read_text())
+        for view, field in [('top', 'radarCloudTopImageUrl'), ('side', 'radarCloudSideImageUrl')]:
+            ref = snapshot['draft'][field]
+            self.assertEqual(ref, shared['views'][view]['imageUrl'])
+            self.assertTrue((self.store.image_root / ref.removeprefix('/api/images/')).is_file())
+        temp_image_cache._CACHE.clear()
+        self.assertEqual(InspectionSessionStore(self.engine, self.store.image_root).snapshot(), snapshot)
+        next_frame = self.store.record('geometry', {'geometry': {'positions': [4, 5, 6]},
+            'views': {'top': {'imageUrl': temp_image_cache.put_and_url(PNG + b'new')}}})
+        self.assertNotEqual(next_frame['draft']['radarCloudTopImageUrl'], snapshot['draft']['radarCloudTopImageUrl'])
+        self.assertEqual(next_frame['draft']['radarCloudSideImageUrl'], '')
+
+    def test_top_side_sync_materializes_images_and_rejects_non_text(self):
+        photo = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
+        for field in ['radarCloudTopImageUrl', 'radarCloudSideImageUrl']:
+            s = self.change([{'path': [field], 'value': photo}])
+            self.assertTrue(s['draft'][field].startswith('/api/images/session_assets/'))
+            with self.assertRaises(ValueError):
+                self.change([{'path': [field], 'value': {}}])
+
     def test_idle_does_not_accept_late_camera_frame(self):
         self.store.record('image_ready', {'imageType': 'head', 'url': 'data:image/png;base64,' + base64.b64encode(PNG).decode()})
         self.assertNotIn('captureThumbs', self.store.snapshot()['draft'])
@@ -162,14 +188,39 @@ class InspectionSessionTests(unittest.TestCase):
 
     def test_new_radar_fields_persist_and_convert(self):
         from app.api.inspection import _persist_images, _convert_image_paths
-        fields = {'appointment_radar_image_path': 'appt-ref', 'radar_3d_image_path': '3d-ref'}
+        fields = {'appointment_radar_image_path': 'appt-ref', 'radar_3d_image_path': '3d-ref',
+                  'radar_3d_top_image_path': 'top-ref', 'radar_3d_side_image_path': 'side-ref'}
         with patch('app.api.inspection.persist_to_storage', side_effect=lambda ref, cat: cat + '/' + ref) as persist:
             _persist_images(fields)
         self.assertEqual(persist.call_args_list[0].args[1], 'appointment_radar')
         self.assertEqual(persist.call_args_list[1].args[1], 'radar_3d')
+        self.assertEqual(persist.call_args_list[2].args[1], 'radar_3d_top')
+        self.assertEqual(persist.call_args_list[3].args[1], 'radar_3d_side')
         with patch('app.api.inspection.db_path_to_api', side_effect=lambda ref: '/api/images/' + ref):
             result = _convert_image_paths(fields)
         self.assertTrue(result['radar_3d_image_path'].startswith('/api/images/radar_3d/'))
+        self.assertTrue(result['radar_3d_top_image_path'].startswith('/api/images/radar_3d_top/'))
+        self.assertTrue(result['radar_3d_side_image_path'].startswith('/api/images/radar_3d_side/'))
+
+    def test_submission_without_client_views_uses_persisted_session_views(self):
+        from app.api.inspection import inspection_api
+        app = Flask(__name__)
+        app.register_blueprint(inspection_api)
+        configure_store(self.store)
+        self.store.record('booking_accepted', {})
+        s = self.store.record('geometry', {'geometry': {'positions': [1, 2, 3]},
+            'views': {'top': {'imageUrl': temp_image_cache.put_and_url(PNG)},
+                      'side': {'imageUrl': temp_image_cache.put_and_url(PNG + b'side')}}})
+        with patch('app.api.inspection._persist_images'), \
+             patch('app.api.inspection.DBVehicle.addInspection', return_value=123) as save, \
+             patch('app.db.user.DBUser.getUserByUsername', return_value={}):
+            result = app.test_client().post('/api/inspection/submit',
+                headers={'Authorization': 'Bearer ' + create_token({'username': 'operator', 'real_name': '测试'})},
+                json={'inspection_session_id': s['sessionId'], 'plate_number': 'TEST'})
+        self.assertEqual(result.status_code, 200)
+        body = save.call_args.args[0]
+        self.assertEqual(body['radar_3d_top_image_path'], s['draft']['radarCloudTopImageUrl'])
+        self.assertEqual(body['radar_3d_side_image_path'], s['draft']['radarCloudSideImageUrl'])
 
 
 if __name__ == '__main__':
