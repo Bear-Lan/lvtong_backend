@@ -382,17 +382,32 @@ def gate_status():
 @device_api.route('/body-radar-image', methods=['POST'])
 @login_required
 def body_radar_image():
-    """读取本轮真实 LAZ 的最新三维/投影缓存，不触发采集。
+    """读取本轮点云缓存；显式refresh才补读中间件现有LAZ，不开启采集。
 
-    Body: { view: 'top' | 'side' }
+    Body: { view: 'top' | 'side', refresh?: boolean }
     """
     body = request.get_json(silent=True) or {}
     view = str(body.get('view') or '').strip().lower()
     if view not in ('top', 'side'):
         return fail(400, 'view 须为 top 或 side')
 
-    from app.services.geometry_capture import get_geometry_snapshot
-    result = get_geometry_snapshot()
+    if 'refresh' in body and not isinstance(body['refresh'], bool):
+        return fail(400, 'refresh 须为布尔值')
+    from app.services.geometry_capture import get_geometry_snapshot, refresh_geometry_snapshot
+    if body.get('refresh'):
+        from app.services.inspection_session import SessionConflict
+        from app.services.capture_guard import CaptureBlockedError
+        try:
+            result = refresh_geometry_snapshot(request.headers.get('X-Inspection-Session', ''))
+        except SessionConflict as error:
+            return fail(409, str(error))
+        except CaptureBlockedError as error:
+            return fail(409, str(error))
+        except Exception as error:
+            current_app.logger.warning('手动补读LAZ失败：%s', error)
+            return fail(502, f'点云拉取失败：{error}')
+    else:
+        result = get_geometry_snapshot()
     slot = '2' if view == 'top' else '3'
     image_url = result.get('views', {}).get(view, {}).get('imageUrl', '')
     return ok({**result, 'imageUrl': image_url, 'view': view, 'slot': slot})

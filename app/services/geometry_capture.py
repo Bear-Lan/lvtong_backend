@@ -37,6 +37,51 @@ def get_geometry_snapshot() -> dict:
         return _snapshot()
 
 
+def refresh_geometry_snapshot(session_id: str) -> dict:
+    """手动补读中间件当前LAZ并持久化；不发送geomcap或其他设备命令。"""
+    global _result, _state, _error, _frame
+    import config
+    from app.services.inspection_session import get_store, SessionConflict, broadcast
+    store = get_store()
+    if store is None:
+        raise RuntimeError('检测同步尚未初始化')
+
+    def check_session():
+        snapshot = store.snapshot()
+        if not session_id or snapshot['sessionId'] != session_id or snapshot['phase'] != 'detecting':
+            raise SessionConflict('请在当前检测中刷新点云')
+
+    check_session()
+    with _lock:
+        generation, frame = _generation, _frame
+    guard = ensure_capture_allowed()
+    settings = {name: getattr(config, name) for name in
+                ('RADAR_POINT_CLOUD_URL', 'RADAR_LAZ_METERS_PER_UNIT', 'RADAR_LAZ_RESOLUTION')}
+    response = middleware_get_payload(settings['RADAR_POINT_CLOUD_URL'], timeout=POLL_TIMEOUT)
+    if response.status_code != 200:
+        raise ValueError(f'点云接口 HTTP {response.status_code}')
+    if not response.content.startswith(b'LASF'):
+        raise ValueError('点云接口尚未返回有效LAZ，请稍后重试')
+    result = project_body_response(response, settings)
+    ensure_capture_allowed(guard)
+    with _lock, store.lock:
+        check_session()
+        if generation != _generation:
+            raise SessionConflict('本次采集已切换，请刷新当前检测')
+        # 自动采集已收到更新帧时，不能被较早发起的手动请求覆盖。
+        if frame != _frame:
+            return _snapshot()
+        _result, _frame, _error = result, _frame + 1, ''
+        if _state not in ('capturing', 'polling'):
+            finished, _ = _is_capture_finished(response)
+            _state = 'finished' if finished else 'ready'
+        store.record('geometry', _snapshot())
+        store.record('geometry_status', {'capture': _snapshot()['capture']})
+        saved = store.snapshot()
+        broadcast(saved)
+        return _snapshot()
+
+
 def _notify():
     from app.websocket.handler import socketio
     try:
@@ -129,6 +174,7 @@ def _poll_laz_frames(generation: int, stop: threading.Event) -> bool | None:
     deadline = time.monotonic() + MAX_POLL_SEC
     attempts = 0
     last_digest = None
+    waiting_logged = False
     logger.info('LAZ 开始轮询 generation=%s url=%s', generation, settings['RADAR_POINT_CLOUD_URL'])
     while not stop.is_set():
         remaining = deadline - time.monotonic()
@@ -174,10 +220,17 @@ def _poll_laz_frames(generation: int, stop: threading.Event) -> bool | None:
                     from app.services.inspection_session import record_event
                     record_event('geometry', _snapshot())
                 _error = error
+                # 中间件在车辆仍扫描时也会返回无数据JSON/结束标记。
+                # 第一份有效LAZ到达前不能因此结束，否则后面生成的文件永远漏取。
+                if finished and not _result:
+                    if not waiting_logged:
+                        logger.warning('LAZ尚未就绪，继续等待 generation=%s reason=%s status=%s bytes=%s',
+                                       generation, reason, response.status_code, len(response.content))
+                        waiting_logged = True
+                    finished = False
+                    _error = error or '点云尚未就绪，继续等待'
                 if finished:
                     _state = 'finished'
-                    if not _result and not error:
-                        _error = '采集已结束，但未返回有效点云'
                 if result or finished or error:
                     _notify()
             if finished:

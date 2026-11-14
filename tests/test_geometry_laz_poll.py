@@ -87,11 +87,22 @@ class GeometryLazPollTest(unittest.TestCase):
         self.assertTrue(result['capture']['hasData'])
         self.assertEqual(result['capture']['state'], 'finished')
 
-    def test_finish_without_any_data_reports_empty_not_demo(self):
-        self.run_responses([response(b'{"status":"false"}', 'true')])
+    def test_early_empty_completion_waits_for_laz_generated_later(self):
+        fetch = self.run_responses([response(b'{"status":"false"}', 'true'),
+                                    response(b'', 'true'), response(cloud_bytes(), 'true')])
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(capture.get_geometry_snapshot()['geometry']['totalPointCount'], 4)
+        self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True])
+
+    def test_no_data_even_after_completion_marker_times_out_instead_of_false_success(self):
+        generation = self.arm()
+        with patch.object(capture, 'time', SimpleNamespace(monotonic=Mock(side_effect=[0., 0., 181.]))), \
+             patch.object(capture, 'middleware_get_payload', return_value=response(b'{"status":"false"}', 'true')):
+            capture._poll_laz(generation, capture._stop)
         result = capture.get_geometry_snapshot()
         self.assertNotIn('geometry', result)
-        self.assertIn('未返回有效点云', result['capture']['error'])
+        self.assertEqual(result['capture']['state'], 'timeout')
+        self.assertIn('未获取到有效点云', result['capture']['error'])
 
     def test_timeout_preserves_last_cloud_and_sends_stop(self):
         generation = self.arm()
@@ -209,7 +220,7 @@ class GeometryLazPollTest(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)
 
-    def test_json_and_header_completion_match_body_camera_including_status_false(self):
+    def test_after_valid_laz_json_and_header_completion_match_body_camera(self):
         from app.services.body_camera_fetch import _is_capture_finished, POLL_INTERVAL_SEC, POLL_TIMEOUT, MAX_POLL_SEC
         cases = [response(b'{"status":"false"}'), response(b'{"status":"true"}'),
                  response(b'[]'), response(b'', 'true'), response(b'', '1'),
@@ -221,8 +232,8 @@ class GeometryLazPollTest(unittest.TestCase):
             if not finished:continue
             with self.subTest(body=item.content, headers=item.headers):
                 capture.send_geomcap.reset_mock()
-                fetch = self.run_responses([item])
-                fetch.assert_called_once()
+                fetch = self.run_responses([response(cloud_bytes()), item])
+                self.assertEqual(fetch.call_count, 2)
                 self.assertEqual(capture.get_geometry_snapshot()['capture']['state'], 'finished')
                 self.assertEqual([call.args[0] for call in capture.send_geomcap.call_args_list], [True])
         self.assertEqual(self.poll_interval, POLL_INTERVAL_SEC)
