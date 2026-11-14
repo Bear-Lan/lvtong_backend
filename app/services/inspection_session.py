@@ -121,6 +121,15 @@ class InspectionSessionStore:
             return list(dict.fromkeys(self._share_image(v) for v in value if v))
         return copy.deepcopy(value)
 
+    def _share_panel_image(self, reference):
+        original = self._share_image(reference)
+        if original.startswith('/api/images/session_assets/'):
+            from app.services.panel_preview import ensure_preview
+            from app.services.temp_image_cache import get, parse_temp_id
+            entry = get(parse_temp_id(reference)) if reference.startswith('/api/temp-images/') else None
+            ensure_preview(self.image_root, original.rsplit('/', 1)[1], entry.data if entry and entry.original_id and 0 < entry.preview_w <= 1600 and 0 < entry.preview_h <= 1600 else None)
+        return original
+
     def patch(self, session_id, base_revision, changes, actor='', client_id=''):
         allowed = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'passcode',
                    'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft'}
@@ -189,7 +198,7 @@ class InspectionSessionStore:
                     image_group = doc.setdefault('images', {}).setdefault(kind, {})
                     for k, v in data['urls'].items():
                         if v:
-                            image_group[str(k)] = self._share_image(v)
+                            image_group[str(k)] = self._share_panel_image(v)
                     doc['draft'].setdefault('panelImages', {})[kind] = copy.deepcopy(image_group)
             elif event == 'geometry':
                 if doc['phase'] != 'detecting':

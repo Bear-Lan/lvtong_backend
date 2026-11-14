@@ -75,6 +75,8 @@ def create_app() -> Flask:
     app.register_blueprint(debug_api)
     app.register_blueprint(session_api)
     app.register_blueprint(system_config_api)
+    from app.api.panel_images import panel_images_api
+    app.register_blueprint(panel_images_api)
 
     from app.db.engine import engine
     from config import IMAGE_STORAGE_ROOT

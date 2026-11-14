@@ -30,6 +30,8 @@ store = InspectionSessionStore(engine, os.environ['IMAGE_STORAGE_ROOT'])
 store.initialize()
 app.register_blueprint(session_api)
 app.register_blueprint(inspection_api)
+from app.api.panel_images import panel_images_api
+app.register_blueprint(panel_images_api)
 init_session_sync(app, store)
 submissions = []
 
@@ -67,7 +69,7 @@ def begin():
     get_booking_state().update(booking)
     store.record('booking_accepted', {'booking': booking, 'activeClientId': request.headers.get('X-Inspection-Client', '')})
     store.record('detection_step', {'step': 3, 'message': '检测中', 'gateReleased': True, 'booking': booking})
-    image = np.full((500,1200,3), 220, np.uint8)
+    image = np.full((1000,4000,3), 220, np.uint8)
     cv2.putText(image, 'BODY SCAN', (150,250), cv2.FONT_HERSHEY_SIMPLEX, 3, (40,130,70), 7)
     _, encoded = cv2.imencode('.png', image)
     body = temp_image_cache.put_and_url(encoded.tobytes())
