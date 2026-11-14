@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify
 from app.extensions.auth import login_required
 from app.services.system_config import get_store, value, ConfigConflict
+from app.services.config_metadata import field_descriptions
 
 system_config_api = Blueprint('system_config', __name__, url_prefix='/api/config')
 
@@ -18,7 +19,8 @@ def maintain_config():
         if request.method == 'PATCH':
             body = request.get_json(silent=True) or {}
             store.save(body.get('values'), request.gc_user['username'], body.get('revisions'))
-        rows = [{**row, 'activeValue': value(row['key']), 'pendingRestart': value(row['key']) != row['value']} for row in store.rows()]
+        rows = [{**row, 'fieldDescriptions': field_descriptions(row['key']),
+                 'activeValue': value(row['key']), 'pendingRestart': value(row['key']) != row['value']} for row in store.rows()]
         return jsonify(code=0, message='保存后请重启后端使参数生效' if request.method == 'PATCH' else 'success', data=rows)
     except ConfigConflict as error:
         return jsonify(code=409, message=str(error), data=None), 409

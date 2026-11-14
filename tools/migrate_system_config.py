@@ -1,4 +1,4 @@
-"""仅为本机gcis建立config表，以当前环境及文件初始化，不启用设备、不重启服务。"""
+"""本机gcis参数表初始化及中文说明升级，不启用设备、不重启服务。"""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -11,4 +11,4 @@ if __name__ == '__main__':
         raise SystemExit('只允许迁移本机gcis')
     store = SystemConfigStore(engine)
     store.initialize()
-    print(f'本机config表已建立，共{len(store.rows())}项；未发设备命令、未重启任何服务')
+    print(f'本机config表已初始化并更新中文说明，共{len(store.rows())}项；未发设备命令、未重启任何服务')

@@ -11,6 +11,7 @@ from app.services import system_config as config
 from app.devices.mcast_cmd import send_mdrmc
 from app.extensions.auth import create_token
 from app.api.system_config import system_config_api
+from app.services.config_metadata import COLUMN_COMMENTS, PARAMETER_DESCRIPTIONS, field_descriptions
 
 
 class SystemConfigTests(unittest.TestCase):
@@ -32,6 +33,39 @@ class SystemConfigTests(unittest.TestCase):
         value = {row['key']: row['value'] for row in self.store.rows()}['middleware.RADAR_POINT_CLOUD_URL']
         self.assertEqual(value, 'http://127.0.0.1:5001/new/laz')
         self.assertIsNone(config.value('middleware.RADAR_POINT_CLOUD_URL'))
+
+    def test_chinese_description_upgrade_preserves_values_and_edit_revisions(self):
+        self.store.save({'middleware.RADAR_POINT_CLOUD_URL': 'http://127.0.0.1:6001/custom/laz'}, actor='operator')
+        with self.engine.begin() as conn:
+            conn.execute(update(config.config_table).values(description=config.config_table.c.key))
+        before = {row['key']: row for row in self.store.rows()}
+        self.store.initialize()
+        after = self.store.rows()
+        self.assertEqual(set(PARAMETER_DESCRIPTIONS), set(self.store.baseline))
+        self.assertEqual(set(COLUMN_COMMENTS), set(config.config_table.columns.keys()))
+        for row in after:
+            self.assertRegex(row['description'], r'[\u4e00-\u9fff]')
+            self.assertEqual({k: v for k, v in row.items() if k != 'description'},
+                             {k: v for k, v in before[row['key']].items() if k != 'description'})
+        scheduler = next(row for row in after if row['key'] == 'scheduler.workflow')
+        self.assertIn('gateRelease.minClearDistance', scheduler['description'])
+        self.assertIn('单位米', scheduler['description'])
+        self.store.initialize()
+        self.assertEqual(after, self.store.rows())
+
+    def test_api_exposes_nested_help_separately_from_editable_values(self):
+        app = Flask(__name__); app.register_blueprint(system_config_api)
+        client = app.test_client()
+        admin = {'Authorization': 'Bearer ' + create_token({'username': 'admin', 'role': 0})}
+        with patch('app.api.system_config.get_store', return_value=self.store):
+            response = client.get('/api/config', headers=admin)
+        self.assertEqual(response.status_code, 200)
+        rows = {row['key']: row for row in response.json['data']}
+        for key in ('scheduler.workflow', 'voice.announce', 'commands.templates', 'led.steps'):
+            self.assertTrue(rows[key]['fieldDescriptions'])
+            self.assertEqual(rows[key]['value'], self.store.baseline[key])
+        self.assertIn('true抬杆', rows['commands.templates']['fieldDescriptions']['boombarrier'])
+        self.assertEqual(set(self.store.baseline['commands.templates']), set(field_descriptions('commands.templates')))
 
     def test_invalid_batch_is_atomic_and_unknown_items_are_rejected(self):
         original = self.store.rows()

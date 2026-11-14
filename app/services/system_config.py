@@ -17,14 +17,19 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from sqlalchemy import Boolean, Column, Integer, JSON, MetaData, String, Table, Text, select, update
+from sqlalchemy.schema import SetColumnComment, SetTableComment
+from app.services.config_metadata import COLUMN_COMMENTS, TABLE_COMMENT, description
 
 metadata = MetaData()
 config_table = Table('config', metadata,
-    Column('key', String(128), primary_key=True), Column('value', JSON, nullable=False),
-    Column('category', String(32), nullable=False), Column('description', Text, nullable=False),
-    Column('revision', Integer, nullable=False, default=0),
-    Column('restart_required', Boolean, nullable=False, default=True),
-    Column('updated_by', String(128), nullable=False, default=''))
+    Column('key', String(128), primary_key=True, comment=COLUMN_COMMENTS['key']),
+    Column('value', JSON, nullable=False, comment=COLUMN_COMMENTS['value']),
+    Column('category', String(32), nullable=False, comment=COLUMN_COMMENTS['category']),
+    Column('description', Text, nullable=False, comment=COLUMN_COMMENTS['description']),
+    Column('revision', Integer, nullable=False, default=0, comment=COLUMN_COMMENTS['revision']),
+    Column('restart_required', Boolean, nullable=False, default=True, comment=COLUMN_COMMENTS['restart_required']),
+    Column('updated_by', String(128), nullable=False, default='', comment=COLUMN_COMMENTS['updated_by']),
+    comment=TABLE_COMMENT)
 _active = {}
 _store = None
 _lock = threading.RLock()
@@ -164,12 +169,24 @@ class SystemConfigStore:
             for key, value in self.baseline.items():
                 if key not in existing:
                     conn.execute(config_table.insert().values(key=key, value=value, category=key.split('.')[0],
-                        description=key, revision=0, restart_required=True, updated_by='initial'))
+                        description=description(key), revision=0, restart_required=True, updated_by='initial'))
+            self._refresh_descriptions(conn)
             row = conn.execute(select(config_table).where(config_table.c.key == 'scheduler.workflow').with_for_update()).mappings().one()
             upgraded = retire_legacy_distance_rules(row['value'])
             if upgraded != row['value']:
                 conn.execute(update(config_table).where(config_table.c.key == 'scheduler.workflow').values(
                     value=upgraded, revision=row['revision'] + 1, updated_by='migration:retire-distance-idle'))
+
+    def _refresh_descriptions(self, conn):
+        """升级旧表说明，不修改参数值、修订号或修改人，不派发设备动作。"""
+        for key in self.baseline:
+            note = description(key)
+            conn.execute(update(config_table).where(config_table.c.key == key,
+                config_table.c.description != note).values(description=note))
+        if conn.dialect.name == 'postgresql':
+            conn.execute(SetTableComment(config_table))
+            for column in config_table.columns:
+                conn.execute(SetColumnComment(column))
 
     def rows(self):
         with self.engine.connect() as conn:
