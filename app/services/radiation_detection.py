@@ -48,6 +48,17 @@ def _source_feedback(data):
     return values
 
 
+def _gate_lowered(data):
+    """DEVICE bit6 为 True 表示抬杆；仅新鲜且在线的布尔反馈可信。"""
+    if not data or data.get('fresh') is not True:
+        return None
+    online = {row.get('bit'): row.get('online') for row in data.get('sensors', [])}
+    raised = data.get('stickDownStatus')
+    if online.get(6) is not True or type(raised) is not bool:
+        return None
+    return not raised
+
+
 class RadiationDetection:
     def __init__(self, journal=None, *, sender=None, plc=None, idle=None,
                  clock=None, wall=None, background=True):
@@ -115,8 +126,7 @@ class RadiationDetection:
             data = self._plc()
             if _source_feedback(data) != [False, False]:
                 raise ValueError('请先确认两个光源在线、均已关闭且状态反馈正常')
-            online = {row.get('bit'): row.get('online') for row in data.get('sensors', [])}
-            if data.get('stickDownStatus') is not False or online.get(6) is not True:
+            if _gate_lowered(data) is not True:
                 raise ValueError('请先确认栏杆已落下且反馈正常')
             if data.get('urgentStopStatus') is not False or not self._idle():
                 raise ValueError('请在无预约、无车辆检测且无急停的空闲状态下检测辐射值')
@@ -205,10 +215,9 @@ class RadiationDetection:
                 elapsed = now - self._started
                 if sources == [True, True] and data.get('receivedAt', 0) > self._state['startedAt']:
                     self._state['bothSourcesOn'] = True
-                online = {row.get('bit'): row.get('online') for row in (data or {}).get('sensors', [])}
                 if elapsed >= DURATION:
                     self._stop_locked()
-                elif (sources is None or data.get('stickDownStatus') is not False or online.get(6) is not True
+                elif (sources is None or _gate_lowered(data) is not True
                       or data.get('urgentStopStatus') is not False or not self._idle()):
                     self._abort = '现场条件或设备反馈变化，检测已中断'
                     self._stop_locked()
@@ -265,10 +274,12 @@ class RadiationDetection:
 
     def _snapshot(self):
         state = copy.deepcopy(self._state)
+        data = self._plc()
         state.update(durationSeconds=DURATION, threshold=LIMIT, unit='μSv/h',
                      elapsedSeconds=round(min(DURATION, max(0, (self._stop_issued if self._stop_issued is not None else self._clock()) - self._started)), 2)
                      if state['startedAt'] else 0,
-                     latest=copy.deepcopy(self._latest), sources=_source_feedback(self._plc()))
+                     latest=copy.deepcopy(self._latest), sources=_source_feedback(data),
+                     gateLowered=_gate_lowered(data))
         return state
 
     def status(self):

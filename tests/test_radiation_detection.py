@@ -53,7 +53,7 @@ class RadiationDetectionTest(unittest.TestCase):
                                 headers=self.headers if auth else {})
 
     def start(self):
-        response = self.post({'action': 'start', 'confirmed': True})
+        response = self.post({'action': 'start'})
         self.assertEqual(response.status_code, 200, response.json)
         return response.json['data']['runId']
 
@@ -80,11 +80,29 @@ class RadiationDetectionTest(unittest.TestCase):
     def test_get_and_invalid_requests_never_send_commands(self):
         self.assertEqual(self.client.get('/api/device/radiation-detection').status_code, 401)
         self.assertEqual(self.client.get('/api/device/radiation-detection', headers=self.headers).status_code, 200)
-        for payload in ({}, [], {'action': 'start'}, {'action': 'start', 'confirmed': 1},
+        for payload in ({}, [], {'action': 'start', 'confirmed': False}, {'action': 'start', 'confirmed': 1},
                         {'action': 'start', 'confirmed': True, 'duration': 10},
                         {'action': 'stop'}, {'action': 'invalid'}):
             self.assertEqual(self.post(payload).status_code, 400)
         self.assertEqual(self.post({'action': 'start', 'confirmed': True}, auth=False).status_code, 401)
+        self.assertEqual(self.sent, [])
+
+    def test_gate_status_and_start_use_the_same_live_feedback(self):
+        gate_offline = [{'bit': bit, 'online': bit != 6} for bit in (6, 9, 10)]
+        cases = [(feedback(), True), (feedback(stickDownStatus=True), False),
+                 (None, None), (feedback(fresh=False), None),
+                 (feedback(sensors=gate_offline), None),
+                 (feedback(stickDownStatus=None), None),
+                 (feedback(stickDownStatus=0), None)]
+        for data, expected in cases:
+            with self.subTest(data=data):
+                self.plc = data
+                response = self.client.get('/api/device/radiation-detection', headers=self.headers)
+                self.assertIs(response.json['data']['gateLowered'], expected)
+                if expected is not True:
+                    # 新旧页面都不能靠请求参数绕过真实状态校验。
+                    for body in ({'action': 'start'}, {'action': 'start', 'confirmed': True}):
+                        self.assertEqual(self.post(body).status_code, 409)
         self.assertEqual(self.sent, [])
 
     def test_preconditions_require_live_gate_and_both_sources_off(self):
@@ -187,7 +205,7 @@ class RadiationDetectionTest(unittest.TestCase):
         self.assertEqual(self.closed()['phase'], 'cancelled')
 
     def test_feedback_loss_early_source_loss_or_gate_raise_stops_early(self):
-        for kind in ('feedback', 'gate', 'source', 'booking'):
+        for kind in ('feedback', 'gate', 'gate_offline', 'source', 'booking'):
             with self.subTest(kind=kind):
                 self.setUpScenario()
                 self.start()
@@ -197,6 +215,8 @@ class RadiationDetectionTest(unittest.TestCase):
                 self.now = 101
                 self.plc = feedback(101000, kind != 'source', True,
                                     fresh=kind != 'feedback', stickDownStatus=kind == 'gate')
+                if kind == 'gate_offline':
+                    self.plc['sensors'][0]['online'] = False
                 self.idle = kind != 'booking'
                 self.service.tick()
                 self.assertEqual(self.service.status()['phase'], 'stopping')

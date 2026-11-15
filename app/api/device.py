@@ -483,7 +483,7 @@ def radiometer_status():
 @device_api.route('/radiation-detection', methods=['GET', 'POST'])
 @login_required
 def radiation_detection():
-    """固定六秒检测；GET只读，POST开始必须显式确认现场条件。"""
+    """固定六秒检测；GET只读，启动条件由实际设备反馈校验。"""
     from app.services.radiation_detection import get_radiation_detection
     service = get_radiation_detection()
     if request.method == 'GET':
@@ -492,8 +492,9 @@ def radiation_detection():
     if not isinstance(body, dict):
         return fail(400, '请输入检测操作')
     if body.get('action') == 'start':
-        if body.get('confirmed') is not True or set(body) != {'action', 'confirmed'}:
-            return fail(400, '请确认现场条件；检测时长固定6秒')
+        # 兼容旧页面的 confirmed=true；该字段不能替代真实栏杆反馈。
+        if set(body) != {'action'} and not (set(body) == {'action', 'confirmed'} and body['confirmed'] is True):
+            return fail(400, '无效的检测参数；检测时长固定6秒')
         try:
             return ok(service.start())
         except ValueError as error:
