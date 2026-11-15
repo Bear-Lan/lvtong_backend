@@ -4,8 +4,8 @@
   - $VMRMC,时间,物体个数,前端位置,前端速度  — 车辆距离
   - $VARMC,时间,数值                    — 独立空闲播报触发
   - $NTRMC,DEVICE,<cmdHex>,<statusHex>     — 开关状态（ST_* bit0 起；两段 cmd,status）
-  - $NTRMC,XRAY160/XRAY200,<电流>,<电压>,<温度>
-  - $NTRMC,XRSUP/XRSDOWN,<电流>,<电压>,<温度>  — 现场新代号（上/下光机，等同 200/160）
+  - $NTRMC,XRAY160/XRAY200,<电压>,<电流>,<温度>
+  - $NTRMC,XRSUP/XRSDOWN,<电压>,<电流>,<温度>  — 现场新代号（上/下光机，等同 200/160）
   - $NTRMC,DM200,<个数>,<温度…>
 
 兼容旧版单播 JSON:
@@ -318,8 +318,8 @@ class RadarReader(DeviceBase):
         """解析 X 光遥测。
 
         兼容：
-          $NTRMC,XRAY160|XRAY200,<电流>,<电压>,<温度>
-          $NTRMC,XRSUP|XRSDOWN,<电流>,<电压>,<温度>   # 现场中间件新代号
+          $NTRMC,XRAY160|XRAY200,<电压>,<电流>,<温度>
+          $NTRMC,XRSUP|XRSDOWN,<电压>,<电流>,<温度>   # 现场中间件新代号
         映射：XRSUP→200（上光机），XRSDOWN→160（下光机）
         """
         try:
@@ -336,8 +336,8 @@ class RadarReader(DeviceBase):
             return {
                 'type': xray_type,
                 'kind': kind,
-                'current': float(parts[2]),
-                'voltage': float(parts[3]),
+                'voltage': float(parts[2]),
+                'current': float(parts[3]),
                 'temperature': float(parts[4]),
             }
         except (ValueError, IndexError):

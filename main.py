@@ -174,6 +174,9 @@ def create_app() -> Flask:
     # 注册图像采集蓝图
     app.register_blueprint(capture_api)
 
+    from app.services.radiation_detection import init_radiation_detection
+    init_radiation_detection()
+
     return app
 
 
@@ -185,6 +188,11 @@ socketio = init_socketio(flask_app)
 # 注册 SIGINT/SIGTERM 让 Ctrl+C 能立即终止进程。
 def _shutdown_handler(signum, frame):
     print(f'\n[SHUTDOWN] 收到信号 {signum}，正在关闭…', flush=True)
+    try:
+        from app.services.radiation_detection import get_radiation_detection
+        get_radiation_detection().shutdown()
+    except Exception:
+        pass
     try:
         from app.services.mediamtx_launcher import stop_mediamtx
         stop_mediamtx()
@@ -294,7 +302,7 @@ if __name__ == '__main__':
             print(f'[SCHEDULER] PLC 处理失败: {e}')
 
     def _on_xray_status(xray_type: str, current: float, voltage: float, temperature: float):
-        # 协议：电流/电压/温度 → 前端沿用 kv/ma/temperature
+        # 线上协议为电压/电流/温度；解析器按回调签名传入current/voltage。
         push_xray_status(xray_type, kv=voltage, ma=current, temperature=temperature)
 
     def _on_dm_temp(temps: list):

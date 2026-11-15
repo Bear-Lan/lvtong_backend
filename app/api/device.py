@@ -480,6 +480,29 @@ def radiometer_status():
     return ok(get_last_radiometer_status())
 
 
+@device_api.route('/radiation-detection', methods=['GET', 'POST'])
+@login_required
+def radiation_detection():
+    """固定六秒检测；GET只读，POST开始必须显式确认现场条件。"""
+    from app.services.radiation_detection import get_radiation_detection
+    service = get_radiation_detection()
+    if request.method == 'GET':
+        return ok(service.status())
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return fail(400, '请输入检测操作')
+    if body.get('action') == 'start':
+        if body.get('confirmed') is not True or set(body) != {'action', 'confirmed'}:
+            return fail(400, '请确认现场条件；检测时长固定6秒')
+        try:
+            return ok(service.start())
+        except ValueError as error:
+            return fail(409, str(error), service.status())
+    if body.get('action') == 'stop' and isinstance(body.get('runId'), str) and body['runId']:
+        return ok(service.stop(body['runId']))
+    return fail(400, '无效的检测操作')
+
+
 @device_api.route('/plc-control', methods=['POST'])
 @login_required
 def plc_control():

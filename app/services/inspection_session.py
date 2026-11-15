@@ -5,6 +5,7 @@ import base64
 import copy
 import hashlib
 import json
+import math
 import os
 import threading
 import time
@@ -28,6 +29,22 @@ def _new_document(revision=0):
     return {'sessionId': uuid.uuid4().hex, 'revision': revision, 'phase': 'idle',
             'booking': {}, 'workflow': {}, 'draft': {}, 'geometryUrl': '',
             'updatedBy': '', 'submittedId': None, '_versions': {}}
+
+
+def _cloud_vehicle_size(geometry):
+    """表单尺寸来自全部点云包络；仅调整录入宽度，保留原始测量数据。"""
+    try:
+        low, high = geometry['boundsMeters']['min'], geometry['boundsMeters']['max']
+        if len(low) != 3 or len(high) != 3 or any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                for v in [*low, *high]):
+            return ''
+        length, width, height = [b - a for a, b in zip(low, high)]
+        if any(not math.isfinite(v) or v <= 0 for v in (length, width, height)):
+            return ''
+        return f'长{length:.2f}m|宽{min(width, 2.54):.2f}m|高{height:.2f}m'
+    except (KeyError, TypeError, ValueError):
+        return ''
 
 
 class InspectionSessionStore:
@@ -207,6 +224,9 @@ class InspectionSessionStore:
                 for view in shared.get('views', {}).values():
                     view['imageUrl'] = self._share_image(view['imageUrl'])
                 doc['geometryUrl'] = self._write_asset(json.dumps(shared, ensure_ascii=False, allow_nan=False).encode(), '.json')
+                size = _cloud_vehicle_size(shared.get('geometry'))
+                if size:
+                    doc['draft'].setdefault('form', {})['size'] = size
                 doc['draft']['radarCloudImageUrl'] = '' # 新点云不能提交上一帧的3D截图。
                 # 与本帧三维坐标同源的正交视图，不依赖终端当前旋转角度。
                 for view, field in (('top', 'radarCloudTopImageUrl'), ('side', 'radarCloudSideImageUrl')):

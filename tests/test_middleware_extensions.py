@@ -11,6 +11,27 @@ from app.extensions.auth import create_token
 
 
 class MiddlewareExtensionsTest(unittest.TestCase):
+    def test_xray_wire_voltage_then_current_reaches_correct_ws_fields(self):
+        radar = RadarReader('isolated-xray-telemetry')
+        # 沿用main.py的回调参数顺序；线上的字段顺序为电压、电流、温度。
+        radar.set_xray_status_callback(lambda kind, current, voltage, temperature:
+            handler.push_xray_status(kind, kv=voltage, ma=current, temperature=temperature))
+        with patch('socket.socket', side_effect=AssertionError('network forbidden')), \
+             patch.object(handler.socketio, 'emit') as emit:
+            for kind, channel, voltage, current, temperature in (
+                ('XRSUP', '200', 200, 1.2, 18.6),
+                ('XRSDOWN', '160', 160, .8, 19.5),
+                ('XRAY200', '200', 195, 1.1, 21),
+                ('XRAY160', '160', 155, .7, 20),
+                ('XRSUP', '200', 0, 0, 18.6),
+            ):
+                with self.subTest(kind=kind, voltage=voltage):
+                    radar._dispatch(f'$NTRMC,{kind},{voltage},{current},{temperature}')
+                    message = emit.call_args.args[1]
+                    self.assertEqual(message['type'], 'xray_status')
+                    self.assertEqual(message['data'], {'type': channel, 'kv': voltage,
+                                                      'ma': current, 'temperature': temperature})
+
     def test_gate_online_uses_bit6_and_feedback_age_not_local_driver(self):
         app = Flask(__name__)
         app.register_blueprint(device.device_api)

@@ -18,7 +18,7 @@ import threading
 _lock = threading.Lock()
 
 
-def send_mdrmc(*commands: str) -> bool:
+def send_mdrmc(*commands: str, radiation_token: str | None = None) -> bool:
     """发送一条或多条控制命令。"""
     cmds = [c.strip() for c in commands if c and str(c).strip()]
     if not cmds:
@@ -28,7 +28,12 @@ def send_mdrmc(*commands: str) -> bool:
     except ValueError as error:
         print(f'[MDRMC] 命令配置无效，未发送：{error}', flush=True)
         return False
-    return publish_mdrmc(msg)
+    from app.services.radiation_detection import get_radiation_detection
+    with get_radiation_detection().command_guard(cmds, radiation_token) as allowed:
+        if not allowed:
+            print('[MDRMC] 辐射检测/停机确认期间禁止其他开光或抬杆命令', flush=True)
+            return False
+        return publish_mdrmc(msg)
 
 
 def format_message(commands) -> str:

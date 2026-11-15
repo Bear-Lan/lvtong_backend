@@ -99,6 +99,37 @@ class InspectionSessionTests(unittest.TestCase):
         snapshot = self.store.record('geometry', {'geometry': {'positions': [1, 2, 3]}})
         self.assertEqual(snapshot['draft']['radarCloudImageUrl'], '')
 
+    def test_cloud_size_is_persisted_for_all_clients_without_changing_raw_width(self):
+        self.store.record('booking_accepted', {})
+        self.change([{'path': ['form', 'size'], 'value': '历史尺寸'}])
+        for width, expected in [(2.5, '2.50'), (2.54, '2.54'), (2.549, '2.54'), (2.55, '2.54'), (3.2, '2.54')]:
+            with self.subTest(width=width):
+                before = self.store.snapshot()
+                sample = {'geometry': {'boundsMeters': {'min': [0, 0, 0], 'max': [12.346, width, 3.678]}}}
+                snapshot = self.store.record('geometry', sample)
+                self.assertEqual(snapshot['draft']['form']['size'], f'长12.35m|宽{expected}m|高3.68m')
+                stored = json.loads((self.store.image_root / snapshot['geometryUrl'].removeprefix('/api/images/')).read_text(encoding='utf8'))
+                self.assertEqual(stored['geometry'], sample['geometry'])
+                self.assertEqual(InspectionSessionStore(self.engine, self.store.image_root).snapshot(), snapshot)
+                if before['draft']['form']['size'] != snapshot['draft']['form']['size']:
+                    with self.assertRaises(SessionConflict):
+                        self.change([{'path': ['form', 'size'], 'value': '迟到的旧尺寸'}], before)
+        self.store.record('booking_reset', {})
+        self.assertEqual(self.store.snapshot()['draft'], {})
+        # 重置后的迟到点云不得把上一辆车的尺寸带入新单。
+        self.store.record('geometry', sample)
+        self.assertEqual(self.store.snapshot()['draft'], {})
+
+    def test_invalid_cloud_bounds_leave_existing_form_size_untouched(self):
+        self.store.record('booking_accepted', {})
+        self.change([{'path': ['form', 'size'], 'value': '长12.00m|宽2.50m|高3.80m'}])
+        for geometry in [None, {}, {'boundsMeters': {'min': [0, 0, 0], 'max': [12, 0, 3]}},
+                         {'boundsMeters': {'min': [0, 0, 0], 'max': [12, -2, 3]}},
+                         {'boundsMeters': {'min': [0, 0, 0], 'max': [12, 'bad', 3]}}]:
+            with self.subTest(geometry=geometry):
+                snapshot = self.store.record('geometry', {'geometry': geometry})
+                self.assertEqual(snapshot['draft']['form']['size'], '长12.00m|宽2.50m|高3.80m')
+
     def test_same_frame_top_side_persist_and_next_frame_replaces_them(self):
         self.store.record('booking_accepted', {})
         top = temp_image_cache.put_and_url(PNG)

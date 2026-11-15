@@ -153,6 +153,8 @@ def get_last_radiometer_status() -> dict | None:
 
 def push_radiometer_status(value: float):
     global _last_radiometer_data, _last_radiometer_time
+    from app.services.radiation_detection import get_radiation_detection
+    get_radiation_detection().record(value)
     data = {'value': value, 'unit': None, 'receivedAt': int(time.time() * 1000)}
     with _radiometer_lock:
         _last_radiometer_data = data
