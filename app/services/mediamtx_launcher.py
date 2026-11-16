@@ -2,10 +2,11 @@
 
 - paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 图像采集枪机
 - paths.cam2 ← HEAD_VIDEO_DEVICE_ID（默认 cam_head / 102）→ Pad 主页面/车头采集
-- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe / 105）→ Pad 周界相机弹窗
+- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe）→ 周界左
 - paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
 - paths.cam5 ← PTZ_VIDEO_DEVICE_ID（默认 cam_ptz / 104）→ Pad 球机预览
 - paths.cam6 ← ROAD_VIDEO_DEVICE_ID（默认 cam_road / 107）→ Pad 车顶采集
+- paths.cam7 ← SAFE_RIGHT_VIDEO_DEVICE_ID（默认 cam_safe_right）→ 周界右
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ _MTX_DIR = Path(__file__).resolve().parents[2] / 'tools' / 'mediamtx'
 _DEFAULT_LIVE_DEVICE_ID = 'cam_lane'
 _DEFAULT_HEAD_DEVICE_ID = 'cam_head'
 _DEFAULT_SAFE_DEVICE_ID = 'cam_safe'
+_DEFAULT_SAFE_RIGHT_DEVICE_ID = 'cam_safe_right'
 _DEFAULT_TALK_DEVICE_ID = 'cam_booking'
 _DEFAULT_PTZ_DEVICE_ID = 'cam_ptz'
 _DEFAULT_ROAD_DEVICE_ID = 'cam_road'
@@ -134,8 +136,8 @@ def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
         print(f'[MediaMTX] devices.device_id={device_id} 不存在，跳过 {path_name} 同步')
         return None
 
-    # 照片采集的五路相机只传子码流；cam3 周界相机沿用原设置。
-    stream_type = _stream_type() if path_name == 'cam3' else 2
+    # 照片采集五路只传子码流；左右周界沿用原周界码流设置。
+    stream_type = _stream_type() if path_name in ('cam3', 'cam7') else 2
     rtsp = build_hik_rtsp_from_device(row, stream_type=stream_type)
     if not _write_path_source(path_name, rtsp):
         return None
@@ -161,7 +163,7 @@ def sync_cam2_source_from_db(device_id: str | None = None) -> str | None:
 
 
 def sync_cam3_source_from_db(device_id: str | None = None) -> str | None:
-    """Web 周界相机 A：device_id → paths.cam3.source（默认 cam_safe）。"""
+    """周界左：device_id → paths.cam3.source（默认 cam_safe）。"""
     did = (device_id or os.environ.get('SAFE_VIDEO_DEVICE_ID') or _DEFAULT_SAFE_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam3', did)
 
@@ -182,6 +184,12 @@ def sync_cam6_source_from_db(device_id: str | None = None) -> str | None:
     """Pad 车顶相机：device_id → paths.cam6.source（默认 cam_road）。"""
     did = (device_id or os.environ.get('ROAD_VIDEO_DEVICE_ID') or _DEFAULT_ROAD_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam6', did)
+
+
+def sync_cam7_source_from_db(device_id: str | None = None) -> str | None:
+    """周界右：独立读 DB，后续仅需修改 cam_safe_right 的 IP。"""
+    did = (device_id or os.environ.get('SAFE_RIGHT_VIDEO_DEVICE_ID') or _DEFAULT_SAFE_RIGHT_DEVICE_ID).strip()
+    return _sync_path_from_device_id('cam7', did)
 
 
 def _stop_foreign_mediamtx() -> None:
@@ -250,6 +258,11 @@ def start_mediamtx() -> bool:
     except Exception as e:
         print(f'[MediaMTX] 同步 cam6 RTSP 失败: {e}')
 
+    try:
+        sync_cam7_source_from_db()
+    except Exception as e:
+        print(f'[MediaMTX] 同步 cam7 RTSP 失败: {e}')
+
     if _proc is not None and _proc.poll() is None:
         print('[MediaMTX] 已在运行')
         return True
@@ -294,7 +307,8 @@ def start_mediamtx() -> bool:
             f'http://127.0.0.1:8889/cam3/whep  '
             f'http://127.0.0.1:8889/cam4/whep  '
             f'http://127.0.0.1:8889/cam5/whep  '
-            f'http://127.0.0.1:8889/cam6/whep'
+            f'http://127.0.0.1:8889/cam6/whep  '
+            f'http://127.0.0.1:8889/cam7/whep'
         )
         return True
     except Exception as e:

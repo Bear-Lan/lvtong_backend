@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 
-CAMERA_PATHS = tuple(f'cam{i}' for i in range(1, 7))
+CAMERA_PATHS = tuple(f'cam{i}' for i in range(1, 8))
 
 
 def configure_webrtc_hosts(config: dict, hosts: str) -> None:

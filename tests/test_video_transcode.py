@@ -12,15 +12,15 @@ class VideoTranscodeTest(unittest.TestCase):
         return {'rtspAddress': ':8554', 'pathDefaults': {'sourceOnDemand': True},
                 'webrtcAdditionalHosts': ['100.69.226.19'],
                 'paths': {f'cam{i}': {'source': f'rtsp://user:secret@camera{i}/101',
-                                     'rtspTransport': 'tcp'} for i in range(1, 7)}}
+                                     'rtspTransport': 'tcp'} for i in range(1, 8)}}
 
-    def test_all_six_paths_become_shared_on_demand_h264_publishers(self):
+    def test_all_seven_paths_become_shared_on_demand_h264_publishers(self):
         base = self.base()
         before = copy.deepcopy(base)
         result = build_transcode_config(base, r'C:\Program Files\ffmpeg.exe', 'libx264')
         self.assertEqual(base, before)
         self.assertEqual(result['webrtcAdditionalHosts'], before['webrtcAdditionalHosts'])
-        for i in range(1, 7):
+        for i in range(1, 8):
             name = f'cam{i}'
             out, raw = result['paths'][name], result['paths'][name + '_input']
             self.assertEqual(raw['source'], before['paths'][name]['source'])

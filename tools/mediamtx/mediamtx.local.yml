@@ -41,7 +41,7 @@ paths:
     source: rtsp://admin:whds%402025@192.168.188.102:554/Streaming/Channels/102
     rtspTransport: tcp
 
-  # Pad 左下「拍照」: /mtx/cam3/whep — 周界相机 A
+  # Pad「周界」: /mtx/cam3/whep — 周界左
   # source 由 Flask 从 devices.device_id=cam_safe 写入
   cam3:
     source: rtsp://admin:whds%402025@192.168.188.105:554/Streaming/Channels/101
@@ -63,4 +63,10 @@ paths:
   # source 由 Flask 从 devices.device_id=cam_road（可用 ROAD_VIDEO_DEVICE_ID 覆盖）写入
   cam6:
     source: rtsp://admin:whds%402025@192.168.188.107:554/Streaming/Channels/102
+    rtspTransport: tcp
+
+  # Pad「周界」: /mtx/cam7/whep — 周界右，启动时独立读取 cam_safe_right
+  # 首次部署先执行 migrations/20261116_perimeter_cameras.sql。
+  cam7:
+    source: rtsp://127.0.0.1:8554/unconfigured-perimeter-right
     rtspTransport: tcp

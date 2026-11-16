@@ -36,6 +36,21 @@ class CameraStreamSplitTest(unittest.TestCase):
                 self.assertTrue(write.call_args.args[1].endswith('/102'))
             mtx._sync_path_from_device_id('cam3', 'test')
             self.assertTrue(write.call_args.args[1].endswith('/101'))
+            mtx._sync_path_from_device_id('cam7', 'test')
+            self.assertTrue(write.call_args.args[1].endswith('/101'))
+
+    def test_perimeter_sides_use_independent_database_rows(self):
+        rows = {'cam_safe': {'ip_address': '192.0.2.10'},
+                'cam_safe_right': {'ip_address': '192.0.2.11'}}
+        with patch.object(mtx, '_load_device_by_device_id', side_effect=rows.get), \
+             patch.object(mtx, '_write_path_source', return_value=True) as write, \
+             patch.dict('os.environ', {}, clear=True):
+            mtx.sync_cam3_source_from_db()
+            mtx.sync_cam7_source_from_db()
+            calls = write.call_args_list
+            self.assertEqual([c.args[0] for c in calls], ['cam3', 'cam7'])
+            self.assertIn('@192.0.2.10:', calls[0].args[1])
+            self.assertIn('@192.0.2.11:', calls[1].args[1])
 
     def setUp(self):
         app = Flask(__name__)

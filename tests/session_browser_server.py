@@ -98,6 +98,20 @@ def begin():
 def submitted():
     return jsonify(submissions)
 
+@app.post('/fixture/automatic')
+def automatic_fixture():
+    # 模拟自动采集/移动端回填事件，只走生产持久草稿和广播，不调用设备。
+    body = request.get_json(silent=True) or {}
+    if body.get('phone'):
+        store.record('mobile_upload', {'phone': body['phone']})
+    if body.get('kind'):
+        image = np.full((100, 240, 3), (50, 140, 210), np.uint8)
+        cv2.putText(image, str(body.get('label', 'AUTO')), (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+        _, encoded = cv2.imencode('.png', image)
+        store.record('image_ready', {'imageType': body['kind'], 'url': temp_image_cache.put_and_url(encoded.tobytes())})
+    broadcast(store.snapshot())
+    return jsonify(code=0, data=store.snapshot())
+
 @app.post('/fixture/hardware-booking')
 def hardware_booking_fixture():
     # 仅模拟两种硬件反馈格式，绝不调用真实语音、红灯或闸机。
