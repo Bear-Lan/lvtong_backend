@@ -17,7 +17,10 @@ import uuid
 
 DURATION = 6.0
 LIMIT = 15.0
-STOP_COMMANDS = ('xraycap=false', 'xraysource200=false', 'xraysource160=false')
+# 现场确认：先分别开上下内锁，再以同一包开启两个光源。
+START_GROUPS = (('xrayinlockup=true',), ('xrayinlockdown=true',),
+                ('xraysourceup=true', 'xraysourcedown=true'))
+STOP_COMMANDS = ('xraycap=false', 'xraysourceup=false', 'xraysourcedown=false')
 
 
 def _plc():
@@ -83,6 +86,7 @@ class RadiationDetection:
         self._stop_sent = set()
         self._abort = ''
         self._latest = None
+        self._opening_commands = ()
 
     def _save(self):
         if self._journal is None:
@@ -148,13 +152,29 @@ class RadiationDetection:
             except Exception:
                 self._state.update(active=False, phase='failed', error='无法建立检测停机保护，未开启光源')
                 raise ValueError(self._state['error'])
-            try:
-                sent = self._sender('xraysource200=true', 'xraysource160=true',
-                                    radiation_token=self._state['runId'])
-            except Exception:
-                sent = False
-            if not sent:
-                self._abort = '光源开启命令发送失败，正在停止两个光源'
+            for commands in START_GROUPS:
+                # 内锁发送失败、耗尽六秒期限或现场条件变化时，禁止继续开光。
+                try:
+                    if self._state['phase'] != 'measuring':
+                        break
+                    if self._clock() - self._started >= DURATION:
+                        raise ValueError('启动已超过六秒期限，正在停止两个光源')
+                    data = self._plc()
+                    if (_source_feedback(data) != [False, False] or _gate_lowered(data) is not True
+                            or data.get('urgentStopStatus') is not False or not self._idle()):
+                        raise ValueError('启动期间现场条件或设备反馈变化，正在停止两个光源')
+                    self._opening_commands = commands
+                    if not self._sender(*commands, radiation_token=self._state['runId']):
+                        name = '内锁' if commands[0].startswith('xrayinlock') else '光源'
+                        raise ValueError(f'{name}开启命令发送失败，正在停止两个光源')
+                except Exception as error:
+                    self._abort = str(error) if isinstance(error, ValueError) else '启动命令发送异常，正在停止两个光源'
+                    self._stop_locked()
+                    break
+                finally:
+                    self._opening_commands = ()
+            # 即便开启请求在发送期间耗尽期限，也不等待下一轮看门狗才停机。
+            if self._state['phase'] == 'measuring' and self._clock() - self._started >= DURATION:
                 self._stop_locked()
             return self._snapshot()
 
@@ -296,10 +316,10 @@ class RadiationDetection:
                     key, _, raw = command.lower().partition('=')
                     enabling = raw.split('&')[0] == 'true'
                     hazard = ((key.startswith(('xray', 'boombarrier')) and enabling)
-                              or (key.startswith('interlock') and raw == 'false'))
+                              or (key.startswith(('interlock', 'xrayinlock')) and raw == 'false'))
                     own_start = (token == self._state['runId'] and self._state['phase'] == 'measuring'
                                  and self._clock() - self._started < DURATION
-                                 and key in ('xraysource200', 'xraysource160'))
+                                 and tuple(commands) == self._opening_commands)
                     if hazard and not own_start:
                         allowed = False
             yield allowed

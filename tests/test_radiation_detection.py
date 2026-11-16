@@ -121,8 +121,9 @@ class RadiationDetectionTest(unittest.TestCase):
 
     def test_six_second_deadline_sends_all_three_stop_commands(self):
         self.measure()
-        self.assertEqual(self.sent[:2], [(100, 'xraysource200=true'), (100, 'xraysource160=true')])
-        self.assertEqual(self.sent[2:], [(106, command) for command in radiation.STOP_COMMANDS])
+        self.assertEqual(self.sent[:4], [(100, command) for command in
+            ('xrayinlockup=true', 'xrayinlockdown=true', 'xraysourceup=true', 'xraysourcedown=true')])
+        self.assertEqual(self.sent[4:], [(106, command) for command in radiation.STOP_COMMANDS])
         state = self.service.status()
         self.assertTrue(state['active'])
         self.assertEqual(state['phase'], 'stopping')
@@ -133,6 +134,80 @@ class RadiationDetectionTest(unittest.TestCase):
         self.assertEqual(state['result'], {'value': 10, 'level': 'normal'})
         self.assertEqual(state['elapsedSeconds'], 6)
         self.assertFalse(json.loads(self.path.read_text())['active'])
+
+    def test_real_formatter_sends_inner_locks_then_one_dual_source_packet(self):
+        self.service._sender = mcast_cmd.send_mdrmc
+        with patch.object(mcast_cmd, 'publish_mdrmc', return_value=True) as publish:
+            run_id = self.start()
+            self.assertEqual([call.args[0] for call in publish.call_args_list], [
+                '$MDRMC,1,xrayinlockup=true',
+                '$MDRMC,1,xrayinlockdown=true',
+                '$MDRMC,2,xraysourceup=true,xraysourcedown=true'])
+            self.service.stop(run_id)
+            self.assertEqual([call.args[0] for call in publish.call_args_list[3:]], [
+                '$MDRMC,1,xraycap=false', '$MDRMC,1,xraysourceup=false',
+                '$MDRMC,1,xraysourcedown=false'])
+
+    def test_failed_or_exceptional_inner_lock_never_enables_sources(self):
+        for failed_step in (0, 1):
+            for failure in (False, OSError('simulated transport failure')):
+                with self.subTest(step=failed_step, failure=str(failure)):
+                    self.setUpScenario()
+                    calls = []
+                    def sender(*commands, **kwargs):
+                        calls.append(commands)
+                        if commands == radiation.START_GROUPS[failed_step]:
+                            if isinstance(failure, Exception):
+                                raise failure
+                            return False
+                        return True
+                    self.service._sender = sender
+                    self.start()
+                    self.assertEqual(calls[:failed_step+1], list(radiation.START_GROUPS[:failed_step+1]))
+                    self.assertEqual(calls[failed_step+1:], [(command,) for command in radiation.STOP_COMMANDS])
+                    self.assertNotIn(('xraysourceup=true', 'xraysourcedown=true'), calls)
+                    self.assertEqual(self.service.status()['phase'], 'stopping')
+                    self.assertTrue(self.closed()['bothSourcesOff'])
+
+    def test_inner_lock_delay_or_feedback_change_prevents_late_opening(self):
+        for kind in ('deadline', 'gate', 'feedback', 'booking'):
+            with self.subTest(kind=kind):
+                self.idle = True
+                self.setUpScenario()
+                calls = []
+                def sender(*commands, **kwargs):
+                    calls.append(commands)
+                    if commands == ('xrayinlockdown=true',):
+                        if kind == 'deadline': self.now = 106
+                        elif kind == 'gate': self.plc = feedback(stickDownStatus=True)
+                        elif kind == 'feedback': self.plc = feedback(fresh=False)
+                        else: self.idle = False
+                    return True
+                self.service._sender = sender
+                self.start()
+                self.assertNotIn(('xraysourceup=true', 'xraysourcedown=true'), calls)
+                self.assertEqual(calls[-3:], [(command,) for command in radiation.STOP_COMMANDS])
+                self.assertEqual(self.service.status()['phase'], 'stopping')
+        self.idle = True
+
+    def test_dual_source_send_failure_or_delay_still_stops_both_sources(self):
+        for kind in ('failure', 'exception', 'deadline'):
+            with self.subTest(kind=kind):
+                self.setUpScenario()
+                calls = []
+                def sender(*commands, **kwargs):
+                    calls.append(commands)
+                    if commands == ('xraysourceup=true', 'xraysourcedown=true'):
+                        if kind == 'failure': return False
+                        if kind == 'exception': raise OSError('partial source send')
+                        self.now = 106
+                    return True
+                self.service._sender = sender
+                self.start()
+                self.assertEqual(calls[:3], list(radiation.START_GROUPS))
+                self.assertEqual(calls[3:], [(command,) for command in radiation.STOP_COMMANDS])
+                self.assertEqual(self.service.status()['phase'], 'stopping')
+                self.assertTrue(self.service.status()['active'])
 
     def test_old_single_missing_or_offline_feedback_does_not_finish_and_retries_continue(self):
         self.measure()
@@ -196,9 +271,9 @@ class RadiationDetectionTest(unittest.TestCase):
     def test_duplicate_start_and_old_run_stop_cannot_restart_or_stop_new_run(self):
         run_id = self.start()
         self.assertEqual(self.post({'action': 'start', 'confirmed': True}).status_code, 409)
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.sent), 4)
         self.post({'action': 'stop', 'runId': 'previous-run'})
-        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.sent), 4)
         self.post({'action': 'stop', 'runId': run_id})
         self.assertEqual(self.service.status()['phase'], 'stopping')
         self.assertTrue(self.service.status()['active'])
@@ -259,14 +334,19 @@ class RadiationDetectionTest(unittest.TestCase):
         run_id = self.start()
         with patch.object(mcast_cmd, 'publish_mdrmc', return_value=True) as publish:
             for command in ('xraycap=true&1.8&large', 'xraysource200=true', 'xraysource160=true',
+                            'xraysourceup=true', 'xraysourcedown=true',
+                            'xrayinlockup=true', 'xrayinlockdown=true',
+                            'xrayinlockup=false', 'xrayinlockdown=false',
                             'xraygate200=true', 'boombarrier=true', 'interlock160=false'):
                 self.assertFalse(mcast_cmd.send_mdrmc(command))
             publish.assert_not_called()
             self.assertTrue(mcast_cmd.send_mdrmc('xraycap=false'))
             self.assertTrue(mcast_cmd.send_mdrmc('boombarrier=false'))
-            self.assertTrue(mcast_cmd.send_mdrmc('xraysource200=true', radiation_token=run_id))
+            # 已完成启动序列，即便拿着本轮token也不能再补发开启或改变内锁。
+            for commands in radiation.START_GROUPS:
+                self.assertFalse(mcast_cmd.send_mdrmc(*commands, radiation_token=run_id))
             self.service.stop(run_id)
-            self.assertFalse(mcast_cmd.send_mdrmc('xraysource200=true', radiation_token=run_id))
+            self.assertFalse(mcast_cmd.send_mdrmc('xraysourceup=true', radiation_token=run_id))
             self.closed()
             self.assertTrue(mcast_cmd.send_mdrmc('boombarrier=true'))
 
@@ -288,20 +368,20 @@ class RadiationWatchdogWallClockTest(unittest.TestCase):
         stopped = threading.Event()
         def sender(*items, **kwargs):
             commands.extend((time.monotonic(), item) for item in items)
-            if 'xraysource200=true' in items:
+            if 'xraysourceup=true' in items:
                 data.update(lightSource200Status=True, lightSource160Status=True,
                             receivedAt=int(time.time() * 1000) + 1)
-            if items == ('xraysource160=false',):
+            if items == ('xraysourcedown=false',):
                 stopped.set()
             return True
         service = radiation.RadiationDetection(sender=sender, plc=lambda: data, idle=lambda: True)
         with patch('socket.socket', side_effect=AssertionError('network forbidden')):
             service.start()
             self.assertTrue(stopped.wait(7))
-            delta = commands[2][0] - commands[0][0]
+            delta = commands[4][0] - commands[0][0]
             self.assertGreaterEqual(delta, 5.95)
             self.assertLess(delta, 6.3)
-            self.assertEqual([command for _, command in commands[2:5]], list(radiation.STOP_COMMANDS))
+            self.assertEqual([command for _, command in commands[4:7]], list(radiation.STOP_COMMANDS))
             data.update(lightSource200Status=False, lightSource160Status=False,
                         receivedAt=int(time.time() * 1000) + 1)
             service._thread.join(1)
