@@ -1,14 +1,18 @@
 """主子码流隔离及手动拍照边界；禁止连接真实设备。"""
 import base64
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from flask import Flask
+import yaml
 from app.api import capture as api
 from app.extensions.auth import create_token
 from app.services import capture_service as capture, mediamtx_launcher as mtx
 from app.services.capture_guard import CaptureBlockedError
+from app.services.video_transcode import build_transcode_config
 
 
 class CameraStreamSplitTest(unittest.TestCase):
@@ -27,17 +31,25 @@ class CameraStreamSplitTest(unittest.TestCase):
         with patch.dict('os.environ', {'HIK_RTSP_CHANNEL': '202'}):
             self.assertEqual(capture._resolve_rtsp_channel({}), 201)
 
-    def test_all_five_preview_paths_use_substream_even_with_legacy_main_setting(self):
+    def test_all_six_preview_paths_use_substream_even_with_legacy_main_setting(self):
         with patch.object(mtx, '_load_device_by_device_id', return_value={'ip_address': 'test.invalid'}), \
              patch.object(mtx, '_write_path_source', return_value=True) as write, \
              patch.dict('os.environ', {'LIVE_VIDEO_STREAM_TYPE': '1'}):
-            for n in (1, 2, 4, 5, 6):
+            for n in (1, 2, 3, 4, 5, 6):
                 mtx._sync_path_from_device_id(f'cam{n}', 'test')
                 self.assertTrue(write.call_args.args[1].endswith('/102'))
-            mtx._sync_path_from_device_id('cam3', 'test')
-            self.assertTrue(write.call_args.args[1].endswith('/101'))
             mtx._sync_path_from_device_id('cam7', 'test')
             self.assertTrue(write.call_args.args[1].endswith('/101'))
+
+    def test_perimeter_left_substream_preserves_video_channel_and_photo_mainstream(self):
+        row = {'ip_address': 'test.invalid', 'config': {'rtsp_channel': 301}}
+        with patch.object(mtx, '_load_device_by_device_id', return_value=row), \
+             patch.object(mtx, '_write_path_source', return_value=True) as write, \
+             patch.dict('os.environ', {'LIVE_VIDEO_STREAM_TYPE': '1'}):
+            mtx.sync_cam3_source_from_db()
+            self.assertEqual(write.call_args.args[0], 'cam3')
+            self.assertTrue(write.call_args.args[1].endswith('/302'))
+            self.assertEqual(capture._resolve_rtsp_channel(row), 301)
 
     def test_perimeter_sides_use_independent_database_rows(self):
         rows = {'cam_safe': {'ip_address': '192.0.2.10'},
@@ -51,6 +63,28 @@ class CameraStreamSplitTest(unittest.TestCase):
             self.assertEqual([c.args[0] for c in calls], ['cam3', 'cam7'])
             self.assertIn('@192.0.2.10:', calls[0].args[1])
             self.assertIn('@192.0.2.11:', calls[1].args[1])
+            self.assertTrue(calls[0].args[1].endswith('/102'))
+            self.assertTrue(calls[1].args[1].endswith('/101'))
+
+    def test_left_sync_changes_only_left_preview_in_generated_runtime_config(self):
+        base = {'rtspAddress': ':8554', 'paths': {
+            f'cam{i}': {'source': f'rtsp://preview{i}.invalid/Streaming/Channels/101',
+                       'rtspTransport': 'tcp'} for i in range(1, 8)}}
+        row = {'ip_address': 'left.invalid', 'config': {'channelId': 1}}
+        with tempfile.TemporaryDirectory() as dirname:
+            config = Path(dirname) / 'mediamtx.yml'
+            config.write_text(yaml.safe_dump(base), encoding='utf8')
+            with patch.object(mtx, '_cfg_path', return_value=config), \
+                 patch.object(mtx, '_load_device_by_device_id', return_value=row), \
+                 patch.dict('os.environ', {'LIVE_VIDEO_STREAM_TYPE': '1'}):
+                mtx.sync_cam3_source_from_db()
+            after = yaml.safe_load(config.read_text(encoding='utf8'))
+        expected = build_transcode_config(base, 'ffmpeg', 'libx264')
+        actual = build_transcode_config(after, 'ffmpeg', 'libx264')
+        left = actual['paths']['cam3_input']['source']
+        self.assertTrue(left.endswith('/102'))
+        expected['paths']['cam3_input']['source'] = left
+        self.assertEqual(actual, expected)
 
     def setUp(self):
         app = Flask(__name__)

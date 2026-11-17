@@ -2,7 +2,7 @@
 
 - paths.cam1 ← LIVE_VIDEO_DEVICE_ID（默认 cam_lane / 103）→ 图像采集枪机
 - paths.cam2 ← HEAD_VIDEO_DEVICE_ID（默认 cam_head / 102）→ Pad 主页面/车头采集
-- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe）→ 周界左
+- paths.cam3 ← SAFE_VIDEO_DEVICE_ID（默认 cam_safe）→ 周界左（预览子码流）
 - paths.cam4 ← TALK_VIDEO_DEVICE_ID（默认 cam_booking / 101）→ 预约 / 可视对讲
 - paths.cam5 ← PTZ_VIDEO_DEVICE_ID（默认 cam_ptz / 104）→ Pad 球机预览
 - paths.cam6 ← ROAD_VIDEO_DEVICE_ID（默认 cam_road / 107）→ Pad 车顶采集
@@ -136,8 +136,8 @@ def _sync_path_from_device_id(path_name: str, device_id: str) -> str | None:
         print(f'[MediaMTX] devices.device_id={device_id} 不存在，跳过 {path_name} 同步')
         return None
 
-    # 照片采集五路只传子码流；左右周界沿用原周界码流设置。
-    stream_type = _stream_type() if path_name in ('cam3', 'cam7') else 2
+    # 周界左（现场105）与其余五路预览固定子码流；周界右保留原码流设置。
+    stream_type = _stream_type() if path_name == 'cam7' else 2
     rtsp = build_hik_rtsp_from_device(row, stream_type=stream_type)
     if not _write_path_source(path_name, rtsp):
         return None
@@ -163,7 +163,7 @@ def sync_cam2_source_from_db(device_id: str | None = None) -> str | None:
 
 
 def sync_cam3_source_from_db(device_id: str | None = None) -> str | None:
-    """周界左：device_id → paths.cam3.source（默认 cam_safe）。"""
+    """周界左：device_id → paths.cam3.source（默认 cam_safe），预览固定子码流。"""
     did = (device_id or os.environ.get('SAFE_VIDEO_DEVICE_ID') or _DEFAULT_SAFE_DEVICE_ID).strip()
     return _sync_path_from_device_id('cam3', did)
 
