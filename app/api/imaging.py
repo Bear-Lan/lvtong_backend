@@ -22,6 +22,17 @@ def fail(code=400, message='error', data=None):
     return jsonify({'code': code, 'message': message, 'data': data}), code
 
 
+@imaging_api.get('/ai-source/<temp_id>')
+@login_required
+def ai_source(temp_id):
+    """AI读取同帧原图，避免把面板缩略图误作模型输入。"""
+    from app.services.temp_image_cache import get_for_persist
+    entry = get_for_persist(temp_id)
+    if entry is None:
+        return fail(404, 'AI原图已过期，请重新采集')
+    return Response(entry.data, mimetype=entry.mime, headers={'Cache-Control': 'no-store'})
+
+
 # ==================== X光图像色阶处理 ====================
 
 @imaging_api.route('/xray/proxy', methods=['GET'])
@@ -244,7 +255,7 @@ def _read_image_upload(default_name: str) -> tuple[bytes, str]:
 @imaging_api.route('/ai-goods-real', methods=['POST'])
 @login_required
 def ai_goods_real():
-    """AI 货物实物图识别（对齐绿通 product_real）
+    """实拍货物推荐（新版 /v1/goods/real）
 
     输入：货物照片；返回 goods[{code,name,pinyin,score}] 及 goods_type/goods_name（| 拼接）。
     """
@@ -265,22 +276,8 @@ def ai_goods_real():
 @imaging_api.route('/ai-goods-xray', methods=['POST'])
 @login_required
 def ai_goods_xray():
-    """AI 货物透视图识别（对齐绿通 product_xray）
-
-    输入：透视拼接图（推荐 mosaic）；返回同 ai-goods-real。
-    """
-    from app.services.goods_detect import detect_product_xray
-
-    image_bytes, filename = _read_image_upload('xray.jpg')
-    if not image_bytes:
-        return fail(400, '请先提供透视拼接图')
-    try:
-        result = detect_product_xray(image_bytes, filename)
-        return ok(result, 'AI 货物透视识别成功')
-    except ValueError as e:
-        return fail(400, str(e))
-    except Exception as e:
-        return fail(502, f'AI 货物透视识别失败: {e}')
+    """旧透视入口显式停用，本轮不接入区域检测与分类。"""
+    return fail(409, '透视区域检测与分类暂未启用，请使用实拍货品推荐或手动选择')
 
 
 # ==================== 200+160 拼接 ====================
@@ -347,45 +344,34 @@ def ocr_driving_license():
 
     POST /api/imaging/ocr/driving-license
     - multipart: image=<file>（对齐 gongsi_LvTong / dl_ocr）
-    - JSON: { image_base64 | image_url, side?: "front"|"back" }
+    - JSON: { image_base64 | image_url | image_path }，由后端读取后转base64str
 
     解析号牌号码、核定载质量、整备质量、总质量等，并计算称重提示区间：
       min = 核定载质量 * 0.8 + 整备质量
       max = 总质量 * 1.05
     """
-    from config import OCR_SERVICE_URL
-    ocr_url = f'{OCR_SERVICE_URL.rstrip("/")}/dl_ocr/front_and_back'
-
+    from app.services.ai_client import request_json, AIError
     try:
         if request.files.get('image'):
             f = request.files['image']
-            files = {
-                'image': (
-                    f.filename or 'license.jpg',
-                    f.stream,
-                    f.mimetype or 'application/octet-stream',
-                ),
-            }
-            data = {'return_image': request.form.get('return_image', '0')}
-            resp = requests.post(ocr_url, files=files, data=data, timeout=60)
+            image_bytes = f.read()
+            if not image_bytes:
+                return fail(400, '行驶证图片为空')
+            ocr_result = request_json('/dl_ocr/front_and_back',
+                files={'image': (f.filename or 'license.jpg', image_bytes, f.mimetype or 'application/octet-stream')})
         else:
             body = request.get_json(silent=True) or {}
-            ocr_body = {}
-            if body.get('image_base64'):
-                ocr_body['image'] = body['image_base64']
-                ocr_body['side'] = body.get('side', 'front')
-            elif body.get('image_url'):
-                ocr_body['image_url'] = body['image_url']
-                ocr_body['side'] = body.get('side', 'front')
-            else:
-                return fail(400, '缺少图像数据 (image 文件 / image_base64 / image_url)')
-            resp = requests.post(ocr_url, json=ocr_body, timeout=60)
-
-        if resp.status_code != 200:
-            return fail(502, f'OCR服务返回错误: {resp.status_code}')
-
-        ocr_result = resp.json() if resp.content else {}
-        data_list = ocr_result.get('data', []) if isinstance(ocr_result, dict) else []
+            img = _load_image_from_body(body)
+            if img is None:
+                return fail(400, '缺少可读取的行驶证图像')
+            encoded, buffer = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            if not encoded:
+                return fail(400, '行驶证图像编码失败')
+            ocr_result = request_json('/dl_ocr/front_and_back',
+                json_body={'base64str': base64.b64encode(buffer.tobytes()).decode('ascii')})
+        data_list = ocr_result.get('data')
+        if not isinstance(data_list, list):
+            raise AIError('OCR返回字段格式异常')
 
         # 按 key 匹配（对齐 Qt / gongsi parseMainVehicleFromJson）
         parsed = {
@@ -397,7 +383,7 @@ def ocr_driving_license():
         key_map = {
             '号牌号码': 'plate_number', '车辆类型': 'vehicle_type',
             '核定载质量': 'hdzzl', '整备质量': 'zbzl',
-            '总质量': 'zzl', '外廓尺寸': 'wkcc',
+            '总质量': 'zzl', '外廓尺寸': 'wkcc', '检验有效期': 'inspection_valid_until',
         }
         for item in data_list:
             if not isinstance(item, dict):
@@ -412,8 +398,8 @@ def ocr_driving_license():
         parsed.update(_calc_weight_range(parsed))
         return ok(parsed)
 
-    except requests.RequestException as e:
-        return fail(502, f'OCR服务不可达: {str(e)}')
+    except AIError as e:
+        return fail(502, str(e))
     except Exception as e:
         return fail(500, f'OCR处理失败: {str(e)}')
 
@@ -493,3 +479,14 @@ def _calc_weight_range(parsed: dict) -> dict:
         }
     except (ValueError, AttributeError, TypeError):
         return {'weight_min': 0, 'weight_max': 0, 'weight_range_text': ''}
+
+
+@imaging_api.route('/ai-status', methods=['GET'])
+@login_required
+def ai_status():
+    """只读AI模型状态，不触发设备健康检查。"""
+    from app.services.ai_client import request_json, AIError
+    try:
+        return ok(request_json('/status', read_timeout=5))
+    except AIError as e:
+        return fail(502, str(e))

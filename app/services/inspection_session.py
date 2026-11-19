@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import Column, Integer, MetaData, Table, Text, select, update
+from app.services.ai_draft_policy import MANUAL_FIELDS, ai_change_allowed
 
 metadata = MetaData()
 session_table = Table('inspection_session', metadata,
@@ -124,6 +125,38 @@ class InspectionSessionStore:
         return '/api/images/session_assets/' + target.name
 
     def share_value(self, path, value):
+        if path[0] == 'manualFields':
+            if path[1] not in MANUAL_FIELDS or type(value) is not bool:
+                raise ValueError('人工字段标记无效')
+            return value
+        if path[0] == 'aiContext':
+            if path[1] not in ('truck', 'license', 'load') or not isinstance(value, dict):
+                raise ValueError('AI来源上下文无效')
+            allowed = {'source', 'plateSource', 'stitchedSource', 'inputSource', 'hangSource', 'inputHangSource', 'container', 'wheelCount', 'baseRevision', 'ocrDone'}
+            if set(value) - allowed:
+                raise ValueError('AI来源字段无效')
+            result = {}
+            for key, entry in value.items():
+                if key == 'ocrDone':
+                    if type(entry) is not bool: raise ValueError('OCR状态无效')
+                    result[key] = entry
+                    continue
+                if key in ('wheelCount', 'baseRevision'):
+                    if type(entry) is not int or entry < 0 or (key == 'wheelCount' and entry > 32):
+                        raise ValueError('AI数值无效')
+                    result[key] = entry
+                else:
+                    if not isinstance(entry, str): raise ValueError('AI图片来源无效')
+                    result[key] = self._share_image(entry)
+            return result
+        if path[0] == 'aiMarks':
+            if path[1] not in ('plate', 'truckType', 'containerType', 'goods', 'loadRate', 'weightRange', 'license', 'licenseGc') or not isinstance(value, str):
+                raise ValueError('AI标记格式无效')
+            if path[1] in ('license', 'licenseGc'):
+                return self._share_image(value)
+            if len(value) > 2048:
+                raise ValueError('AI标记内容过长')
+            return value
         if path[0] == 'panelImages':
             if path[1] not in ('body', 'transparent') or not isinstance(value, dict) or any(k not in ('1', '2', '3') for k in value):
                 raise ValueError('面板图片字段无效')
@@ -149,7 +182,7 @@ class InspectionSessionStore:
 
     def patch(self, session_id, base_revision, changes, actor='', client_id=''):
         allowed = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'passcode',
-                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft'}
+                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'aiContext'}
         if not isinstance(changes, list) or len(changes) > 100:
             raise ValueError('同步字段数量无效')
         with self.transaction() as doc:
@@ -164,7 +197,7 @@ class InspectionSessionStore:
                         or path[0] not in allowed or any(not isinstance(k, str) or k.startswith('_') or k in ('__proto__', 'constructor', 'prototype') for k in path)):
                     raise ValueError('不支持的同步字段')
                 key = '.'.join(path)
-                containers = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'bookingDraft', 'panelImages', 'submissionDraft'}
+                containers = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'bookingDraft', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'aiContext'}
                 if (path[0] in containers) != (len(path) == 2):
                     raise ValueError('同步字段结构无效')
                 if path[0] in ('submitRemark', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl') and not isinstance(change.get('value'), str):
@@ -173,18 +206,40 @@ class InspectionSessionStore:
                 for k in path:
                     current = current.get(k) if isinstance(current, dict) else None
                 value = self.share_value(path, change.get('value'))
-                if doc['_versions'].get(key, 0) > base_revision and current != value:
+                if change.get('origin') != 'ai' and doc['_versions'].get(key, 0) > base_revision and current != value:
                     raise SessionConflict('该内容已被其他设备修改，请刷新后核对再操作')
-                prepared.append((path, key, value))
+                prepared.append((path, key, value, change))
+            contexts = {path[1]: value for path, _, value, _ in prepared if path[0] == 'aiContext'}
+            wheels = contexts.get('truck', {}).get('wheelCount', 0)
+            if wheels:
+                # AI只识别轴数；业务车型始终使用服务器最新牌色，避免另一端改色的时序差。
+                from app.services.truck_real_detect import wheel_count_to_truck_type
+                latest_form = {**doc['draft'].get('form', {}), **{p[1]: v for p, _, v, c in prepared if p[0] == 'form' and c.get('origin') != 'ai'}}
+                truck_type = wheel_count_to_truck_type(wheels, latest_form.get('plateColor', ''), latest_form.get('plate', ''))[0]
+                prepared = [(p, k, truck_type, {**c, 'value': truck_type}) if c.get('origin') == 'ai' and p in (['form', 'truckType'], ['aiMarks', 'truckType']) else (p, k, v, c) for p, k, v, c in prepared]
+            manual = doc['draft'].setdefault('manualFields', {})
+            incoming_marks = {p[1]: v for p, _, v, _ in prepared if p[0] == 'aiMarks'}
+            for path, _, value, change in prepared:
+                if path[0] == 'manualFields' and value:
+                    manual[path[1]] = True
+                if path[0] == 'form' and path[1] in MANUAL_FIELDS and change.get('origin') != 'ai' and value not in ('', '--', None) and incoming_marks.get(path[1]) != value:
+                    manual[path[1]] = True
+            prepared = [(p, k, v, c) for p, k, v, c in prepared
+                        if c.get('origin') != 'ai' or ai_change_allowed(doc, c, contexts)]
             self._touch(doc, actor)
             if client_id:
                 doc['activeClientId'] = client_id
-            for path, key, value in prepared:
+            for path, key, value, change in prepared:
+                if path[0] == 'manualFields' and manual.get(path[1]): value = True
                 target = doc['draft']
                 for k in path[:-1]:
                     target = target.setdefault(k, {})
                 target[path[-1]] = value
                 doc['_versions'][key] = doc['revision']
+            for field, protected in manual.items():
+                if protected:
+                    doc['draft'].setdefault('aiMarks', {})[field] = ''
+                    doc['_versions']['manualFields.' + field] = doc['revision']
         return self.snapshot()
 
     def record(self, event, data):

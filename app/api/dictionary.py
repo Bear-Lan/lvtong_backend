@@ -35,11 +35,15 @@ def list_products():
     pinyin = request.args.get('pinyin', '')
     page = int(request.args.get('page', 1))
     page_size = int(request.args.get('page_size', 50))
+    recommend_codes = list(dict.fromkeys(request.args.getlist('recommend_code')))
+    if len(recommend_codes) > 100 or any(len(code) > 64 for code in recommend_codes):
+        return fail(400, '推荐产品数量或编码长度超限')
 
     db = DBProduct()
     total = db.getProductsCount(product_type, variety_name, pinyin, keyword=keyword)
+    ranking = {'recommend_codes': recommend_codes} if recommend_codes else {}
     items = db.getProductsWithFilter(product_type, variety_name, pinyin,
-                                     page=page, page_size=page_size, keyword=keyword)
+                                     page=page, page_size=page_size, keyword=keyword, **ranking)
     return ok({'items': items, 'total': total, 'page': page, 'page_size': page_size})
 
 

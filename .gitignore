@@ -17,6 +17,7 @@ build/
 
 # 环境变量
 .env
+config/ai.local.json
 
 # MediaMTX 二进制与运行残留（勿提交）
 tools/mediamtx/mediamtx.exe

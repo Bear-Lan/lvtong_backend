@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from flask import Blueprint, jsonify, request, send_file
+from app.extensions.auth import login_required
 
 logger = logging.getLogger('file_api')
 
@@ -173,7 +174,6 @@ def merge_license_images():
 
 # ============ AI 裁剪 + 拼接（行驶证） ============
 
-from config import AI_LICENSE_CROP_URL
 
 
 def _extract_result_b64(payload: dict, key: str) -> bytes | None:
@@ -319,6 +319,7 @@ def _pick_crop_image(payload: dict, orig_bytes: bytes, index: int):
 
 
 @file_api.route('/license/ai-crop', methods=['POST'])
+@login_required
 def ai_crop_license():
     """POST /api/license/ai-crop — 调用外部 AI 裁剪行驶证，双图则上下拼接。
 
@@ -334,7 +335,7 @@ def ai_crop_license():
     """
     from io import BytesIO
 
-    import requests as http_requests
+    from app.services.ai_client import request_json
 
     f1 = request.files.get('crop_image1')
     f2 = request.files.get('crop_image2')
@@ -362,22 +363,10 @@ def ai_crop_license():
 
     t0 = time.time()
     try:
-        resp = http_requests.post(AI_LICENSE_CROP_URL, files=files, timeout=90)
+        data = request_json('/detect', files=files, data={'task': 'truck_real'}, read_timeout=90)
     except Exception as e:
         logger.error(f'AI 裁剪请求失败: {e}')
         return jsonify({'code': 502, 'message': f'AI 服务请求失败: {e}', 'data': None}), 502
-
-    if resp.status_code != 200:
-        return jsonify({
-            'code': 502,
-            'message': f'AI 服务 HTTP {resp.status_code}',
-            'data': {'body': (resp.text or '')[:500]},
-        }), 502
-
-    try:
-        data = resp.json()
-    except ValueError:
-        return jsonify({'code': 502, 'message': 'AI 服务返回非 JSON', 'data': None}), 502
 
     # AI 的 data 字段可能是 list，真正字段在根上
     payload = data.get('data') if isinstance(data.get('data'), dict) else data
@@ -413,6 +402,13 @@ def ai_crop_license():
         data_url = _img_to_jpeg_data_url(final)
         main_url = _img_to_jpeg_data_url(img1)
         hang_url = _img_to_jpeg_data_url(img2) if img2 is not None else ''
+        # 正式运行中直接返回共享图片URL，AI裁剪不把大段base64挤进人工字段同步队列。
+        from app.services.inspection_session import get_store
+        store = get_store()
+        if store is not None:
+            data_url = store._share_image(data_url)
+            main_url = store._share_image(main_url)
+            hang_url = store._share_image(hang_url)
     except Exception as e:
         return jsonify({'code': 500, 'message': f'输出编码失败: {e}', 'data': None}), 500
 

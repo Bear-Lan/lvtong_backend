@@ -9,12 +9,9 @@
 from __future__ import annotations
 
 import logging
-from io import BytesIO
 from typing import Any
 
-import requests
-
-from config import AI_DETECT_URL
+from app.services.ai_client import detect
 
 logger = logging.getLogger('truck_real_detect')
 
@@ -111,22 +108,7 @@ def _count_wheels_in_data(data: list) -> int:
 
 
 def call_ai_truck_real(image_bytes: bytes, filename: str = 'body.jpg') -> dict:
-    files = {
-        'image': (filename or 'body.jpg', BytesIO(image_bytes), 'application/octet-stream'),
-    }
-    data = {
-        'task': 'truck_real',
-        'return_image': '0',
-        'return_mask': '0',
-        'score_threshold': '0.95',
-    }
-    resp = requests.post(AI_DETECT_URL, files=files, data=data, timeout=120)
-    if resp.status_code != 200:
-        raise RuntimeError(f'AI HTTP {resp.status_code}: {(resp.text or "")[:300]}')
-    payload = resp.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError('AI 返回非 JSON object')
-    return payload
+    return detect(image_bytes, filename or 'body.jpg', 'truck_real', score_threshold='0.95')
 
 
 def detect_truck_and_container(

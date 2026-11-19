@@ -82,7 +82,10 @@ def begin():
     store.patch(snap['sessionId'], snap['revision'], [
         {'path': ['form','plate'], 'value': '鄂A12345'}, {'path': ['form','goods'], 'value': '白菜'},
         {'path': ['form','goodsProductCode'], 'value': '10101'},
-        {'path': ['form','truckType'], 'value': '1'}, {'path': ['form','containerType'], 'value': '1'},
+        *([] if (request.get_json(silent=True) or {}).get('assist') else [
+            {'path': ['form','truckType'], 'value': '1'}, {'path': ['form','containerType'], 'value': '1'}]),
+        *([{'path': ['licensePaths','license'], 'value': body}, {'path': ['form','plateColor'], 'value': '0'}]
+          if (request.get_json(silent=True) or {}).get('assist') else []),
         {'path': ['form','size'], 'value': '4404|1992|1810'},
         *[{'path': ['captureThumbs', key], 'value': body} for key in ('head', 'tail', 'license', 'passcode')],
         {'path': ['passcode'], 'value': {'valid': True, 'enStationId': 'EN', 'exStationId': 'EX',

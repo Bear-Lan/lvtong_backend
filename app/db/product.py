@@ -19,12 +19,21 @@ class DBProduct(BaseRepo):
 
     def getProductsWithFilter(self, product_type='', variety_name='',
                               variety_name_pinyin='', aliases='',
-                              page=1, page_size=50, keyword='') -> list[dict]:
+                              page=1, page_size=50, keyword='', recommend_codes=()) -> list[dict]:
         sql, params = self._append_filters(
             "SELECT * FROM agricultural_products WHERE 1=1",
             product_type, variety_name, variety_name_pinyin, aliases, keyword
         )
-        sql += " ORDER BY id LIMIT :limit OFFSET :offset"
+        # 推荐先排序再分页，避免高分产品位于后页、或翻页时重复。
+        if recommend_codes:
+            parts = []
+            for i, code in enumerate(dict.fromkeys(recommend_codes)):
+                params[f'rec{i}'] = str(code)
+                parts.append(f'WHEN :rec{i} THEN {i}')
+            sql += ' ORDER BY CASE product_code ' + ' '.join(parts) + f' ELSE {len(parts)} END, id'
+        else:
+            sql += ' ORDER BY id'
+        sql += ' LIMIT :limit OFFSET :offset'
         params['limit'] = page_size
         params['offset'] = (page - 1) * page_size
         return self._rows(sql, params)

@@ -16,9 +16,6 @@ from typing import Any
 
 import cv2
 import numpy as np
-import requests
-
-from config import AI_LOAD_RATE_URL
 
 logger = logging.getLogger('mask_loading_rate')
 
@@ -106,6 +103,9 @@ def pick_rate(rates: dict[str, Any], container_type_name: str) -> tuple[float, s
 
 
 def extract_mask_b64(payload: dict) -> tuple[str, str, Any]:
+    union = payload.get('mask_image')
+    if isinstance(union, dict) and union.get('base64'):
+        return str(union['base64']), 'cargo_union', None
     data = payload.get('data')
     if not isinstance(data, list) or not data:
         return '', '', None
@@ -133,13 +133,8 @@ def call_ai_truck_xray_box(image_bytes: bytes, filename: str = 'xray.jpg') -> di
         'return_mask': '1',
         'score_threshold': '0.95',
     }
-    resp = requests.post(AI_LOAD_RATE_URL, files=files, data=data, timeout=120)
-    if resp.status_code != 200:
-        raise RuntimeError(f'AI HTTP {resp.status_code}: {(resp.text or "")[:300]}')
-    payload = resp.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError('AI 返回非 JSON object')
-    return payload
+    from app.services.ai_client import request_json
+    return request_json('/detect', files=files, data=data)
 
 
 def compute_ai_load_rate(
@@ -156,8 +151,11 @@ def compute_ai_load_rate(
     payload = call_ai_truck_xray_box(image_bytes, filename)
     mask_b64, label, score = extract_mask_b64(payload)
     if not mask_b64:
-        raise RuntimeError('AI 未返回 data[0].mask.base64')
+        raise RuntimeError('AI 未返回可用的货物掩码mask_image.base64')
 
+    gray = decode_mask_gray(mask_b64)
+    if gray is None or gray.shape[0] <= BOTTOM_ZONE_HEIGHT:
+        raise RuntimeError('AI货物掩码不可解码或高度不足，保留原装载率')
     rates = calculate_from_mask(mask_b64)
     selected, scheme = pick_rate(rates, container_type_name)
     pct = round(selected * 100, 2)

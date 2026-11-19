@@ -61,6 +61,23 @@ class InspectionSessionTests(unittest.TestCase):
             self.change([{'path': ['submitRemark'], 'value': '旧车备注'}], s)
         self.assertEqual(self.store.snapshot()['draft'], {})
 
+    def test_ai_marks_restore_per_field_and_crop_references_match_shared_images(self):
+        photo = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
+        snap = self.change([
+            {'path': ['form', 'plate'], 'value': '鄂A12345'},
+            {'path': ['aiMarks', 'plate'], 'value': '鄂A12345'},
+            {'path': ['aiMarks', 'weightRange'], 'value': '(13000-16800)'},
+            {'path': ['licensePaths', 'license'], 'value': photo},
+            {'path': ['aiMarks', 'license'], 'value': photo},
+        ])
+        self.assertEqual(snap['draft']['aiMarks']['license'],snap['draft']['licensePaths']['license'])
+        restored = InspectionSessionStore(self.engine, self.store.image_root).snapshot()
+        self.assertEqual(restored['draft']['aiMarks'], snap['draft']['aiMarks'])
+        removed=self.change([{'path': ['aiMarks', 'plate'], 'value': ''}])
+        self.assertEqual(removed['draft']['aiMarks']['plate'],'')
+        for key,value in [('badField','x'),('plate',True),('plate','x'*2049)]:
+            with self.assertRaises(ValueError):self.change([{'path':['aiMarks',key],'value':value}])
+
     def test_old_revision_allows_disjoint_changes_but_rejects_same_field(self):
         s = self.store.snapshot()
         self.change([{'path': ['form', 'plate'], 'value': '鄂A12345'}], s)
@@ -68,12 +85,74 @@ class InspectionSessionTests(unittest.TestCase):
         with self.assertRaises(SessionConflict):
             self.change([{'path': ['form', 'plate'], 'value': '鄂B12345'}], s)
 
+    def test_manual_choice_wins_over_late_ai_even_after_conflict_rebase(self):
+        start = self.change([{'path': ['panelImages', 'body'], 'value': {'1': '/api/images/body.png'}},
+                             {'path': ['form', 'plate'], 'value': '鄂A12345'}, {'path': ['form', 'plateColor'], 'value': '0'}])
+        self.change([{'path': ['form', 'truckType'], 'value': '16'}, {'path': ['manualFields', 'truckType'], 'value': True}])
+        ai = [dict(path=p, value=v, origin='ai', aiGroup='truck', aiBaseRevision=start['revision']) for p, v in [
+            (['aiContext', 'truck'], {'source': '/api/images/body.png', 'wheelCount': 2, 'baseRevision': start['revision']}),
+            (['form', 'truckType'], '11'), (['aiMarks', 'truckType'], '11'),
+            (['form', 'containerType'], '4.1'), (['aiMarks', 'containerType'], '4.1')]]
+        for base in (start, self.store.snapshot()):
+            out = self.change(ai, base)
+            self.assertEqual(out['draft']['form']['truckType'], '16')
+            self.assertEqual(out['draft']['aiMarks']['truckType'], '')
+            self.assertTrue(out['draft']['manualFields']['truckType'])
+            self.assertEqual(out['draft']['form']['containerType'], '4.1')
+            self.assertEqual(out['draft']['aiContext']['truck']['wheelCount'], 2)
+
+    def test_manually_confirming_same_value_or_clearing_locks_ai_out(self):
+        for field in ('plate', 'truckType', 'containerType', 'loadRate'):
+            self.change([{'path': ['form', field], 'value': ''}, {'path': ['manualFields', field], 'value': True}])
+            s = self.store.snapshot()
+            group = {'plate': 'license', 'truckType': 'truck', 'containerType': 'truck', 'loadRate': 'load'}[field]
+            out = self.change([{'path': ['form', field], 'value': 'AI', 'origin': 'ai', 'aiGroup': group, 'aiBaseRevision': s['revision']},
+                               {'path': ['aiMarks', field], 'value': 'AI', 'origin': 'ai', 'aiGroup': group, 'aiBaseRevision': s['revision']}])
+            self.assertEqual(out['draft']['form'][field], '')
+            self.assertEqual(out['draft']['aiMarks'][field], '')
+        self.change([{'path': ['manualFields', 'truckType'], 'value': False}])
+        self.assertTrue(self.store.snapshot()['draft']['manualFields']['truckType'])
+
+    def test_new_photo_rejects_old_ai_crop_and_ocr_as_one_optional_update(self):
+        start = self.change([{'path': ['licensePaths', 'license'], 'value': '/api/images/old.jpg'}])
+        self.change([{'path': ['licensePaths', 'license'], 'value': '/api/images/new.jpg'}])
+        fields = [(['aiContext', 'license'], {'inputSource': '/api/images/old.jpg', 'source': '/api/images/cropped.jpg', 'baseRevision': start['revision']}),
+                  (['licensePaths', 'license'], '/api/images/cropped.jpg'), (['aiMarks', 'license'], '/api/images/cropped.jpg'),
+                  (['form', 'plate'], 'OLD'), (['aiMarks', 'plate'], 'OLD'), (['aiMarks', 'weightRange'], '(1000-2000)')]
+        out = self.change([dict(path=p, value=v, origin='ai', aiGroup='license', aiBaseRevision=start['revision']) for p, v in fields] + [{'path': ['submitRemark'], 'value': '人工备注'}])
+        self.assertEqual(out['draft']['licensePaths']['license'], '/api/images/new.jpg')
+        self.assertNotIn('plate', out['draft'].get('form', {}))
+        self.assertNotIn('license', out['draft'].get('aiContext', {}))
+        self.assertEqual(out['draft']['submitRemark'], '人工备注')
+
+    def test_ai_truck_type_uses_latest_plate_color_from_other_terminal(self):
+        start = self.change([{'path': ['panelImages', 'body'], 'value': {'1': '/api/images/body.jpg'}},
+                             {'path': ['form', 'plate'], 'value': '鄂A12345'}, {'path': ['form', 'plateColor'], 'value': '0'}])
+        self.change([{'path': ['form', 'plateColor'], 'value': '1'}])
+        values = [(['aiContext', 'truck'], {'source': '/api/images/body.jpg', 'wheelCount': 2, 'baseRevision': start['revision']}),
+                  (['form', 'truckType'], '11'), (['aiMarks', 'truckType'], '11')]
+        out = self.change([dict(path=p, value=v, origin='ai', aiGroup='truck', aiBaseRevision=start['revision']) for p, v in values], start)
+        self.assertEqual(out['draft']['form']['truckType'], '12')
+        self.assertEqual(out['draft']['aiMarks']['truckType'], '12')
+
     def test_retry_of_same_value_is_idempotent(self):
         s = self.store.snapshot()
         change = [{'path': ['submitRemark'], 'value': '测试'}]
         self.change(change, s)
         self.change(change, s)
         self.assertEqual(self.store.snapshot()['draft']['submitRemark'], '测试')
+
+    def test_ocr_plate_source_is_shared_and_restored_independently_of_new_crop(self):
+        photo = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
+        snap = self.change([
+            {'path': ['aiContext', 'license'], 'value': {'source': '/api/images/new-crop.jpg', 'plateSource': photo, 'stitchedSource': photo, 'ocrDone': False}},
+        ])
+        context = snap['draft']['aiContext']['license']
+        self.assertTrue(context['plateSource'].startswith('/api/images/session_assets/'))
+        self.assertEqual(context['source'], '/api/images/new-crop.jpg')
+        self.assertFalse(context['ocrDone'])
+        self.assertEqual(context['stitchedSource'], context['plateSource'])
+        self.assertEqual(InspectionSessionStore(self.engine, self.store.image_root).snapshot()['draft']['aiContext']['license'], context)
 
     def test_automatic_camera_frames_restore_without_temp_cache(self):
         self.store.record('booking_accepted', {})
