@@ -22,8 +22,11 @@ def ai_change_allowed(doc, change, incoming_context):
     if context:
         if group == 'truck' and context.get('source') != draft.get('panelImages', {}).get('body', {}).get('1', ''):
             return False
-        if group == 'load' and context.get('source') not in [draft.get('panelImages', {}).get('transparent', {}).get(k, '') for k in ('1', '3')]:
-            return False
+        if group == 'load':
+            images = draft.get('panelImages', {}).get('transparent', {})
+            source = images.get('3') or images.get('1') or ''
+            if not source or context.get('source') != source:
+                return False
         if group == 'load' and context.get('container') != draft.get('form', {}).get('containerType', ''):
             return False
         if group == 'license':

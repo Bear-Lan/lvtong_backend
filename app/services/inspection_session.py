@@ -229,8 +229,15 @@ class InspectionSessionStore:
                     manual[path[1]] = True
                 if path[0] == 'form' and path[1] in MANUAL_FIELDS and change.get('origin') != 'ai' and value not in ('', '--', None) and incoming_marks.get(path[1]) != value:
                     manual[path[1]] = True
+            # 同次上传可以包含新透视图/货箱和AI结果，按即将保存的输入校验装载率来源。
+            load_draft = {**doc['draft'], 'form': dict(doc['draft'].get('form', {})),
+                          'panelImages': dict(doc['draft'].get('panelImages', {}))}
+            for path, _, value, change in prepared:
+                if change.get('origin') != 'ai' and path in (['form', 'containerType'], ['panelImages', 'transparent']):
+                    load_draft[path[0]][path[1]] = value
+            load_doc = {**doc, 'draft': load_draft}
             prepared = [(p, k, v, c) for p, k, v, c in prepared
-                        if c.get('origin') != 'ai' or ai_change_allowed(doc, c, contexts)]
+                        if c.get('origin') != 'ai' or ai_change_allowed(load_doc if c.get('aiGroup') == 'load' else doc, c, contexts)]
             self._touch(doc, actor)
             if client_id:
                 doc['activeClientId'] = client_id

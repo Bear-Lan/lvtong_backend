@@ -142,6 +142,36 @@ class InspectionSessionTests(unittest.TestCase):
         self.change(change, s)
         self.assertEqual(self.store.snapshot()['draft']['submitRemark'], '测试')
 
+    def test_load_rate_accepts_current_source_but_rejects_old_200_after_mosaic_or_container_change(self):
+        def ai_changes(source, container, base, rate='36'):
+            values = [(['aiContext', 'load'], {'source': source, 'container': container, 'baseRevision': base}),
+                      (['form', 'loadRate'], rate), (['aiMarks', 'loadRate'], rate)]
+            return [dict(path=p, value=v, origin='ai', aiGroup='load', aiBaseRevision=base) for p, v in values]
+        start = self.change([{'path': ['panelImages', 'transparent'], 'value': {'1': '/api/images/200.png'}},
+                             {'path': ['form', 'containerType'], 'value': '4.1'}])
+        ok = self.change(ai_changes('/api/images/200.png', '4.1', start['revision']))
+        self.assertEqual(ok['draft']['form']['loadRate'], '36')
+        self.assertEqual(ok['draft']['aiMarks']['loadRate'], '36')
+        self.change([{'path': ['panelImages', 'transparent'], 'value': {'1': '/api/images/200.png', '3': '/api/images/mosaic.png'}}])
+        stale = self.change(ai_changes('/api/images/200.png', '4.1', start['revision'], '91'))
+        self.assertEqual(stale['draft']['form']['loadRate'], '36')
+        self.assertEqual(stale['draft']['aiContext']['load']['source'], '/api/images/200.png')
+        # 未保存旧200图的新值或上下文；新拼接图结果能正常保存。
+        fresh = self.change(ai_changes('/api/images/mosaic.png', '4.1', stale['revision']))
+        self.assertEqual(fresh['draft']['aiContext']['load']['source'], '/api/images/mosaic.png')
+        self.change([{'path': ['form', 'containerType'], 'value': '4.3'}])
+        rejected = self.change(ai_changes('/api/images/mosaic.png', '4.1', fresh['revision'], '92'))
+        self.assertEqual(rejected['draft']['form']['loadRate'], '36')
+        self.assertEqual(rejected['draft']['aiContext']['load']['container'], '4.1')
+        current = self.change(ai_changes('/api/images/mosaic.png', '4.3', rejected['revision']))
+        self.assertEqual(current['draft']['aiContext']['load']['container'], '4.3')
+        combined_stale = self.change([{'path': ['panelImages', 'transparent'], 'value': {'1': '/api/images/next.png'}}]
+            + ai_changes('/api/images/mosaic.png', '4.3', current['revision'], '94'))
+        self.assertEqual(combined_stale['draft']['form']['loadRate'], '36')
+        combined_fresh = self.change([{'path': ['panelImages', 'transparent'], 'value': {'1': '/api/images/latest.png'}}]
+            + ai_changes('/api/images/latest.png', '4.3', combined_stale['revision'], '49'))
+        self.assertEqual(combined_fresh['draft']['form']['loadRate'], '49')
+
     def test_manual_photos_survive_delayed_auto_events_refresh_and_clear_on_next_vehicle(self):
         self.store.record('booking_accepted', {})
         for kind in ('head', 'tail', 'top', 'goods', 'evidence', 'license'):

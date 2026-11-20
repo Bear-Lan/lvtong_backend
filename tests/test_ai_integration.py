@@ -54,6 +54,25 @@ class AIIntegrationTests(unittest.TestCase):
             result=truck_real_detect.detect_truck_and_container(self.image)
         self.assertEqual((result['vehicle_type'],result['vehicle_container_type']),('14','4.1'))
 
+    def test_load_rate_endpoint_computes_both_schemes_and_rejects_invalid_mask(self):
+        mask = np.zeros((1000, 100), np.uint8)
+        mask[300:870] = 255
+        _, encoded = cv2.imencode('.png', mask)
+        payload = {'code': 1, 'mask_image': {'base64': base64.b64encode(encoded).decode()}}
+        with patch.object(ai_client, 'request_json', return_value=payload) as upstream:
+            for name, rate in [('厢式货车', 80), ('其他货车', 20)]:
+                response = self.client.post('/api/imaging/ai-load-rate', headers=self.headers,
+                    data={'image': (io.BytesIO(self.image), 'xray.png'), 'container_type_name': name})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['data']['load_rate_pct'], rate)
+                self.assertEqual(upstream.call_args.kwargs['data']['return_mask'], '1')
+                self.assertEqual(upstream.call_args.kwargs['data']['task'], 'truck_xray_box')
+        for bad in ({'code': 1, 'data': []}, {'code': 1, 'mask_image': {'base64': 'invalid'}}):
+            with patch.object(ai_client, 'request_json', return_value=bad):
+                response = self.client.post('/api/imaging/ai-load-rate', headers=self.headers,
+                    data={'image': (io.BytesIO(self.image), 'xray.png'), 'container_type_name': '厢式货车'})
+                self.assertEqual(response.status_code, 502)
+
     def test_goods_class_id_string_deduplicates_and_orders_confidence(self):
         detections=[{'class_id':'001','score':0.4},{'class_id':'002','score':0.8},{'class_id':'001','score':0.9},{'class_id':'bad','label':'苹果','score':1},{'class_id':'002','score':float('nan')}]
         detections.append({'class_id':'pingguo','score':0.85})
