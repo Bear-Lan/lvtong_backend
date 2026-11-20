@@ -17,6 +17,7 @@ from sqlalchemy import Column, Integer, MetaData, Table, Text, select, update
 from app.services.ai_draft_policy import MANUAL_FIELDS, ai_change_allowed
 
 metadata = MetaData()
+MANUAL_PHOTO_FIELDS = {'head', 'tail', 'top', 'goods', 'evidence', 'license', 'passcode'}
 session_table = Table('inspection_session', metadata,
                       Column('id', Integer, primary_key=True), Column('payload', Text, nullable=False))
 _store = None
@@ -125,6 +126,10 @@ class InspectionSessionStore:
         return '/api/images/session_assets/' + target.name
 
     def share_value(self, path, value):
+        if path[0] == 'manualPhotos':
+            if path[1] not in MANUAL_PHOTO_FIELDS or type(value) is not bool:
+                raise ValueError('人工照片标记无效')
+            return value
         if path[0] == 'manualFields':
             if path[1] not in MANUAL_FIELDS or type(value) is not bool:
                 raise ValueError('人工字段标记无效')
@@ -182,7 +187,7 @@ class InspectionSessionStore:
 
     def patch(self, session_id, base_revision, changes, actor='', client_id=''):
         allowed = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'passcode',
-                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'aiContext'}
+                   'submitRemark', 'previousSelection', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl', 'bookingDraft', 'cropGoodsImages', 'evidenceSourceKeys', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'manualPhotos', 'aiContext'}
         if not isinstance(changes, list) or len(changes) > 100:
             raise ValueError('同步字段数量无效')
         with self.transaction() as doc:
@@ -197,7 +202,7 @@ class InspectionSessionStore:
                         or path[0] not in allowed or any(not isinstance(k, str) or k.startswith('_') or k in ('__proto__', 'constructor', 'prototype') for k in path)):
                     raise ValueError('不支持的同步字段')
                 key = '.'.join(path)
-                containers = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'bookingDraft', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'aiContext'}
+                containers = {'form', 'captureThumbs', 'captureLists', 'licensePaths', 'bookingDraft', 'panelImages', 'submissionDraft', 'aiMarks', 'manualFields', 'manualPhotos', 'aiContext'}
                 if (path[0] in containers) != (len(path) == 2):
                     raise ValueError('同步字段结构无效')
                 if path[0] in ('submitRemark', 'radarHeadImageUrl', 'radarCloudImageUrl', 'radarCloudTopImageUrl', 'radarCloudSideImageUrl') and not isinstance(change.get('value'), str):
@@ -231,11 +236,17 @@ class InspectionSessionStore:
                 doc['activeClientId'] = client_id
             for path, key, value, change in prepared:
                 if path[0] == 'manualFields' and manual.get(path[1]): value = True
+                if path[0] == 'manualPhotos' and doc['draft'].get('manualPhotos', {}).get(path[1]): value = True
                 target = doc['draft']
                 for k in path[:-1]:
                     target = target.setdefault(k, {})
                 target[path[-1]] = value
                 doc['_versions'][key] = doc['revision']
+                if change.get('origin') != 'ai':
+                    photo = path[1] if path[0] in ('captureThumbs', 'captureLists') else 'license' if path[0] == 'licensePaths' else None
+                    if photo in MANUAL_PHOTO_FIELDS:
+                        doc['draft'].setdefault('manualPhotos', {})[photo] = True
+                        doc['_versions']['manualPhotos.' + photo] = doc['revision']
             for field, protected in manual.items():
                 if protected:
                     doc['draft'].setdefault('aiMarks', {})[field] = ''
@@ -263,8 +274,14 @@ class InspectionSessionStore:
             elif event == 'image_ready':
                 if doc['phase'] != 'detecting':
                     return
+                if data.get('sessionId') and data['sessionId'] != doc['sessionId']:
+                    return
                 kind = data.get('imageType')
                 if data.get('url') and kind in ('head', 'tail', 'top', 'goods', 'evidence', 'license'):
+                    if data.get('origin') != 'manual' and doc['draft'].get('manualPhotos', {}).get(kind):
+                        return
+                    if data.get('origin') == 'manual':
+                        doc['draft'].setdefault('manualPhotos', {})[kind] = True
                     doc['draft'].setdefault('captureThumbs', {})[kind] = self._share_image(data['url'])
                 elif kind in ('body', 'transparent') and data.get('urls'):
                     image_group = doc.setdefault('images', {}).setdefault(kind, {})
@@ -291,14 +308,17 @@ class InspectionSessionStore:
             elif event == 'mobile_upload':
                 for source, target in (('head_image_path', 'head'), ('tail_image_path', 'tail'), ('top_image_path', 'top'), ('passcode_image_path', 'passcode')):
                     if data.get(source):
+                        doc['draft'].setdefault('manualPhotos', {})[target] = True
                         doc['draft'].setdefault('captureThumbs', {})[target] = data[source]
                 for source, target in (('goods_image_path', 'goods'), ('evidences_image_path', 'evidence')):
                     if data.get(source):
+                        doc['draft'].setdefault('manualPhotos', {})[target] = True
                         lists = doc['draft'].setdefault('captureLists', {})
                         lists[target] = list(dict.fromkeys(lists.get(target, []) + data[source].split('|')))
                         doc['draft'].setdefault('captureThumbs', {})[target] = lists[target][-1]
                 for source, target in (('license_image_path1', 'license'), ('license_image_path2', 'licenseGc')):
                     if data.get(source):
+                        doc['draft'].setdefault('manualPhotos', {})['license'] = True
                         doc['draft'].setdefault('licensePaths', {})[target] = data[source]
                         doc['draft']['licensePaths']['licenseStitched'] = ''
                         doc['draft'].setdefault('captureThumbs', {})['license'] = data[source]

@@ -7,7 +7,7 @@ import base64
 from flask import Blueprint, request, jsonify
 
 from app.services.capture_service import capture_category, snapshot_from_camera
-from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed
+from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed, ensure_manual_capture_allowed
 from app.extensions.auth import login_required
 
 capture_api = Blueprint('capture', __name__, url_prefix='/api/capture')
@@ -28,9 +28,9 @@ def capture_camera(device_id):
     if device_id not in ('cam_road', 'cam_head', 'cam_lane', 'cam_ptz', 'cam_booking'):
         return fail(400, '不支持的拍照相机')
     try:
-        generation = ensure_capture_allowed()
-        data = snapshot_from_camera(device_id, right_two_thirds=device_id == 'cam_road')
-        ensure_capture_allowed(generation)
+        session = ensure_manual_capture_allowed(request.headers.get('X-Inspection-Session'))
+        data = snapshot_from_camera(device_id, right_two_thirds=device_id == 'cam_road', manual=True)
+        ensure_manual_capture_allowed(session)
         return ok({'dataUrl': 'data:image/jpeg;base64,' + base64.b64encode(data).decode('ascii'),
                    'deviceId': device_id, 'streamType': 1, 'size': len(data)})
     except CaptureBlockedError as error:
@@ -41,7 +41,7 @@ def capture_camera(device_id):
 
 def _capture_one(category: str, success_msg: str):
     try:
-        result = capture_category(category)
+        result = capture_category(category, manual=True, session_id=request.headers.get('X-Inspection-Session'))
         return ok(result, success_msg)
     except CaptureBlockedError as e:
         return fail(409, str(e))

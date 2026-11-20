@@ -142,6 +142,49 @@ class InspectionSessionTests(unittest.TestCase):
         self.change(change, s)
         self.assertEqual(self.store.snapshot()['draft']['submitRemark'], '测试')
 
+    def test_manual_photos_survive_delayed_auto_events_refresh_and_clear_on_next_vehicle(self):
+        self.store.record('booking_accepted', {})
+        for kind in ('head', 'tail', 'top', 'goods', 'evidence', 'license'):
+            self.store.record('image_ready', {'imageType': kind, 'url': '/api/images/auto-before.jpg'})
+            self.change([{'path': ['manualPhotos', kind], 'value': True},
+                         {'path': ['captureThumbs', kind], 'value': '/api/images/manual-'+kind+'.jpg'}])
+            self.store.record('lane_occupied', {'occupied': False})
+            self.store.record('image_ready', {'imageType': kind, 'url': '/api/images/auto-after.jpg'})
+            snap = self.store.snapshot()
+            self.assertEqual(snap['draft']['captureThumbs'][kind], '/api/images/manual-'+kind+'.jpg')
+            self.assertTrue(snap['draft']['manualPhotos'][kind])
+        reopened = InspectionSessionStore(self.engine, self.store.image_root)
+        self.assertEqual(reopened.snapshot()['draft']['manualPhotos'], snap['draft']['manualPhotos'])
+        self.change([{'path': ['manualPhotos', 'head'], 'value': False}])
+        self.assertTrue(self.store.snapshot()['draft']['manualPhotos']['head'])
+        self.store.record('booking_reset', {})
+        self.store.record('booking_accepted', {})
+        snap = self.store.record('image_ready', {'imageType': 'head', 'url': '/api/images/next.jpg'})
+        self.assertEqual(snap['draft']['captureThumbs']['head'], '/api/images/next.jpg')
+        self.assertNotIn('manualPhotos', snap['draft'])
+
+    def test_manual_single_endpoint_origin_and_mobile_upload_protect_photos(self):
+        start = self.store.record('booking_accepted', {})
+        self.store.record('image_ready', {'imageType': 'top', 'url': '/api/images/manual.jpg', 'origin': 'manual', 'sessionId': start['sessionId']})
+        self.store.record('mobile_upload', {'head_image_path': '/api/images/mobile-head.jpg', 'goods_image_path': '/api/images/goods.jpg', 'license_image_path1': '/api/images/license.jpg'})
+        for kind in ('top', 'head', 'goods', 'license'):
+            before = self.store.snapshot()['draft']['captureThumbs'][kind]
+            self.store.record('image_ready', {'imageType': kind, 'url': '/api/images/auto.jpg'})
+            after = self.store.snapshot()
+            self.assertEqual(after['draft']['captureThumbs'][kind], before)
+        self.store.record('booking_reset', {})
+        self.store.record('booking_accepted', {})
+        self.store.record('image_ready', {'imageType': 'top', 'url': '/api/images/late.jpg', 'origin': 'manual', 'sessionId': start['sessionId']})
+        after = self.store.snapshot()
+        self.assertNotIn('top', after['draft'].get('captureThumbs', {}))
+
+    def test_manual_delete_is_not_refilled_by_auto_photo(self):
+        self.store.record('booking_accepted', {})
+        self.change([{'path': ['captureThumbs', 'head'], 'value': ''}])
+        self.store.record('image_ready', {'imageType': 'head', 'url': '/api/images/auto.jpg'})
+        snap = self.store.snapshot()
+        self.assertEqual(snap['draft']['captureThumbs']['head'], '')
+
     def test_ocr_plate_source_is_shared_and_restored_independently_of_new_crop(self):
         photo = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
         snap = self.change([

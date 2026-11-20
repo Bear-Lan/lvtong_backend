@@ -1,4 +1,4 @@
-"""占用时禁止自动/手动抓拍和车身拉图；测试不连接数据库、相机或中间件。"""
+"""占用时自动采集等待，手动拍照可继续；测试不连接真实设备。"""
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,7 +114,7 @@ class CaptureLaneGuardTest(unittest.TestCase):
         for mocked in (camera, rtsp, http, push):
             mocked.assert_not_called()
 
-    def test_manual_single_and_bulk_return_409_then_succeed_when_clear(self):
+    def test_manual_single_allowed_while_bulk_waits_until_clear(self):
         self.occupy()
         app = Flask(__name__)
         app.register_blueprint(capture_api)
@@ -124,16 +124,18 @@ class CaptureLaneGuardTest(unittest.TestCase):
              patch.object(capture, 'snapshot_from_camera', return_value=b'\xff\xd8test') as snapshot, \
              patch('app.services.temp_image_cache.put_and_url', return_value='/test.jpg'), \
              patch.object(capture, '_push_image_ready'):
-            for endpoint in ('head', 'top', 'tail', 'bulk'):
+            for endpoint in ('head', 'top', 'tail'):
                 response = client.post('/api/capture/' + endpoint, headers=headers)
-                self.assertEqual(response.status_code, 409)
-                self.assertIn('车道占用', response.json['message'])
-            snapshot.assert_not_called()
+                self.assertEqual(response.status_code, 200)
+            self.assertEqual(snapshot.call_count, 3)
+            response = client.post('/api/capture/bulk', headers=headers)
+            self.assertEqual(response.status_code, 409)
+            snapshot.reset_mock()
             for _ in range(5):
                 self.scheduler._try_release_after_accept(1, 27)
             response = client.post('/api/capture/top', headers=headers)
             self.assertEqual(response.status_code, 200)
-            snapshot.assert_called_once_with('cam_road', right_two_thirds=True)
+            snapshot.assert_called_once_with('cam_road', right_two_thirds=True, manual=True)
 
     def test_inflight_photo_discarded_even_if_occupancy_has_already_cleared(self):
         def late_frame(_device):
@@ -151,6 +153,21 @@ class CaptureLaneGuardTest(unittest.TestCase):
         self.assertFalse(self.scheduler.capture_blocked)
         cache.assert_not_called()
         push.assert_not_called()
+
+    def test_manual_selected_camera_ignores_lane_changes_during_request(self):
+        self.occupy()
+        app = Flask(__name__); app.register_blueprint(capture_api)
+        headers = {'Authorization': 'Bearer ' + create_token({'username': 'capture-test'})}
+        def photo(*args, **kwargs):
+            self.assertTrue(kwargs['manual'])
+            self.scheduler._update_lane_occupied_state(False)
+            self.scheduler._update_lane_occupied_state(True)
+            return b'\xff\xd8manual'
+        with patch('app.api.capture.snapshot_from_camera', side_effect=photo) as shot:
+            response = app.test_client().post('/api/capture/camera/cam_head', headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.scheduler.capture_blocked)
+        shot.assert_called_once_with('cam_head', right_two_thirds=False, manual=True)
 
     def test_body_start_pull_and_frame_push_are_blocked(self):
         self.occupy()

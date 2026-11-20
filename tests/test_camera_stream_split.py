@@ -96,7 +96,7 @@ class CameraStreamSplitTest(unittest.TestCase):
         return self.client.post('/api/capture/camera/' + device, headers=self.headers, **kwargs)
 
     def test_selected_camera_is_independent_of_photo_category_and_roof_crop_is_preserved(self):
-        with patch.object(api, 'ensure_capture_allowed', return_value=7) as guard, \
+        with patch.object(api, 'ensure_manual_capture_allowed', return_value='session') as guard, \
              patch.object(api, 'snapshot_from_camera', return_value=b'\xff\xd8photo') as shot, \
              patch.object(capture, '_push_image_ready') as broadcast:
             for device in ('cam_road', 'cam_head', 'cam_lane', 'cam_ptz', 'cam_booking'):
@@ -106,23 +106,23 @@ class CameraStreamSplitTest(unittest.TestCase):
                 self.assertEqual(base64.b64decode(result['dataUrl'].split(',')[1]), b'\xff\xd8photo')
                 self.assertEqual(result['deviceId'], device)
                 self.assertEqual(result['streamType'], 1)
-                shot.assert_called_with(device, right_two_thirds=device == 'cam_road')
-                guard.assert_called_with(7)
+                shot.assert_called_with(device, right_two_thirds=device == 'cam_road', manual=True)
+                guard.assert_called_with('session')
             broadcast.assert_not_called()
 
-    def test_auth_allowlist_and_occupancy_block_before_camera_io(self):
+    def test_auth_allowlist_and_old_session_block_before_camera_io(self):
         with patch.object(api, 'snapshot_from_camera') as shot:
             self.assertEqual(self.client.post('/api/capture/camera/cam_head').status_code, 401)
             self.assertEqual(self.post('cam_safe').status_code, 400)
-            with patch.object(api, 'ensure_capture_allowed', side_effect=CaptureBlockedError('occupied')):
+            with patch.object(api, 'ensure_manual_capture_allowed', side_effect=CaptureBlockedError('session changed')):
                 self.assertEqual(self.post('cam_head').status_code, 409)
             shot.assert_not_called()
 
     def test_late_photo_is_discarded_and_connection_errors_do_not_return_preview(self):
-        with patch.object(api, 'ensure_capture_allowed', side_effect=[7, CaptureBlockedError('changed')]), \
+        with patch.object(api, 'ensure_manual_capture_allowed', side_effect=['session', CaptureBlockedError('changed')]), \
              patch.object(api, 'snapshot_from_camera', return_value=b'\xff\xd8late'):
             self.assertEqual(self.post('cam_head').status_code, 409)
-        with patch.object(api, 'ensure_capture_allowed', return_value=7), \
+        with patch.object(api, 'ensure_manual_capture_allowed', return_value='session'), \
              patch.object(api, 'snapshot_from_camera', side_effect=RuntimeError('secret connection')):
             response = self.post('cam_head')
             self.assertEqual(response.status_code, 502)

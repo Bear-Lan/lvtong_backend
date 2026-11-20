@@ -393,19 +393,21 @@ def push_detection_step(step: int, message: str = '', *, gate_released: bool = F
     })
 
 
-def push_image_ready(image_type: str, url: str):
+def push_image_ready(image_type: str, url: str, *, origin='auto', session_id=None):
     """推送新图像可用通知（单张）
 
     image_type: body/transparent/head/tail/top/goods/evidence/license
     """
     from app.services.inspection_session import record_event
-    record_event('image_ready', {'imageType': image_type, 'url': url})
+    record_event('image_ready', {'imageType': image_type, 'url': url, 'origin': origin, 'sessionId': session_id})
     socketio.emit('message', {
         'type': 'image_ready',
         'timestamp': int(time.time() * 1000),
         'data': {
             'imageType': image_type,
             'url': url,
+            'origin': origin,
+            'sessionId': session_id,
         },
     })
 

@@ -87,7 +87,7 @@ def _execute_capture(params: dict) -> bool:
 
     必须异步：调度器跑在雷达收包线程里，同步 OpenCV/RTSP 会堵住
     on_radar_data → 距离推送中断 → 前端小车卡住。
-    与手动 /api/capture/* 共用车道占用检查。
+    自动采集遵守车道占用检查；手动单张采集仅检查当前检测会话。
     """
     category = str(params.get('category') or 'head').strip() or 'head'
     from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed

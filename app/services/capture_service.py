@@ -20,7 +20,7 @@ from urllib.parse import quote
 import cv2
 import requests
 
-from app.services.capture_guard import ensure_capture_allowed
+from app.services.capture_guard import ensure_capture_allowed, ensure_manual_capture_allowed
 from app.services.camera_stream import rtsp_channel
 
 logger = logging.getLogger('capture_service')
@@ -74,7 +74,7 @@ def _rtsp_url(row: dict, channel: int) -> str:
     return f'rtsp://{user}:{pwd}@{ip}:554/Streaming/Channels/{channel}'
 
 
-def snapshot_from_camera(device_id: str, *, right_two_thirds: bool = False) -> bytes:
+def snapshot_from_camera(device_id: str, *, right_two_thirds: bool = False, manual: bool = False) -> bytes:
     """对指定海康设备做一次 RTSP 抽帧，返回 JPEG bytes。"""
     row = _load_camera_row(device_id)
     if not row:
@@ -88,7 +88,8 @@ def snapshot_from_camera(device_id: str, *, right_two_thirds: bool = False) -> b
     os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
 
     with _capture_lock:
-        ensure_capture_allowed()
+        if not manual:
+            ensure_capture_allowed()
         cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             raise RuntimeError(f'摄像头 RTSP 打开失败 ({device_id} {safe_url})')
@@ -135,9 +136,9 @@ def fetch_url_bytes(url: str) -> bytes:
     return resp.content
 
 
-def capture_category(category: str) -> dict:
+def capture_category(category: str, *, manual: bool = False, session_id=None) -> dict:
     """按类别采集一帧，推 temp URL 到前端；不落盘（提交时 persist）。"""
-    generation = ensure_capture_allowed()
+    generation = ensure_manual_capture_allowed(session_id) if manual else ensure_capture_allowed()
     category = (category or '').strip() or 'head'
 
     if category in CATEGORY_DEVICE_MAP:
@@ -152,8 +153,9 @@ def capture_category(category: str) -> dict:
             f'[CAPTURE] {category} ← RTSP 抽帧 device_id={device_id}（仅预览，提交再落盘）',
             flush=True,
         )
-        data = (snapshot_from_camera(device_id, right_two_thirds=True)
-                if category == 'top' else snapshot_from_camera(device_id))
+        options = {'manual': True} if manual else {}
+        data = (snapshot_from_camera(device_id, right_two_thirds=True, **options)
+                if category == 'top' else snapshot_from_camera(device_id, **options))
     else:
         # goods / license / evidence：若 config 有 URL 则拉，否则报错
         url = ''
@@ -169,8 +171,11 @@ def capture_category(category: str) -> dict:
         print(f'[CAPTURE] {category} ← HTTP {url}（仅预览，提交再落盘）', flush=True)
         data = fetch_url_bytes(url)
 
-    # RTSP/HTTP期间可能收到占用报文；即使之后已恢复，也不接受跨占用周期的迟到图。
-    ensure_capture_allowed(generation)
+    # 自动照片丢弃跨占用周期的迟到图；手动照片允许占用变化，但不能跨检测会话。
+    if manual:
+        ensure_manual_capture_allowed(generation)
+    else:
+        ensure_capture_allowed(generation)
     # 非 JPEG 时仍按 jpeg mime 推（前端 <img> 多数可显示；提交时按 dataUrl mime 写盘）
     mime = 'image/jpeg' if data.startswith(b'\xff\xd8') else 'image/jpeg'
     if data.startswith(b'\x89PNG'):
@@ -179,7 +184,10 @@ def capture_category(category: str) -> dict:
     # WS 只推短 URL：大图 base64 会堵 Socket.IO/主线程，导致小车卡顿
     from app.services import temp_image_cache
     preview_url = temp_image_cache.put_and_url(data, mime)
-    _push_image_ready(category, preview_url)
+    if manual:
+        _push_image_ready(category, preview_url, origin='manual', session_id=generation)
+    else:
+        _push_image_ready(category, preview_url)
 
     data_url = f'data:{mime};base64,' + base64.b64encode(data).decode('ascii')
     logger.info(
@@ -194,9 +202,9 @@ def capture_category(category: str) -> dict:
     return {'url': preview_url, 'dataUrl': data_url, 'size': len(data)}
 
 
-def _push_image_ready(image_type: str, url: str) -> None:
+def _push_image_ready(image_type: str, url: str, **metadata) -> None:
     try:
         from app.websocket.handler import push_image_ready
-        push_image_ready(image_type, url)
+        push_image_ready(image_type, url, **metadata)
     except Exception:
         pass

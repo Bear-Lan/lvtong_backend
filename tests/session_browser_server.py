@@ -59,6 +59,15 @@ def login_fixture():
 def token():
     return {'token': create_token({'username': 'sync-test', 'real_name': '同步测试'})}
 
+@app.post('/fixture/auto-photo')
+def auto_photo():
+    body = request.get_json() or {}
+    store.record('lane_occupied', {'occupied': False})
+    store.record('image_ready', {'imageType': body['kind'], 'url': body['url']})
+    snapshot = store.snapshot()
+    broadcast(snapshot)
+    return jsonify(code=0, data=snapshot)
+
 @app.post('/fixture/begin')
 def begin():
     submissions.clear()
