@@ -35,3 +35,9 @@ tools/mediamtx/auto.key
 .DS_Store
 Thumbs.db
 uploads/
+
+# 本机隔离开发运行文件（含私有配置，不部署）
+.local-dev/
+
+# AI接收服务后端凭据
+config/intake.local.json

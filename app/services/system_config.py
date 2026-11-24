@@ -70,6 +70,8 @@ def defaults():
                           '5': 'DISPLAY5', '6': 'DISPLAY5', '7': 'DISPLAY4'}
     items.update({'capture.pollIntervalSec': .2, 'capture.maxPollSec': 180.0,
                   'capture.connectTimeoutSec': 3.0, 'capture.readTimeoutSec': 12.0})
+    items.update({'intake.enabled': False, 'intake.station_id': '', 'intake.base_url': '',
+                  'intake.windowSeconds': 480, 'intake.pollIntervalSec': 2})
     return items
 
 
@@ -80,7 +82,20 @@ def _finite(value, low, high):
 def validate(key, value, baseline):
     if key not in baseline:
         raise ValueError('未知配置项：' + key)
-    if key == 'scheduler.workflow':
+    if key == 'intake.station_id':
+        if not isinstance(value, str) or value and not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value):
+            raise ValueError('站点编号无效')
+    elif key == 'intake.windowSeconds':
+        if type(value) is not int or not 60 <= value <= 3600:
+            raise ValueError('资料候选窗口须为60至3600秒整数')
+    elif key == 'intake.pollIntervalSec':
+        if not _finite(value, 1, 60):
+            raise ValueError('资料轮询间隔须为1至60秒')
+    elif key == 'intake.base_url':
+        parsed = urlsplit(value) if isinstance(value, str) else None
+        if parsed is None or value and (parsed.scheme not in ('http', 'https') or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment):
+            raise ValueError('AI接收服务地址须为不含口令的HTTP/HTTPS地址')
+    elif key == 'scheduler.workflow':
         if not isinstance(value, dict) or not isinstance(value.get('thresholds'), list) or not isinstance(value.get('plcStateRules'), list):
             raise ValueError('调度配置须包含thresholds及plcStateRules数组')
         gate = value.get('gateRelease', {})

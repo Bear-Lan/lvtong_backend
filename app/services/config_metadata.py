@@ -16,6 +16,11 @@ COLUMN_COMMENTS = {
 
 # 兼容字段明确标注用途，避免把“库中存在”误解成“当前流程正在使用”。
 PARAMETER_DESCRIPTIONS = {
+    'intake.enabled': '启用本站小程序资料内网同步；仅检测期间拉取，默认关闭；保存后重启生效。',
+    'intake.station_id': '本站编号，须与AI接收端一致；汉南现场为 whds。',
+    'intake.base_url': 'AI服务器接收服务内网地址，不能填云端地址；只读凭证在后端私有文件中配置。',
+    'intake.windowSeconds': '开始检测时向前查询的秒数，默认480秒即8分钟；本轮候选保留到结束。',
+    'intake.pollIntervalSec': '检测期间向AI接收服务查询变化的间隔，单位秒，默认2秒。',
     'middleware.IMAGE_FETCH_BASE': '兼容统一出图接口的基础地址，程序可追加type参数；当前车身、预约雷达、点云、200透视优先使用各自独立地址。',
     'middleware.PLACEHOLDER_IMAGE_ID': '旧版占位图编号，兼容保留；当前检测流程不使用此编号拉图。',
     'middleware.PLACEHOLDER_IMAGE_URL': '旧版占位图地址，兼容保留；当前车身图使用BODY_CAMERA_IMAGE_URL。',

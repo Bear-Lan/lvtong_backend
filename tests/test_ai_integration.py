@@ -123,11 +123,65 @@ class AIIntegrationTests(unittest.TestCase):
         self.assertEqual(result.status_code,502)
         self.assertNotEqual(result.json['code'],0)
 
-    def test_mask_prefers_new_union_and_disabled_xray_never_calls_upstream(self):
-        self.assertEqual(mask_loading_rate.extract_mask_b64({'mask_image':{'base64':'union'},'data':[{'mask':{'base64':'old'}}]})[0],'union')
-        with patch.object(ai_client,'request_json',side_effect=AssertionError('不应调用')):
-            result=self.client.post('/api/imaging/ai-goods-xray',headers=self.headers)
-        self.assertEqual(result.status_code,409)
+    def test_mask_prefers_new_union_and_xray_requires_image(self):
+        self.assertEqual(mask_loading_rate.extract_mask_b64({'mask_image': {'base64': 'union'}, 'data': [{'mask': {'base64': 'old'}}]})[0], 'union')
+        with patch.object(ai_client, 'request_json', side_effect=AssertionError('缺图不应调用')):
+            result = self.client.post('/api/imaging/ai-goods-xray', headers=self.headers)
+        self.assertEqual(result.status_code, 400)
+
+    def test_xray_analyze_maps_region_top1_only_and_never_claims_accepted(self):
+        payload = {'code': 1, 'data': {'regions': [{'id': 'A1'}, {'id': 'A2'}, {'id': 'A3'}],
+            'classifications': [
+                {'region_id': 'A2', 'candidates': [{'class_id': 'pingguo', 'score': .99}]},
+                {'region_id': 'A1', 'candidates': [{'class_id': 'pingguo', 'score': .8}]},
+                {'region_id': 'A3', 'candidates': [{'class_id': 'unknown', 'score': .9}, {'class_id': 'xiangjiao', 'score': .8}]},
+                {'region_id': 'other-image', 'candidates': [{'class_id': 'xiangjiao', 'score': .99}]},
+            ]}}
+        apple = {'product_code': '002', 'variety_name': '苹果'}
+        with patch.object(ai_client, 'request_json', return_value=payload) as upstream, patch.object(DBProduct, 'getProductByCode', return_value=None), patch.object(DBProduct, 'getProductByName', return_value=[apple]):
+            result = goods_detect.detect_product_xray(self.image)
+        self.assertEqual([(g['code'], g['score'], g['source'], g['validity']) for g in result['goods']], [('002', .99, 'xray', 'uncertain')])
+        self.assertEqual(result['goods_type'], '002')
+        self.assertIn('待核', result['verification_message'])
+        self.assertEqual(upstream.call_args.args[0], '/v1/xray/analyze')
+        self.assertEqual(upstream.call_args.kwargs['data'], {'top_k': '3'})
+        self.assertEqual(upstream.call_args.kwargs['read_timeout'], 110)
+
+    def test_xray_empty_regions_are_not_a_no_cargo_judgement(self):
+        with patch.object(ai_client, 'request_json', return_value={'code': 1, 'mixed_load': True, 'mixed_load_labels': ['未知'], 'data': {'regions': [], 'classifications': []}}):
+            result = goods_detect.detect_product_xray(self.image)
+        self.assertEqual(result['goods'], [])
+        self.assertIsNone(result['mixed_load'])
+        self.assertEqual(result['count'], 0)
+
+    def test_xray_malformed_or_incomplete_regions_fail_instead_of_silent_success(self):
+        for data in ({}, {'regions': [], 'classifications': None},
+                     {'regions': [{'id': 'A1'}], 'classifications': []},
+                     {'regions': [{}], 'classifications': []},
+                     {'regions': [{'id': 'A1'}], 'classifications': [{'region_id': 'A1'}]},
+                     {'regions': [{'id': 'A1'}], 'classifications': [{'region_id': 'A1', 'candidates': []}] * 2}):
+            with self.subTest(data=data), patch.object(ai_client, 'request_json', return_value={'code': 1, 'data': data}):
+                with self.assertRaises(RuntimeError): goods_detect.detect_product_xray(self.image)
+
+    def test_goods_ignore_control_labels_bad_scores_and_ambiguous_mapping(self):
+        detections = [{'class_id': 'hunzhuang_review', 'score': .99},
+                      {'class_id': 'non_greenpass_review', 'score': 1},
+                      {'class_id': 'pingguo', 'score': 'bad'},
+                      {'class_id': 'pingguo', 'score': True},
+                      {'class_id': 'pingguo'}, {'class_id': 'pingguo', 'score': .9}]
+        with patch.object(ai_client, 'request_json', return_value={'code': 1, 'data': {'detections': detections}}), patch.object(DBProduct, 'getProductByCode', return_value=None), patch.object(DBProduct, 'getProductByName', return_value=[{'product_code': '1'}, {'product_code': '2'}]):
+            self.assertEqual(goods_detect.detect_product_real(self.image)['goods'], [])
+
+    def test_xray_route_returns_recommendations_and_explicit_failures(self):
+        goods = [{'code': '002', 'name': '苹果', 'score': .9, 'source': 'xray', 'validity': 'uncertain'}]
+        with patch.object(goods_detect, 'detect_product_xray', return_value={'goods': goods}):
+            result = self.client.post('/api/imaging/ai-goods-xray', headers=self.headers, data={'image': (io.BytesIO(self.image), 'xray.png')})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json['data']['goods'], goods)
+        with patch.object(goods_detect, 'detect_product_xray', side_effect=RuntimeError('upstream unavailable')):
+            result = self.client.post('/api/imaging/ai-goods-xray', headers=self.headers, data={'image': (io.BytesIO(self.image), 'xray.png')})
+        self.assertEqual(result.status_code, 502)
+        self.assertNotEqual(result.json['code'], 0)
 
     def test_ai_source_returns_paired_original_and_expiry_is_explicit(self):
         from app.services import temp_image_cache as cache

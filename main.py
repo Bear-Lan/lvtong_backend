@@ -85,6 +85,12 @@ def create_app() -> Flask:
     shared_session = InspectionSessionStore(engine, IMAGE_STORAGE_ROOT)
     shared_session.initialize()
     init_session_sync(app, shared_session)
+    from app.services.driver_intake import DriverIntake
+    from app.api.driver_intake import intake_api
+    driver_intake = DriverIntake(shared_session, IMAGE_STORAGE_ROOT)
+    app.extensions['driver_intake'] = driver_intake
+    app.register_blueprint(intake_api)
+    driver_intake.start()
 
     # 图像文件服务：接收任意本地绝对路径，返回文件内容
     @app.route('/api/image')

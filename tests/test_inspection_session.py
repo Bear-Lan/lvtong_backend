@@ -405,6 +405,24 @@ class InspectionSessionTests(unittest.TestCase):
         self.assertEqual(body['radar_3d_top_image_path'], s['draft']['radarCloudTopImageUrl'])
         self.assertEqual(body['radar_3d_side_image_path'], s['draft']['radarCloudSideImageUrl'])
 
+    def test_mobile_body_photo_updates_both_shared_panel_references(self):
+        self.store.record('booking_accepted', {})
+        self.change([{'path': ['panelImages', 'body'], 'value': {'1': '/api/images/old.jpg'}}])
+        updated = self.store.record('mobile_upload', {'body_image_path': '/api/images/mobile-body.jpg'})
+        self.assertEqual(updated['images']['body']['1'], '/api/images/mobile-body.jpg')
+        self.assertEqual(updated['draft']['panelImages']['body']['1'], '/api/images/mobile-body.jpg')
+        restored = InspectionSessionStore(self.engine, self.store.image_root).snapshot()
+        self.assertEqual(restored, updated)
+
+    def test_mobile_disk_references_are_shared_urls_not_browser_local_paths(self):
+        image = self.store.image_root / 'mobile' / 'phone' / 'goods.jpg'
+        image.parent.mkdir(parents=True)
+        image.write_bytes(b'test')
+        updated = self.store.record('mobile_upload', {'goods_image_path': str(image),
+                                                     'license_image_path1': 'D:/old-phone/license.jpg'})
+        self.assertEqual(updated['draft']['captureLists']['goods'], ['/api/images/mobile/phone/goods.jpg'])
+        self.assertEqual(updated['draft']['licensePaths']['license'], '/api/image?path=D%3A%2Fold-phone%2Flicense.jpg')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -276,8 +276,18 @@ def ai_goods_real():
 @imaging_api.route('/ai-goods-xray', methods=['POST'])
 @login_required
 def ai_goods_xray():
-    """旧透视入口显式停用，本轮不接入区域检测与分类。"""
-    return fail(409, '透视区域检测与分类暂未启用，请使用实拍货品推荐或手动选择')
+    """透视整图定位+区域分类，仅提供待核辅助推荐。"""
+    from app.services.goods_detect import detect_product_xray
+
+    image_bytes, filename = _read_image_upload('xray.jpg')
+    if not image_bytes:
+        return fail(400, '请先提供透视图')
+    try:
+        return ok(detect_product_xray(image_bytes, filename), 'AI透视辅助识别成功')
+    except ValueError as e:
+        return fail(400, str(e))
+    except Exception as e:
+        return fail(502, f'AI透视辅助识别失败: {e}')
 
 
 # ==================== 200+160 拼接 ====================

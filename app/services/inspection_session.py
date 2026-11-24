@@ -11,7 +11,8 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from urllib.parse import quote
 
 from sqlalchemy import Column, Integer, MetaData, Table, Text, select, update
 from app.services.ai_draft_policy import MANUAL_FIELDS, ai_change_allowed
@@ -62,11 +63,11 @@ class InspectionSessionStore:
                 conn.execute(session_table.insert().values(id=1, payload=json.dumps(_new_document())))
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, include_connection=False):
         with self.lock, self.engine.begin() as conn:
             row = conn.execute(select(session_table.c.payload).where(session_table.c.id == 1).with_for_update()).scalar_one()
             doc = json.loads(row)
-            yield doc
+            yield (doc, conn) if include_connection else doc
             conn.execute(update(session_table).where(session_table.c.id == 1).values(
                 payload=json.dumps(doc, ensure_ascii=False, allow_nan=False)))
 
@@ -110,6 +111,21 @@ class InspectionSessionStore:
                 return '/api/images/' + reference.split('/api/images/', 1)[1].split('?', 1)[0]
             return reference
         return self._write_asset(raw, '.png' if raw.startswith(b'\x89PNG') else '.jpg')
+
+    def _share_mobile_image(self, reference):
+        """手机上传的磁盘路径转成所有终端都能读取的 URL，不回放采集命令。"""
+        if not reference:
+            return ''
+        if reference.startswith(('/api/', 'http://', 'https://', 'data:', 'blob:')):
+            return self._share_image(reference)
+        path = Path(reference)
+        if path.is_absolute() or PureWindowsPath(reference).is_absolute():
+            try:
+                relative = path.resolve().relative_to(self.image_root)
+                return '/api/images/' + relative.as_posix()
+            except ValueError:
+                return '/api/image?path=' + quote(reference, safe='')
+        return self._share_image(reference)
 
     def _write_asset(self, raw, suffix):
         digest = hashlib.sha256(raw).hexdigest()
@@ -270,6 +286,7 @@ class InspectionSessionStore:
             elif event == 'booking_open':
                 doc['phase'] = 'booking'
             elif event == 'booking_accepted':
+                doc.setdefault('detectionStartedAt', int(time.time()))
                 doc['phase'] = 'detecting'
                 doc['workflow'] = {'step': 1, 'message': '', 'gateReleased': False, 'laneOccupied': True}
             elif event == 'detection_step':
@@ -313,6 +330,18 @@ class InspectionSessionStore:
             elif event == 'geometry_status':
                 doc['geometryCapture'] = data.get('capture')
             elif event == 'mobile_upload':
+                data = dict(data)
+                for field in ('head_image_path', 'body_image_path', 'tail_image_path', 'top_image_path',
+                              'passcode_image_path', 'license_image_path1', 'license_image_path2'):
+                    if data.get(field):
+                        data[field] = self._share_mobile_image(data[field])
+                for field in ('goods_image_path', 'evidences_image_path'):
+                    if data.get(field):
+                        data[field] = '|'.join(self._share_mobile_image(ref) for ref in data[field].split('|') if ref)
+                if data.get('body_image_path'):
+                    body_image = self._share_panel_image(data['body_image_path'])
+                    doc.setdefault('images', {}).setdefault('body', {})['1'] = body_image
+                    doc['draft'].setdefault('panelImages', {}).setdefault('body', {})['1'] = body_image
                 for source, target in (('head_image_path', 'head'), ('tail_image_path', 'tail'), ('top_image_path', 'top'), ('passcode_image_path', 'passcode')):
                     if data.get(source):
                         doc['draft'].setdefault('manualPhotos', {})[target] = True
@@ -353,9 +382,12 @@ class InspectionSessionStore:
         return self.snapshot()
 
     def mark_submitted(self, session_id, record_id):
-        with self.transaction() as doc:
+        with self.transaction(include_connection=True) as (doc, conn):
             if doc['sessionId'] != session_id:
                 raise SessionConflict('检测会话已切换')
+            if doc.get('intakeSelection'):
+                from app.services.driver_intake import finalize_binding
+                finalize_binding(conn, doc, record_id)
             doc['phase'], doc['submittedId'] = 'submitted', record_id
             self._touch(doc)
         return self.snapshot()
