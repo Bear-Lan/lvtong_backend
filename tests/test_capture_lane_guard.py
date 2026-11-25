@@ -114,7 +114,7 @@ class CaptureLaneGuardTest(unittest.TestCase):
         for mocked in (camera, rtsp, http, push):
             mocked.assert_not_called()
 
-    def test_manual_single_allowed_while_bulk_waits_until_clear(self):
+    def test_manual_single_allowed_during_lane_occupancy(self):
         self.occupy()
         app = Flask(__name__)
         app.register_blueprint(capture_api)
@@ -127,9 +127,9 @@ class CaptureLaneGuardTest(unittest.TestCase):
             for endpoint in ('head', 'top', 'tail'):
                 response = client.post('/api/capture/' + endpoint, headers=headers)
                 self.assertEqual(response.status_code, 200)
-            self.assertEqual(snapshot.call_count, 3)
             response = client.post('/api/capture/bulk', headers=headers)
-            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(snapshot.call_count, 3)
             snapshot.reset_mock()
             for _ in range(5):
                 self.scheduler._try_release_after_accept(1, 27)

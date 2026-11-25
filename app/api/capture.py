@@ -7,7 +7,7 @@ import base64
 from flask import Blueprint, request, jsonify
 
 from app.services.capture_service import capture_category, snapshot_from_camera
-from app.services.capture_guard import CaptureBlockedError, ensure_capture_allowed, ensure_manual_capture_allowed
+from app.services.capture_guard import CaptureBlockedError, ensure_manual_capture_allowed
 from app.extensions.auth import login_required
 
 capture_api = Blueprint('capture', __name__, url_prefix='/api/capture')
@@ -83,28 +83,3 @@ def capture_license():
 @login_required
 def capture_evidence():
     return _capture_one('evidence', '证据照采集成功')
-
-
-@capture_api.route('/bulk', methods=['POST'])
-@login_required
-def capture_bulk():
-    """批量采集（对齐 Qt auto-capture 阶段）"""
-    try:
-        ensure_capture_allowed()
-    except CaptureBlockedError as e:
-        return fail(409, str(e))
-    body = request.get_json(silent=True) or {}
-    categories = body.get('categories', ['head', 'tail', 'top'])
-    results = {}
-    errors = {}
-
-    for cat in categories:
-        try:
-            results[cat] = capture_category(cat)
-        except Exception as e:
-            errors[cat] = str(e)
-
-    return ok({
-        'captured': results,
-        'failed': errors,
-    }, f'批量采集完成: {len(results)} 成功, {len(errors)} 失败')
