@@ -218,13 +218,20 @@ class InspectionSessionTests(unittest.TestCase):
     def test_ocr_plate_source_is_shared_and_restored_independently_of_new_crop(self):
         photo = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
         snap = self.change([
-            {'path': ['aiContext', 'license'], 'value': {'source': '/api/images/new-crop.jpg', 'plateSource': photo, 'stitchedSource': photo, 'ocrDone': False}},
+            {'path': ['aiContext', 'license'], 'value': {
+                'source': '/api/images/new-crop.jpg', 'plateSource': photo, 'stitchedSource': photo,
+                'inputSource': '/api/images/previous-crop.jpg', 'ocrSource': photo, 'ocrDone': False,
+            }},
         ])
         context = snap['draft']['aiContext']['license']
         self.assertTrue(context['plateSource'].startswith('/api/images/session_assets/'))
         self.assertEqual(context['source'], '/api/images/new-crop.jpg')
         self.assertFalse(context['ocrDone'])
         self.assertEqual(context['stitchedSource'], context['plateSource'])
+        self.assertEqual(context['inputSource'], '/api/images/previous-crop.jpg')
+        self.assertEqual(context['ocrSource'], context['plateSource'])
+        original = self.store.image_root / context['ocrSource'].removeprefix('/api/images/')
+        self.assertEqual(original.read_bytes(), PNG)
         self.assertEqual(InspectionSessionStore(self.engine, self.store.image_root).snapshot()['draft']['aiContext']['license'], context)
 
     def test_automatic_camera_frames_restore_without_temp_cache(self):
