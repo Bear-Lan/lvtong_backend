@@ -123,6 +123,47 @@ class AIIntegrationTests(unittest.TestCase):
         self.assertEqual(result.status_code,502)
         self.assertNotEqual(result.json['code'],0)
 
+    def test_ocr_weighs_tractor_and_trailer_using_separate_images(self):
+        main = {'code': 1, 'data': [
+            {'key': '号牌号码', 'value': '鄂A12345'}, {'key': '整备质量', 'value': '8,000 KG'},
+            {'key': '准牵引总质量', 'value': '40000kg'},
+        ]}
+        trailer = {'code': 1, 'data': [
+            {'key': '号牌号码', 'value': '鄂B1234挂'}, {'key': '核定载质量', 'value': '30000kg'},
+            {'key': '整备质量', 'value': '7000kg'}, {'key': '总质量', 'value': '37001kg'},
+        ]}
+
+        def upload():
+            return {'image': (io.BytesIO(b'main'), 'main.png'), 'hang_image': (io.BytesIO(b'trailer'), 'hang.png')}
+
+        with patch.object(ai_client, 'request_json', side_effect=[main, trailer]) as upstream:
+            result = self.client.post('/api/imaging/ocr/driving-license', headers=self.headers, data=upload())
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual([call.kwargs['files']['image'][1] for call in upstream.call_args_list], [b'main', b'trailer'])
+        data = result.json['data']
+        self.assertEqual(data['plate_number'], '鄂A12345')
+        self.assertEqual(data['weight_range_scope'], 'combination')
+        self.assertEqual((data['weight_min'], data['weight_max']), (39000, 46851.05))
+
+        # 即使主车证单独能算出区间，挂车识别失败也不能回退为主车区间。
+        main['data'] += [{'key': '核定载质量', 'value': '10000kg'}, {'key': '总质量', 'value': '18000kg'}]
+        with patch.object(ai_client, 'request_json', side_effect=[main, ai_client.AIError('invalid trailer')]):
+            result = self.client.post('/api/imaging/ocr/driving-license', headers=self.headers, data=upload())
+        self.assertEqual(result.json['data']['plate_number'], '鄂A12345')
+        self.assertIn('挂车行驶证OCR未成功', result.json['data']['weight_range_error'])
+        self.assertEqual(result.json['data']['weight_range_text'], '')
+
+    def test_ocr_with_missing_or_invalid_mass_does_not_publish_a_range(self):
+        for curb, gross in [('', '16000'), ('--', '16000'), ('-5000kg', '16000'), ('5000', '9000')]:
+            with self.subTest(curb=curb, gross=gross):
+                fields = [{'key': key, 'value': value} for key, value in (
+                    ('核定载质量', '10000'), ('整备质量', curb), ('总质量', gross), ('准牵引总质量', '40000'),
+                )]
+                with patch.object(ai_client, 'request_json', return_value={'code': 1, 'data': fields}):
+                    result = self.client.post('/api/imaging/ocr/driving-license', headers=self.headers,
+                        data={'image': (io.BytesIO(self.image), 'main.png')})
+                self.assertEqual(result.json['data']['weight_range_text'], '')
+
     def test_mask_prefers_new_union_and_xray_requires_image(self):
         self.assertEqual(mask_loading_rate.extract_mask_b64({'mask_image': {'base64': 'union'}, 'data': [{'mask': {'base64': 'old'}}]})[0], 'union')
         with patch.object(ai_client, 'request_json', side_effect=AssertionError('缺图不应调用')):

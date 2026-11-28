@@ -4,6 +4,9 @@ X光图像处理（色阶校正、满载率计算、拼接）、行驶证OCR。
 参考 Qt ImgProcess / OcrFetcher 实现。
 """
 import base64
+from decimal import Decimal
+import math
+import re
 import requests
 import cv2
 from flask import Blueprint, request, jsonify, Response
@@ -353,15 +356,17 @@ def ocr_driving_license():
     """行驶证OCR识别
 
     POST /api/imaging/ocr/driving-license
-    - multipart: image=<file>（对齐 gongsi_LvTong / dl_ocr）
+    - multipart: image=<主车证>，可选 hang_image=<挂车证>，两张证照分别识别
     - JSON: { image_base64 | image_url | image_path }，由后端读取后转base64str
 
-    解析号牌号码、核定载质量、整备质量、总质量等，并计算称重提示区间：
-      min = 核定载质量 * 0.8 + 整备质量
-      max = 总质量 * 1.05
+    返回主车证照字段和按 Qt 规则计算的出口称重参考区间，单位 kg。
     """
     from app.services.ai_client import request_json, AIError
     try:
+        hang_file = request.files.get('hang_image')
+        hang_bytes = hang_file.read() if hang_file is not None else None
+        if hang_bytes == b'':
+            return fail(400, '挂车行驶证图片为空')
         if request.files.get('image'):
             f = request.files['image']
             image_bytes = f.read()
@@ -379,39 +384,51 @@ def ocr_driving_license():
                 return fail(400, '行驶证图像编码失败')
             ocr_result = request_json('/dl_ocr/front_and_back',
                 json_body={'base64str': base64.b64encode(buffer.tobytes()).decode('ascii')})
-        data_list = ocr_result.get('data')
-        if not isinstance(data_list, list):
-            raise AIError('OCR返回字段格式异常')
-
-        # 按 key 匹配（对齐 Qt / gongsi parseMainVehicleFromJson）
-        parsed = {
-            'plate_number': '', 'vehicle_type': '',
-            'hdzzl': '', 'zbzl': '', 'zzl': '', 'wkcc': '',
-            'all_fields': data_list,
-        }
-
-        key_map = {
-            '号牌号码': 'plate_number', '车辆类型': 'vehicle_type',
-            '核定载质量': 'hdzzl', '整备质量': 'zbzl',
-            '总质量': 'zzl', '外廓尺寸': 'wkcc', '检验有效期': 'inspection_valid_until',
-        }
-        for item in data_list:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get('key', '') or '')
-            value = str(item.get('value', '') or '').strip()
-            for qt_key, our_key in key_map.items():
-                if qt_key in key:
-                    parsed[our_key] = value
-                    break
-
-        parsed.update(_calc_weight_range(parsed))
+        parsed = _parse_license_ocr(ocr_result)
+        hang = None
+        if hang_file is not None:
+            parsed['weight_range_scope'] = 'combination'
+            hang = {}
+            try:
+                hang_result = request_json('/dl_ocr/front_and_back', files={
+                    'image': (hang_file.filename or 'hang.jpg', hang_bytes, hang_file.mimetype or 'application/octet-stream'),
+                })
+                hang = _parse_license_ocr(hang_result)
+            except AIError:
+                parsed['weight_range_error'] = '挂车行驶证OCR未成功，请检查正、副页后重试'
+        parsed.update(_calc_weight_range(parsed, hang))
         return ok(parsed)
 
     except AIError as e:
         return fail(502, str(e))
     except Exception as e:
         return fail(500, f'OCR处理失败: {str(e)}')
+
+
+def _parse_license_ocr(ocr_result: dict) -> dict:
+    from app.services.ai_client import AIError
+
+    data_list = ocr_result.get('data')
+    if not isinstance(data_list, list):
+        raise AIError('OCR返回字段格式异常')
+
+    parsed = dict.fromkeys(('plate_number', 'vehicle_type', 'hdzzl', 'zbzl', 'zzl', 'wkcc'), '')
+    parsed['all_fields'] = data_list
+    key_map = {
+        '号牌号码': 'plate_number', '车辆类型': 'vehicle_type',
+        '核定载质量': 'hdzzl', '整备质量': 'zbzl',
+        '总质量': 'zzl', '外廓尺寸': 'wkcc', '检验有效期': 'inspection_valid_until',
+    }
+    for item in data_list:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get('key') or '').strip()
+        for label, field in key_map.items():
+            # 重量字段必须匹配完整名称，避免把准牵引总质量当作总质量。
+            if key == label or (field not in ('hdzzl', 'zbzl', 'zzl') and label in key):
+                parsed[field] = str(item.get('value') or '').strip()
+                break
+    return parsed
 
 
 # ==================== 辅助函数 ====================
@@ -456,39 +473,28 @@ def _load_image_from_body(body: dict, prefix: str = '') -> 'np.ndarray | None':
     return None
 
 
-def _calc_weight_range(parsed: dict) -> dict:
-    """计算出口称重提示区间。
+def _license_mass(raw: object) -> Decimal:
+    value = str(raw or '').strip()
+    match = re.fullmatch(r'([0-9]+(?:\.[0-9]+)?|[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?)\s*(?:kg|千克|公斤)?', value, re.IGNORECASE)
+    return Decimal(match[1].replace(',', '')) if match else Decimal(0)
 
-    对齐旧 Qt / 原公式：
-      min = 核定载质量 * 0.8 + 整备质量
-      max = 总质量 * 1.05
-    """
-    try:
-        def _num(raw: object) -> float:
-            s = str(raw or '').lower().replace('kg', '').replace(',', '').strip()
-            import re
-            m = re.search(r'(\d+(?:\.\d+)?)', s)
-            return float(m.group(1)) if m else 0.0
 
-        hdzzl = _num(parsed.get('hdzzl'))
-        zbzl = _num(parsed.get('zbzl'))
-        zzl = _num(parsed.get('zzl'))
-        if hdzzl <= 0 or zzl <= 0:
-            return {
-                'weight_min': 0,
-                'weight_max': 0,
-                'weight_range_text': '',
-            }
+def _calc_weight_range(main: dict, hang: dict | None = None) -> dict:
+    """按 Qt 单车或主挂车公式计算，保留原始边界用于称重比较。"""
+    load_license = main if hang is None else hang
+    payload = _license_mass(load_license.get('hdzzl'))
+    curb = _license_mass(load_license.get('zbzl'))
+    gross = _license_mass(load_license.get('zzl'))
+    tractor_curb = Decimal(0) if hang is None else _license_mass(main.get('zbzl'))
+    empty = {'weight_min': 0, 'weight_max': 0, 'weight_range_text': ''}
+    if min(payload, curb, gross) <= 0 or (hang is not None and tractor_curb <= 0):
+        return empty
 
-        weight_min = hdzzl * 0.8 + zbzl
-        weight_max = zzl * 1.05
-        return {
-            'weight_min': round(weight_min),
-            'weight_max': round(weight_max),
-            'weight_range_text': f'({round(weight_min)}-{round(weight_max)})',
-        }
-    except (ValueError, AttributeError, TypeError):
-        return {'weight_min': 0, 'weight_max': 0, 'weight_range_text': ''}
+    lower = float(payload * Decimal('0.8') + curb + tractor_curb)
+    upper = float(gross * Decimal('1.05') + tractor_curb)
+    if not (math.isfinite(lower) and math.isfinite(upper) and lower < upper):
+        return empty
+    return {'weight_min': lower, 'weight_max': upper, 'weight_range_text': f'({lower:.1f}-{upper:.1f})'}
 
 
 @imaging_api.route('/ai-status', methods=['GET'])

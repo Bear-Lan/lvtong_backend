@@ -221,6 +221,7 @@ class InspectionSessionTests(unittest.TestCase):
             {'path': ['aiContext', 'license'], 'value': {
                 'source': '/api/images/new-crop.jpg', 'plateSource': photo, 'stitchedSource': photo,
                 'inputSource': '/api/images/previous-crop.jpg', 'ocrSource': photo, 'ocrDone': False,
+                 'hangSource': '/api/images/hang-crop.jpg', 'hangOcrSource': photo,
             }},
         ])
         context = snap['draft']['aiContext']['license']
@@ -230,6 +231,7 @@ class InspectionSessionTests(unittest.TestCase):
         self.assertEqual(context['stitchedSource'], context['plateSource'])
         self.assertEqual(context['inputSource'], '/api/images/previous-crop.jpg')
         self.assertEqual(context['ocrSource'], context['plateSource'])
+        self.assertEqual(context['hangOcrSource'], context['plateSource'])
         original = self.store.image_root / context['ocrSource'].removeprefix('/api/images/')
         self.assertEqual(original.read_bytes(), PNG)
         self.assertEqual(InspectionSessionStore(self.engine, self.store.image_root).snapshot()['draft']['aiContext']['license'], context)

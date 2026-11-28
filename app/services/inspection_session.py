@@ -153,7 +153,8 @@ class InspectionSessionStore:
         if path[0] == 'aiContext':
             if path[1] not in ('truck', 'license', 'load') or not isinstance(value, dict):
                 raise ValueError('AI来源上下文无效')
-            allowed = {'source', 'plateSource', 'stitchedSource', 'inputSource', 'hangSource', 'inputHangSource', 'ocrSource', 'container', 'wheelCount', 'baseRevision', 'ocrDone'}
+            allowed = {'source', 'plateSource', 'stitchedSource', 'inputSource', 'hangSource', 'inputHangSource',
+                       'ocrSource', 'hangOcrSource', 'container', 'wheelCount', 'baseRevision', 'ocrDone'}
             if set(value) - allowed:
                 raise ValueError('AI来源字段无效')
             result = {}
